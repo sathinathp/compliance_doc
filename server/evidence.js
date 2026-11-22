@@ -66,6 +66,11 @@ function subjectOf(t, type, sid) {
   if (!s) throw new HttpError(404, 'Subject not found.');
   return s;
 }
+// Field names as a reviewer would say them.
+const FIELD_NAMES = { expires_on: 'expiry date', doc_number: 'document number', holder_name: "holder's name", issued_on: 'issue date', entity_name: 'company name', period: 'reporting period', state: 'issuing state' };
+const fieldName = (k) => FIELD_NAMES[k] || k.replace(/_/g, ' ');
+const listWords = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}`);
+
 async function intake(t, { subject_type, subject_id, control_key, filename, mime, data, claimed = {}, source, case_id }, actor) {
   if (!data?.length) throw new HttpError(400, 'A file is required.');
   if (data.length > 10 * 1024 * 1024) throw new HttpError(413, 'File is larger than 10 MB.');
@@ -100,7 +105,11 @@ async function intake(t, { subject_type, subject_id, control_key, filename, mime
   if (!x.hadText && x.aiRead) reasons.push('Fields were read by AI from an image, so a person must confirm them.');
   else if (!x.hadText) reasons.push(x.aiNote || 'No readable text in this file, so fields need human confirmation.');
   if (ctrl) {
-    for (const k of ctrl.evidence.required_fields || []) if (!f[k]) reasons.push(`Required field not found: ${k.replace(/_/g, ' ')}.`); else if ((conf[k] || 0) < 0.9) reasons.push(`Low confidence on ${k.replace(/_/g, ' ')}.`);
+    // One plain sentence for what could not be read, one for what needs checking.
+    const missing = [], unsure = [];
+    for (const k of ctrl.evidence.required_fields || []) if (!f[k]) missing.push(fieldName(k)); else if ((conf[k] || 0) < 0.9) unsure.push(fieldName(k));
+    if (missing.length) reasons.push(`Could not read the ${listWords(missing)}.`);
+    if (unsure.length) reasons.push(`Please check the ${listWords(unsure)}; the reading is uncertain.`);
     if (subject_type === 'worker' && f.holder_name && !sameName(f.holder_name, subject.name)) reasons.push(`Name on document (${f.holder_name}) does not match ${subject.name}.`);
     if (f.expires_on && f.expires_on < clock.today()) reasons.push('Document had already expired when it was received.');
     if (ctrl.type === 'periodic_filing') { const { period } = latestDuePeriod(clock.today()); if (f.entity_name !== subject.name || f.period !== period) reasons.push(`Entity or reporting period does not match the control (expected ${subject.name}, ${period}).`); }
@@ -114,7 +123,7 @@ async function intake(t, { subject_type, subject_id, control_key, filename, mime
   const confs = Object.values(conf);
   db.insert('evidence', { id: fid, tenant_id: t, subject_type, subject_id, doc_type: f.doc_type || 'unknown', status, source, filename, mime, size: data.length, sha256: hash, stored_path: stored, doc_number: f.doc_number, holder_name: f.holder_name, state: f.state, entity_name: f.entity_name, period: f.period, issued_on: f.issued_on, expires_on: f.expires_on, fields_json: JSON.stringify(conf), confidence: confs.length ? Math.min(...confs) : 0, review_reasons_json: JSON.stringify(reasons), flags_json: JSON.stringify(x.flags), case_id: case_id || null, control_key: ctrl?.key || null, restricted: ctrl?.restricted || extractedRestricted ? 1 : 0, created_at: clock.iso() });
   const auditText = !f.doc_type ? 'A document was submitted for private classification.'
-    : `${filename}: ${status === 'accepted' ? `matched to ${ctrl.name}.` : `sent to review. ${reasons.join(' ')}`}`;
+    : `${filename} ${status === 'accepted' ? `matched to ${ctrl.name}.` : `sent to review. ${reasons.join(' ')}`}`;
   P.audit(t, status === 'accepted' ? 'EVIDENCE_MATCHED' : 'EVIDENCE_REVIEW', subject.name, auditText, actor, { case_id, detail: { sha256: hash } });
   P.enqueue(t, 'evaluate_subject', { type: subject_type, id: subject_id, trigger: 'evidence_received' }, { dedupe: `eval:${subject_type}:${subject_id}` });
   return db.get('SELECT * FROM evidence WHERE id=?', fid);

@@ -217,8 +217,37 @@ add('GET', '/api/messages', ({ t, user }) => { P.assertAdmin(user); return db.al
 
 // ---- reporting
 add('GET', '/api/audit', ({ t, user }) => { P.assertAdmin(user); return db.all('SELECT * FROM audit_log WHERE tenant_id=? ORDER BY seq DESC LIMIT 300', t); });
+// Audit search: by kind of event, by text (person, subject or what happened) and by UTC date,
+// newest first, a page at a time. "before" is the last sequence number already shown.
+const AUDIT_KINDS = {
+  checks: ['CHECK_RESULT'],
+  cases: ['CASE_OPENED', 'CASE_STATE', 'CASE_NOTE', 'CASE_ESCALATED', 'CASE_CLOSED', 'FINDING_REVIEWED'],
+  evidence: ['EVIDENCE_MATCHED', 'EVIDENCE_ACCEPTED', 'EVIDENCE_REJECTED', 'EVIDENCE_REVIEW', 'EVIDENCE_VIEWED', 'EVIDENCE_RECEIVED'],
+  approvals: ['APPROVAL_REQUESTED', 'APPROVAL_DECIDED', 'APPROVAL_UPDATED', 'READINESS_REOPENED'],
+  messages: ['ACTION_SENT', 'MESSAGE_SENT', 'DIGEST_SENT', 'DIGEST_OUTBOX', 'DIGEST_FAILED', 'CHAT_COMMAND', 'SLACK_TEST'],
+  records: ['WORKER_ADDED', 'ROSTER_IMPORT', 'ASSIGNMENT_CHANGED', 'HRMS_EVENT', 'HRMS_SYNC'],
+};
+add('GET', '/api/audit/search', ({ t, user, q }) => {
+  P.assertAdmin(user);
+  const where = ['tenant_id=?'], args = [t], kind = q.get('kind') || '';
+  if (kind === 'settings') { const known = Object.values(AUDIT_KINDS).flat(); where.push(`type NOT IN (${known.map(() => '?').join(',')})`); args.push(...known); }
+  else if (AUDIT_KINDS[kind]) { where.push(`type IN (${AUDIT_KINDS[kind].map(() => '?').join(',')})`); args.push(...AUDIT_KINDS[kind]); }
+  const text = String(q.get('q') || '').trim().slice(0, 100);
+  if (text) { where.push("(subject LIKE ? ESCAPE '!' OR action LIKE ? ESCAPE '!' OR actor LIKE ? ESCAPE '!')"); const like = `%${text.replace(/[!%_]/g, (c) => `!${c}`)}%`; args.push(like, like, like); }
+  const day = (k) => (/^\d{4}-\d{2}-\d{2}$/.test(q.get(k) || '') ? q.get(k) : null);
+  if (day('from')) { where.push('ts >= ?'); args.push(`${day('from')}T00:00:00`); }
+  if (day('to')) { where.push('ts < ?'); args.push(`${V.addDays(day('to'), 1)}T00:00:00`); }
+  const before = Number(q.get('before')) || 0;
+  if (before) { where.push('seq < ?'); args.push(before); }
+  const limit = Math.min(Math.max(Number(q.get('limit')) || 100, 1), 200);
+  const rows = db.all(`SELECT * FROM audit_log WHERE ${where.join(' AND ')} ORDER BY seq DESC LIMIT ?`, ...args, limit + 1);
+  const total = db.get(`SELECT COUNT(*) AS n FROM audit_log WHERE ${where.filter((w) => !w.startsWith('seq <')).join(' AND ')}`, ...args.slice(0, before ? -1 : undefined)).n;
+  return { rows: rows.slice(0, limit), has_more: rows.length > limit, total };
+});
 add('GET', '/api/audit/verify', ({ t, user }) => { P.assertAdmin(user); return P.verifyAudit(t); });
 add('GET', '/api/audit/export', ({ t, user, res }) => { P.assertAdmin(user); res.writeHead(200, { 'content-type': 'application/json', 'content-disposition': 'attachment; filename="aegis-audit.json"' }); res.end(JSON.stringify({ verification: P.verifyAudit(t), entries: db.all('SELECT * FROM audit_log WHERE tenant_id=? ORDER BY seq', t) }, null, 1)); return res; });
+add('GET', '/api/reports/:pack/data', ({ t, user, p }) => V.reportData(t, user, p.pack));
+add('GET', '/api/digest', ({ t, user }) => { P.assertAdmin(user); return V.digestInfo(t); });
 add('GET', '/api/reports/:pack', ({ t, user, p, res }) => { res.writeHead(200, { 'content-type': 'text/csv', 'content-disposition': `attachment; filename="aegis-${p.pack.replace(/\W/g, '')}.csv"` }); res.end(V.reportCsv(t, user, p.pack)); return res; });
 // Only known values are saved, so a view can never ask for something the data cannot answer.
 const dashDef = (b) => {

@@ -119,11 +119,11 @@ function metrics(t) {
 // Dashboards. Built-in ones are the same for every customer and cannot be deleted;
 // saved ones come from the form or from chat. Both read the same records as Checks and chat.
 const BUILT_IN = [
-  { id: 'builtin-readiness', name: 'Assignment readiness', description: 'Every worker by readiness decision. Open checks are counted, not hidden.', definition: { metric: 'readiness', group_by: 'readiness' } },
-  { id: 'builtin-expiring', name: 'Expiring in the next 90 days', description: 'Credentials that expired or expire within 90 days, soonest first.', definition: { metric: 'expirations', group_by: 'window', within_days: 90 } },
-  { id: 'builtin-gaps', name: 'Open gaps by facility', description: 'Checks that fail or cannot be proven yet, by work location.', definition: { metric: 'open_gaps', group_by: 'facility' } },
-  { id: 'builtin-missing', name: 'Missing documents by team', description: 'Requirements with no accepted document on file, by owning team.', definition: { metric: 'missing_evidence', group_by: 'team' } },
-  { id: 'builtin-coverage', name: 'Coverage by pack', description: 'Every applicable check by pack: pass, fail and unknown.', definition: { metric: 'coverage', group_by: 'pack' } },
+  { id: 'builtin-readiness', name: 'Readiness', description: 'Who is cleared to start, and who is waiting or blocked.', definition: { metric: 'readiness', group_by: 'readiness' } },
+  { id: 'builtin-expiring', name: 'Expiring soon', description: 'Credentials that expired or expire in the next 90 days, soonest first.', definition: { metric: 'expirations', group_by: 'window', within_days: 90 } },
+  { id: 'builtin-gaps', name: 'Open gaps', description: 'Checks that fail or cannot be proven yet, by facility.', definition: { metric: 'open_gaps', group_by: 'facility' } },
+  { id: 'builtin-missing', name: 'Missing documents', description: 'Requirements with no accepted document, by owning team.', definition: { metric: 'missing_evidence', group_by: 'team' } },
+  { id: 'builtin-coverage', name: 'Coverage', description: 'Every applicable check, by pack.', definition: { metric: 'coverage', group_by: 'pack' } },
 ].map((d) => ({ ...d, built_in: true, created_by: 'Aegis', created_at: null, definition_json: JSON.stringify(d.definition), roles_json: '[]' }));
 const GROUP_KEY = { facility: 'facility', team: 'team', pack: 'pack_name', status: 'status', control: 'control_name' };
 const WINDOWS = ['Expired', 'Next 30 days', '31 to 60 days', '61 to 90 days', 'Later'];
@@ -172,6 +172,36 @@ function reportCsv(t, user, pack) {
   lines.push([]); lines.push([`Scope: ${cov.scope_statement} Evidence current as of ${cov.as_of}.`]);
   return lines.map((l) => l.map(csvCell).join(',')).join('\n');
 }
+// The printable report: the same rows as the CSV, summarised for a person to read.
+// Problems are listed by name; passing checks are counted, with their references in the CSV.
+function reportData(t, user, pack) {
+  const packs = packRows(t).filter((p) => p.status === 'active');
+  const one = pack === 'all' ? null : packs.find((p) => p.key === pack);
+  if (pack !== 'all' && !one) throw new P.HttpError(404, 'This pack is not activated.');
+  const rows = checks(t, user, pack === 'all' ? {} : { pack }).filter((c) => c.status !== 'not_applicable');
+  const tl = tally(rows), cov = coverage(t), byFacility = {};
+  for (const r of rows) (byFacility[r.facility] ||= []).push(r);
+  const rank = { fail: 0, unknown: 1 };
+  return {
+    tenant: db.get('SELECT name FROM tenants WHERE id=?', t).name,
+    pack: pack === 'all' ? 'all' : one.key,
+    title: pack === 'all' ? 'All activated packs' : one.name,
+    packs: pack === 'all' ? packs.map((p) => p.name) : [one.name],
+    tally: tl,
+    all_pass: tl.total > 0 && tl.pass === tl.total,
+    scope_statement: pack === 'all' ? cov.scope_statement : `${tl.total} applicable check${tl.total === 1 ? '' : 's'} in the ${one.name} pack. Obligations outside this pack have not been assessed.`,
+    as_of: clock.iso(),
+    facilities: Object.entries(byFacility).map(([name, list]) => ({ name, ...tally(list) })).sort((a, b) => (b.fail + b.unknown) - (a.fail + a.unknown) || a.name.localeCompare(b.name)),
+    attention: rows.filter((r) => r.status === 'fail' || r.status === 'unknown').sort((a, b) => rank[a.status] - rank[b.status] || a.subject_name.localeCompare(b.subject_name))
+      .map((r) => ({ subject_id: r.subject_id, subject_type: r.subject_type, subject: r.subject_name, facility: r.facility, control: r.control_name, pack: r.pack_key, status: r.status, reason: r.reason })),
+  };
+}
+// What the next digest says, and where and when the last one went.
+function digestInfo(t) {
+  const tn = db.get('SELECT channel_json FROM tenants WHERE id=?', t);
+  const last = db.get("SELECT ts, type, action, actor FROM audit_log WHERE tenant_id=? AND type IN ('DIGEST_SENT','DIGEST_OUTBOX','DIGEST_FAILED') ORDER BY seq DESC LIMIT 1", t) || null;
+  return { channel: j(tn.channel_json, {}).channel || '#compliance-alerts', preview: digestText(t), last };
+}
 function setupState(t) {
   const tn = db.get('SELECT * FROM tenants WHERE id=?', t), s = j(tn.setup_json, {}), ws = db.all("SELECT * FROM workers WHERE tenant_id=? AND status='active'", t);
   const noLoc = ws.filter((w) => !E.currentFacility(t, w.id)), facs = db.all('SELECT * FROM facilities WHERE tenant_id=? ORDER BY name', t), ents = db.all('SELECT * FROM entities WHERE tenant_id=? ORDER BY name', t);
@@ -193,4 +223,4 @@ function digestText(t) {
 function health(t) {
   return { ai_error: llm.lastError(t), jobs: { queued: db.get("SELECT COUNT(*) n FROM jobs WHERE tenant_id=? AND status='queued'", t).n, dead: db.all("SELECT id,type,last_error,attempts,finished_at FROM jobs WHERE tenant_id=? AND status='dead' ORDER BY finished_at DESC LIMIT 20", t) }, failed_actions: db.all("SELECT id,type,recipient,error FROM actions WHERE tenant_id=? AND error IS NOT NULL AND status='queued' LIMIT 20", t), connectors: db.all('SELECT id,type,name,status,last_sync_at,last_error,records,capabilities_json FROM connectors WHERE tenant_id=?', t).map((c) => ({ ...c, capabilities: j(c.capabilities_json, []) })), events: db.all('SELECT type,status,received_at,error FROM events WHERE tenant_id=? ORDER BY received_at DESC LIMIT 10', t), schedules: db.all('SELECT * FROM schedules WHERE tenant_id=?', t), audit: P.verifyAudit(t) };
 }
-module.exports = { checks, coverage, tally, packRows, listCases, caseDetail, listWorkers, workerDetail, listEvidence, listApprovals, overview, metrics, dashboardData, dashboardsFor, reportCsv, setupState, digestText, health, allChecks, isoDay, addDays, daysBetween };
+module.exports = { reportData, digestInfo, checks, coverage, tally, packRows, listCases, caseDetail, listWorkers, workerDetail, listEvidence, listApprovals, overview, metrics, dashboardData, dashboardsFor, reportCsv, setupState, digestText, health, allChecks, isoDay, addDays, daysBetween };

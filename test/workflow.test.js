@@ -519,3 +519,53 @@ test('dashboards: built-in views match the checks, saved views are validated and
   assert.equal((await admin.post(`/api/dashboards/${made.id}/delete`)).status, 200);
   assert.equal((await admin.get(`/api/dashboards/${made.id}`)).status, 403);
 });
+
+test('reports: printable report data matches the CSV and checks; digest shows its last delivery; notices stay with Finance', async () => {
+  const r = (await admin.get('/api/reports/healthcare/data')).data;
+  const rows = (await admin.get('/api/checks?pack=healthcare')).data.rows.filter((c) => c.status !== 'not_applicable');
+  assert.equal(r.tally.total, rows.length);
+  assert.equal(r.tally.fail, rows.filter((c) => c.status === 'fail').length);
+  assert.equal(r.attention.length, rows.filter((c) => ['fail', 'unknown'].includes(c.status)).length);
+  assert.equal(r.facilities.reduce((a, f) => a + f.total, 0), r.tally.total, 'locations add up to the total');
+  assert.ok(!/100%|fully compliant/i.test(JSON.stringify(r)), 'never claims full compliance');
+  const all = (await admin.get('/api/reports/all/data')).data;
+  assert.equal(all.tally.total, (await admin.get('/api/checks')).data.rows.filter((c) => c.status !== 'not_applicable').length);
+  assert.equal((await admin.get('/api/reports/nope/data')).status, 404);
+
+  await admin.post('/api/digest/send');
+  const d = (await admin.get('/api/digest')).data;
+  assert.ok(d.preview.startsWith('Aegis digest for'));
+  assert.ok(['DIGEST_SENT', 'DIGEST_OUTBOX'].includes(d.last.type));
+  assert.equal((await health.get('/api/digest')).status, 403, 'only administrators see the digest settings');
+
+  assert.equal((await health.get('/api/notices')).status, 403, 'notices are for Finance');
+  assert.equal((await fin.get('/api/notices')).status, 200);
+});
+
+test('audit search filters by kind, text and date, pages without overlap, and is admin only', async () => {
+  const all = (await admin.get('/api/audit/search?limit=200')).data;
+  assert.ok(all.total >= all.rows.length && all.rows.length > 0);
+  const checks = (await admin.get('/api/audit/search?kind=checks')).data;
+  assert.ok(checks.rows.length && checks.rows.every((r) => r.type === 'CHECK_RESULT'));
+  const settings = (await admin.get('/api/audit/search?kind=settings')).data;
+  assert.ok(settings.rows.every((r) => !['CHECK_RESULT', 'CASE_STATE', 'APPROVAL_DECIDED'].includes(r.type)));
+
+  // Text matches the person, subject or detail; % and _ are taken literally.
+  const name = all.rows.find((r) => r.subject && /\w{4,}/.test(r.subject)).subject.split(/[ ,]/)[0];
+  const byName = (await admin.get(`/api/audit/search?q=${encodeURIComponent(name)}`)).data;
+  assert.ok(byName.rows.every((r) => [r.subject, r.action, r.actor].some((x) => (x || '').toLowerCase().includes(name.toLowerCase()))));
+  assert.equal((await admin.get('/api/audit/search?q=%25%25%25')).data.total, 0);
+
+  // Pages follow on from each other.
+  const p1 = (await admin.get('/api/audit/search?limit=5')).data;
+  const p2 = (await admin.get(`/api/audit/search?limit=5&before=${p1.rows.at(-1).seq}`)).data;
+  assert.ok(p1.has_more);
+  assert.ok(p2.rows.every((r) => r.seq < p1.rows.at(-1).seq));
+  assert.equal(p2.total, p1.total, 'the total ignores paging');
+
+  // Dates are whole UTC days.
+  const day = all.rows[0].ts.slice(0, 10);
+  const onDay = (await admin.get(`/api/audit/search?from=${day}&to=${day}`)).data;
+  assert.ok(onDay.rows.every((r) => r.ts.startsWith(day)));
+  assert.equal((await health.get('/api/audit/search')).status, 403);
+});
