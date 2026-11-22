@@ -1719,3 +1719,96 @@ a.view-card-name:hover { color: var(--primary); }
 }
 @media (prefers-reduced-motion: reduce) { .stat-block { transition: none; } }
 .open-count { display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 7px; border-radius: var(--radius-full); background: var(--fail-bg); color: var(--fail-fg); font-size: var(--fs-12); font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* ==========================================================================
+   COMPANY SETUP
+   ========================================================================== */
+/* Progress: how many steps are done, a five-part meter, and Continue. */
+:is(html, #aegis) #view .setup-progress { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 280px) auto; align-items: center; gap: var(--space-6); }
+.setup-progress-text h2 { margin: 0; color: var(--text); font-size: var(--fs-18, 18px); font-weight: 650; }
+.setup-progress-text p { margin: 2px 0 0; color: var(--text-secondary); font-size: var(--fs-13); }
+.setup-meter { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; margin: 0; padding: 0; list-style: none; }
+.setup-meter li { height: 8px; border-radius: var(--radius-full); background: var(--gray-100); }
+.setup-meter li.is-done { background: var(--primary); }
+.setup-meter li.is-current { background: var(--brand-200); }
+
+/* Steps: one row each; the open step shows its content. */
+.setup-steps { display: grid; gap: var(--space-3); }
+.setup-step { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-surface); }
+.setup-step.is-current { border-color: var(--brand-200); box-shadow: 0 0 0 3px var(--brand-50); }
+.setup-step > summary {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto 16px;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+  cursor: pointer;
+  list-style: none;
+}
+.setup-step > summary::-webkit-details-marker { display: none; }
+.setup-step > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; border-radius: var(--radius-lg); }
+.step-mark { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--gray-100); color: var(--text-secondary); font-size: var(--fs-13); font-weight: 700; }
+.setup-step.is-done .step-mark { background: var(--pass-bg); color: var(--pass-fg); }
+.setup-step.is-current .step-mark { background: var(--primary); color: #fff; }
+.setup-step.is-locked .step-mark { background: var(--bg-subtle); color: var(--text-muted); }
+.step-text { display: grid; gap: 2px; min-width: 0; }
+.step-text b { color: var(--text); font-size: var(--fs-15, 15px); font-weight: 650; }
+.step-text span { color: var(--text-secondary); font-size: var(--fs-13); line-height: 1.45; }
+.setup-step.is-locked .step-text b { color: var(--text-secondary); }
+.step-state { color: var(--text-muted); font-size: var(--fs-12); font-weight: 600; white-space: nowrap; }
+.setup-step.is-done .step-state { color: var(--pass-fg); }
+.setup-step.is-current .step-state { color: var(--primary); }
+.setup-step .chev { color: var(--text-muted); transition: transform .2s ease; }
+.setup-step[open] .chev { transform: rotate(180deg); }
+.step-content { padding: 0 var(--space-5) var(--space-5) calc(var(--space-5) + 28px + var(--space-4)); }
+
+.setup-figures { max-width: 620px; margin: 0 0 var(--space-4); }
+:is(html, #aegis) .setup-figures.report-figures { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.setup-step.is-attention .step-mark { background: var(--warn-bg); color: var(--warn-fg); }
+.setup-step.is-attention .step-state { color: var(--warn-fg); }
+.setup-sub { margin: var(--space-4) 0 var(--space-2); color: var(--text); font-size: var(--fs-13); font-weight: 650; }
+.setup-text { margin: var(--space-2) 0 0; color: var(--text-secondary); font-size: var(--fs-13); line-height: 1.55; }
+.setup-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); margin-top: var(--space-4); }
+.done-note { color: var(--pass-fg); font-size: var(--fs-13); font-weight: 600; }
+.setup-note { margin: 0 0 var(--space-4); padding: var(--space-3) var(--space-4); border: 1px solid var(--warn-line); border-radius: var(--radius); background: var(--warn-bg); color: var(--warn-fg); font-size: var(--fs-13); }
+.setup-note b { display: block; margin-bottom: 2px; }
+.setup-note.is-info { border-color: var(--info-line); background: var(--info-bg); color: var(--info-fg); }
+.setup-step .pack-title > span { display: grid; gap: 2px; }
+:is(html, #aegis) #view .setup-step td.nowrap { white-space: nowrap; }
+:is(html, #aegis) .setup-figures dd.tone-text-pass { color: var(--pass-fg); }
+:is(html, #aegis) .setup-figures dd.tone-text-fail { color: var(--fail-fg); }
+:is(html, #aegis) .setup-figures dd.tone-text-warn { color: var(--warn-fg); }
+.setup-note ul { margin: 0; padding-left: var(--space-5); }
+.step-content .setup-note:not(:first-child) { margin-top: var(--space-4); }
+
+.source-list { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+.source-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: var(--space-4); padding: var(--space-3) var(--space-4); border: 1px solid var(--border); border-radius: var(--radius); }
+.source-name { display: grid; color: var(--text); font-size: var(--fs-14); font-weight: 600; }
+.source-name small { color: var(--text-muted); font-size: var(--fs-12); font-weight: 500; }
+.source-meta { color: var(--text-secondary); font-size: var(--fs-13); text-align: right; }
+
+/* Where updates go: two choices, then the channel name. */
+.choice-group { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); max-width: 720px; margin: 0; padding: 0; border: 0; }
+.choice { display: flex; align-items: flex-start; gap: var(--space-3); padding: var(--space-3) var(--space-4); border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; }
+.choice:has(input:checked) { border-color: var(--primary); background: var(--brand-50); }
+.choice:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
+.choice input { margin-top: 3px; accent-color: var(--primary); }
+.choice b { display: block; color: var(--text); font-size: var(--fs-14); font-weight: 600; }
+.choice small { display: block; margin-top: 2px; color: var(--text-secondary); font-size: var(--fs-12); line-height: 1.45; }
+.choice.is-disabled { cursor: default; background: var(--bg-subtle); }
+.choice.is-disabled b { color: var(--text-secondary); }
+.channel-name { max-width: 320px; margin-top: var(--space-4); }
+
+@media (max-width: 900px) {
+  :is(html, #aegis) #view .setup-progress { grid-template-columns: minmax(0, 1fr); gap: var(--space-3); }
+  .setup-progress .btn-submit-green { justify-self: start; }
+}
+@media (max-width: 760px) {
+  .setup-step > summary { grid-template-columns: 28px minmax(0, 1fr) 16px; padding: var(--space-4); }
+  .step-state { display: none; }
+  .step-content { padding: 0 var(--space-4) var(--space-4); }
+  .choice-group { grid-template-columns: minmax(0, 1fr); }
+  .source-list li { grid-template-columns: minmax(0, 1fr) auto; }
+  .source-meta { grid-column: 1 / -1; text-align: left; }
+}
+@media (prefers-reduced-motion: reduce) { .setup-step .chev { transition: none; } }

@@ -206,15 +206,21 @@ function setupState(t) {
   const tn = db.get('SELECT * FROM tenants WHERE id=?', t), s = j(tn.setup_json, {}), ws = db.all("SELECT * FROM workers WHERE tenant_id=? AND status='active'", t);
   const noLoc = ws.filter((w) => !E.currentFacility(t, w.id)), facs = db.all('SELECT * FROM facilities WHERE tenant_id=? ORDER BY name', t), ents = db.all('SELECT * FROM entities WHERE tenant_id=? ORDER BY name', t);
   const clinical = ws.filter((w) => w.category === 'clinical').length;
-  const gaps = [];
-  if (noLoc.length) gaps.push(`${noLoc.length} worker(s) have no confirmed work location.`);
+  // Each gap names the setup step that fixes it. "gaps" keeps the plain sentences for older callers.
+  const gapItems = [], n = (k, one, many) => `${k} ${k === 1 ? one : many}`;
+  if (noLoc.length) gapItems.push({ step: 'context', text: `${n(noLoc.length, 'worker has', 'workers have')} no confirmed work location.` });
   const unf = facs.filter((f) => !f.requirements_confirmed);
-  if (unf.length) gaps.push(`Facility requirements are not confirmed for ${unf.length} location(s).`);
-  if (!ents.length) gaps.push('No employing entity on record.');
-  if (ws.some((w) => !w.email)) gaps.push(`${ws.filter((w) => !w.email).length} worker(s) have no email address.`);
-  if (ws.length) gaps.push('Payroll filing evidence is not available from HR records and must be uploaded.');
+  if (unf.length) gapItems.push({ step: 'context', text: `Requirements are not confirmed for ${n(unf.length, 'location', 'locations')}.` });
+  if (!ents.length) gapItems.push({ step: 'context', text: 'No employing entity on record.' });
+  if (ws.some((w) => !w.email)) gapItems.push({ step: 'records', text: `${n(ws.filter((w) => !w.email).length, 'worker has', 'workers have')} no email address, so they cannot get document requests.` });
+  if (ws.length) gapItems.push({ step: 'packs', text: 'Payroll filing evidence is not in HR records and must be uploaded.' });
+  const gaps = gapItems.map((g) => g.text);
+  // Where the records come from: connected systems, and workers by source.
+  const bySource = {};
+  for (const w of ws) bySource[w.source || 'manual'] = (bySource[w.source || 'manual'] || 0) + 1;
+  const source = { connectors: db.all('SELECT id, name, type, status, last_sync_at, last_error, records FROM connectors WHERE tenant_id=? ORDER BY name', t), workers_by_source: bySource };
   const packs = packRows(t);
-  return { tenant: tn.name, kind: tn.kind, summary: { workers: ws.length, clinical, facilities: facs.length, entities: ents.length }, gaps, facilities: facs.map((f) => ({ ...f, requirements: j(f.requirements_json, []) })), entities: ents, steps: { connect: ws.length > 0, context: !!s.context_confirmed, packs: packs.some((p) => p.status === 'active'), channel: !!s.channel_confirmed, assessed: !!tn.first_assessment_at }, recommended: packs.map((p) => ({ key: p.key, name: p.name, icon: p.icon, description: p.description, recommended: p.key === 'healthcare' ? clinical > 0 : ws.length > 0, status: p.status, owner_role: p.owner_role, owner_user_id: p.owner_user_id, controls: p.controls, review_note: p.review_note, version: p.latest_version, validation: p.validation })), channel: j(tn.channel_json, {}), slack_ready: require('./slack').configured(t), coverage: coverage(t), users: db.all('SELECT id,name,role FROM users WHERE tenant_id=?', t) };
+  return { tenant: tn.name, kind: tn.kind, summary: { workers: ws.length, clinical, facilities: facs.length, entities: ents.length }, gaps, gap_items: gapItems, source, facilities: facs.map((f) => ({ ...f, requirements: j(f.requirements_json, []) })), entities: ents, steps: { connect: ws.length > 0, context: !!s.context_confirmed, packs: packs.some((p) => p.status === 'active'), channel: !!s.channel_confirmed, assessed: !!tn.first_assessment_at }, recommended: packs.map((p) => ({ key: p.key, name: p.name, icon: p.icon, description: p.description, mode: p.mode, recommended: p.key === 'healthcare' ? clinical > 0 : ws.length > 0, status: p.status, owner_role: p.owner_role, owner_user_id: p.owner_user_id, controls: p.controls, review_note: p.review_note, version: p.latest_version, validation: p.validation })), channel: j(tn.channel_json, {}), slack_ready: require('./slack').configured(t), coverage: coverage(t), users: db.all('SELECT id,name,role FROM users WHERE tenant_id=?', t) };
 }
 function digestText(t) {
   const c = coverage(t), open = db.all(`SELECT * FROM cases WHERE tenant_id=? AND ${E.OPEN}`, t), pend = db.get("SELECT COUNT(*) n FROM approvals WHERE tenant_id=? AND status='pending'", t).n;

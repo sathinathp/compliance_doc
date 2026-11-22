@@ -10,7 +10,7 @@ const raw = (s) => new Safe(s);
 const LABELS = {
   // document types
   professional_license: 'Professional license', bls_card: 'BLS card', acls_card: 'ACLS card', tb_screening: 'TB screening',
-  flu_vaccine: 'Flu vaccination', facility_orientation: 'Facility orientation', handbook_ack: 'Handbook acknowledgment',
+  acls: 'ACLS card', flu_vaccine: 'Flu vaccination', facility_orientation: 'Facility orientation', handbook_ack: 'Handbook acknowledgment',
   security_training: 'Security training', i9_record: 'I-9 record', work_authorization: 'Work authorization', w4: 'W-4',
   payroll_filing_receipt: 'Payroll filing receipt', unknown: 'Unknown',
   // case stages and outcomes
@@ -126,7 +126,7 @@ const NAV = [
   ['Reporting', [['dashboards', 'Dashboards'], ['reports', 'Reports'], ['metrics', 'Pilot metrics'], ['audit', 'Audit history']]],
   ['Organization', [['setup', 'Company setup'], ['integrations', 'Connections'], ['settings', 'Settings']]]
 ];
-const HEAD = { overview: ['Workspace', 'Overview', 'Current status across activated packs, accepted evidence and open remediation.'], setup: ['Organization', 'Company setup', 'Connect records, confirm context, activate packs and run the first assessment.'], cases: ['Workspace', 'Cases', 'Each gap moves from identified to closed. Only accepted evidence closes a case.'], approvals: ['Workspace', 'Approvals', 'Consequential actions wait here for an authorized person.'], evidence: ['Workspace', 'Evidence', 'AI proposes matches and fields. Uncertain documents go to a person.'], checks: ['Records', 'Checks', 'Every result has a reason, evidence references and a control version.'], workers: ['Records', 'Workers', 'Per-pack status for each worker. One pack never hides another.'], packs: ['Records', 'Compliance packs', 'Versioned packs reviewed and activated by an authorized person.'], controls: ['Records', 'Control rules', 'Draft, preview and approve changes before they take effect.'], integrations: ['Organization', 'Connections', 'Connectors, messages, background jobs and visible failures.'], dashboards: ['Reporting', 'Dashboards', 'Readiness, expirations and gaps, counted from current checks.'], reports: ['Reporting', 'Reports', 'Reports to share with clients, auditors and managers.'], notices: ['Workspace', 'Tax notices', 'Letters from tax agencies and the replies Finance approves.'], metrics: ['Reporting', 'Pilot metrics', 'How the pilot is going, measured from Aegis records.'], audit: ['Reporting', 'Audit history', 'Every check, request and decision, in order. Entries cannot be edited or deleted.'], settings: ['Organization', 'Settings', 'Users, roles, reporting channel and schedules.'] };
+const HEAD = { overview: ['Workspace', 'Overview', 'Current status across activated packs, accepted evidence and open remediation.'], setup: ['Organization', 'Company setup', 'Get your organisation ready: bring in your people, confirm requirements, and run the first check.'], cases: ['Workspace', 'Cases', 'Each gap moves from identified to closed. Only accepted evidence closes a case.'], approvals: ['Workspace', 'Approvals', 'Consequential actions wait here for an authorized person.'], evidence: ['Workspace', 'Evidence', 'AI proposes matches and fields. Uncertain documents go to a person.'], checks: ['Records', 'Checks', 'Every result has a reason, evidence references and a control version.'], workers: ['Records', 'Workers', 'Per-pack status for each worker. One pack never hides another.'], packs: ['Records', 'Compliance packs', 'Versioned packs reviewed and activated by an authorized person.'], controls: ['Records', 'Control rules', 'Draft, preview and approve changes before they take effect.'], integrations: ['Organization', 'Connections', 'Connectors, messages, background jobs and visible failures.'], dashboards: ['Reporting', 'Dashboards', 'Readiness, expirations and gaps, counted from current checks.'], reports: ['Reporting', 'Reports', 'Reports to share with clients, auditors and managers.'], notices: ['Workspace', 'Tax notices', 'Letters from tax agencies and the replies Finance approves.'], metrics: ['Reporting', 'Pilot metrics', 'How the pilot is going, measured from Aegis records.'], audit: ['Reporting', 'Audit history', 'Every check, request and decision, in order. Entries cannot be edited or deleted.'], settings: ['Organization', 'Settings', 'Users, roles, reporting channel and schedules.'] };
 
 // Ticked cases on the Cases page (ids). Cleared when the tab or page changes.
 const caseSel = new Set();
@@ -339,6 +339,82 @@ function confirmFollowUps(ids, scopeText) {
       <ul class="confirm-list">${listed.slice(0, 6).map(item)}</ul>${extra > 0 ? h`<p class="muted small">And ${extra} more.</p>` : ''}
       <p class="muted small confirm-note">A follow-up never closes a case; only accepted evidence does. Anyone already followed up today is skipped automatically.${me.sandbox ? ' Sandbox messages stay in the local outbox.' : ''}</p>`,
     h`<button class="btn-cancel" data-act="closeModal">Cancel</button><button class="btn-submit-green" data-act="confirmChaseAll" data-ids="${JSON.stringify(ids)}" ${willSend.length ? '' : raw('disabled')}>${willSend.length ? `Send ${willSend.length} follow-up${willSend.length === 1 ? '' : 's'}` : 'Nothing to send'}</button>`);
+}
+
+// ---------- Company setup ----------
+// The five steps, each with whether it is done, locked (and why), a one-line summary and its content.
+function setupSteps(s) {
+  const st = s.steps, gapsFor = (k) => s.gap_items.filter((g) => g.step === k);
+  // Gaps on records and context are problems to fix; the packs note is guidance, so it reads as information.
+  const gapNote = (k, info) => (gapsFor(k).length ? h`<div class="setup-note${info ? ' is-info' : ''}"><b>${info ? 'Good to know' : gapsFor(k).length === 1 ? 'One thing to fix' : `${gapsFor(k).length} things to fix`}</b><ul>${gapsFor(k).map((g) => h`<li>${g.text}</li>`)}</ul></div>` : '');
+  const active = s.recommended.filter((p) => p.status === 'active');
+  const cons = s.source.connectors, bySrc = s.source.workers_by_source;
+  const srcWords = { hrms: 'from the HRMS', spreadsheet: 'from spreadsheets', manual: 'added by hand', webhook: 'from the HRMS' };
+  // Workers record the connection they came from by its id; say its name instead.
+  const srcName = (k) => srcWords[k] || (cons.find((c) => c.id === k) ? `from ${cons.find((c) => c.id === k).name}` : 'from a connected system');
+  const fromLine = Object.keys(bySrc).length > 1 ? Object.entries(bySrc).map(([k, v]) => `${v} ${srcName(k)}`).join(', ') : '';
+  const conState = (c) => (c.last_error ? ['pill-fail', 'Needs attention'] : c.status === 'disabled' ? ['pill-na', 'Paused'] : ['pill-pass', 'Connected']);
+  const cov = s.coverage;
+  return [
+    {
+      key: 'connect', title: 'Add your people and locations', done: st.connect, attention: gapsFor('records').length,
+      summary: st.connect ? `${plural(s.summary.workers, 'worker')}, ${plural(s.summary.facilities, 'location')} and ${plural(s.summary.entities, 'employing entity', 'employing entities')}${cons.length ? `, from ${cons.map((c) => c.name).join(' and ')}` : ''}.` : 'Connect your HR system, import a spreadsheet, or add people one by one.',
+      body: h`<dl class="report-figures setup-figures"><div><dt>Workers</dt><dd>${s.summary.workers}</dd></div><div><dt>Locations</dt><dd>${s.summary.facilities}</dd></div><div><dt>Employing entities</dt><dd>${s.summary.entities}</dd></div></dl>
+        <h4 class="setup-sub">Where your records come from</h4>
+        ${cons.length ? h`<ul class="source-list">${cons.map((c) => { const [cls, label] = conState(c); return h`<li><span class="source-name">${c.name}<small>${words(c.type)} connection</small></span><span class="pill ${cls}">${label}</span><span class="source-meta">${c.last_sync_at ? `Last synced ${dt(c.last_sync_at)} UTC` : 'Not synced yet'}${c.records ? `, ${plural(c.records, 'record')}` : ''}</span></li>`; })}</ul>` : h`<p class="setup-text">No system is connected. ${s.summary.workers ? 'Records were added by spreadsheet or by hand.' : 'Connect your HR system to keep records up to date by themselves.'}</p>`}
+        ${fromLine ? h`<p class="setup-text muted">Workers: ${fromLine}.</p>` : ''}
+        ${gapNote('records')}
+        <div class="setup-actions"><a class="${!cons.length && !st.connect ? 'btn-submit-green' : 'btn-card-outline'}" href="#integrations">${cons.length ? 'Manage connections' : 'Connect a system'}</a><button class="btn-card-outline" data-act="importRoster">Import a spreadsheet</button><button class="btn-link-action" data-act="addWorker">Add a worker</button></div>`,
+    },
+    {
+      key: 'context', title: 'Confirm locations and requirements', done: st.context, attention: gapsFor('context').length, locked: !st.connect, why: 'Add people and locations first.',
+      summary: st.context ? `${plural(s.facilities.filter((f) => f.requirements_confirmed).length, 'location')} of ${s.facilities.length} confirmed. Employing entities: ${s.entities.map((e) => e.name).join(', ') || 'none'}.` : 'Each location’s requirements decide which checks apply there. Unconfirmed locations give Unknown results.',
+      body: h`${gapNote('context')}
+        ${table(['Location', 'State', 'Requirements', 'Status', ''], s.facilities.map((f) => h`<tr><td><span class="row-title is-static">${f.name}</span></td><td>${f.state || '—'}</td><td>${f.requirements.map(words).join(', ') || h`<span class="muted">None</span>`}</td><td>${f.requirements_confirmed ? h`<span class="pill pill-pass">Confirmed</span>` : h`<span class="pill pill-warn">Not confirmed</span>`}</td><td class="row-action"><button class="btn-link-action" data-act="facility" data-id="${f.id}" data-name="${f.name}" data-state="${f.state}" data-req="${f.requirements.join(',')}">Edit</button></td></tr>`), ['No locations yet', 'Locations come from your workers’ assignments.'])}
+        ${s.entities.length ? h`<p class="setup-text muted">Employing entities: ${s.entities.map((e) => e.name).join(', ')}.</p>` : ''}
+        <div class="setup-actions">${st.context ? h`<span class="done-note">Company profile confirmed.</span><button class="btn-link-action" data-act="confirmContext">Confirm again</button>` : h`<button class="btn-submit-green" data-act="confirmContext">Confirm company profile</button>`}</div>`,
+    },
+    {
+      key: 'packs', title: 'Activate compliance packs', done: st.packs,
+      summary: active.length ? `${active.length} of ${s.recommended.length} packs active: ${active.filter((p) => p.mode === 'auto').length} automatic, ${active.filter((p) => p.mode !== 'auto').length} in validation.` : 'Packs hold the requirements Aegis checks. New packs start in validation, so nothing is sent until owners agree with the findings.',
+      body: h`${table(['Pack', 'Status', 'Mode', ''], s.recommended.map((p) => h`<tr><td><span class="pack-title">${packIcon(p.key)}<span><span class="row-title is-static">${p.name}</span>${p.description ? h`<span class="case-sub">${p.description}</span>` : ''}</span></span></td><td>${p.status === 'active' ? h`<span class="pill pill-pass">Active</span>` : h`<span class="pill pill-na">Not active</span>${p.recommended ? h` <span class="pill pill-blue">Recommended</span>` : ''}`}</td><td class="muted nowrap">${p.status === 'active' ? (p.mode === 'auto' ? 'Automatic' : 'Validation only') : '—'}</td><td class="row-action"><button class="${p.status === 'active' ? 'btn-link-action' : 'btn-card-outline'}" data-act="reviewPack" data-id="${p.key}">${p.status === 'active' ? 'Review' : 'Review and activate'}</button></td></tr>`), '')}
+        ${gapNote('packs', true)}`,
+    },
+    {
+      key: 'channel', title: 'Choose where updates go', done: st.channel,
+      summary: st.channel ? `${s.channel.type === 'slack' ? 'Slack' : 'In-app outbox'}, ${s.channel.channel || '#compliance-alerts'}.` : 'Digests and alerts go to Slack, or stay in the in-app outbox.',
+      body: h`<form data-form="channel" class="channel-form">
+        <fieldset class="choice-group"><legend class="sr-only">Where updates go</legend>
+          <label class="choice"><input type="radio" name="type" value="outbox" ${s.channel.type !== 'slack' ? raw('checked') : ''}><span><b>In-app outbox</b><small>Messages are kept in Aegis under Connections. Nothing leaves Aegis.</small></span></label>
+          <label class="choice${s.slack_ready ? '' : ' is-disabled'}"><input type="radio" name="type" value="slack" ${s.channel.type === 'slack' ? raw('checked') : ''} ${s.slack_ready ? '' : raw('disabled')}><span><b>Slack</b><small>${s.slack_ready ? 'Digests and alerts are posted to the channel below.' : h`Connect Slack first in <a href="#integrations">Connections</a>.`}</small></span></label>
+        </fieldset>
+        <div class="form-group channel-name"><label class="form-label" for="chName">Channel</label><input id="chName" name="channel" class="form-select" value="${s.channel.channel || '#compliance-alerts'}" autocomplete="off"></div>
+        <div class="setup-actions"><button class="btn-submit-green">Save</button></div>
+      </form>`,
+    },
+    {
+      key: 'assessed', title: 'Run the first assessment', done: st.assessed, locked: !st.packs, why: 'Activate at least one pack first.',
+      summary: st.assessed ? `${cov.pass} pass, ${cov.fail} fail and ${cov.unknown} unknown across ${plural(cov.total, 'applicable check')}.` : 'Checks every worker against the active packs and shows what is missing.',
+      body: h`${st.assessed ? h`<dl class="report-figures setup-figures"><div><dt>Pass</dt><dd class="${cov.pass ? 'tone-text-pass' : ''}">${cov.pass}</dd></div><div><dt>Fail</dt><dd class="${cov.fail ? 'tone-text-fail' : ''}">${cov.fail}</dd></div><div><dt>Unknown</dt><dd class="${cov.unknown ? 'tone-text-warn' : ''}">${cov.unknown}</dd></div></dl><p class="setup-text muted">${cov.scope_statement}</p>` : ''}
+        <div class="setup-actions"><button class="${st.assessed ? 'btn-card-outline' : 'btn-submit-green'}" data-act="assess">${st.assessed ? 'Run again' : 'Run assessment'}</button>${st.assessed ? h`<a class="btn-link-action" href="#overview">See the results on Overview</a>` : ''}</div>`,
+    },
+  ];
+}
+// A step: always shows its title and summary; opens to show its content. Locked steps say why.
+const STEP_ICON = { done: '<path d="m5 12 5 5 9-10"/>', attention: '<path d="M12 7v6"/><path d="M12 17h.01"/>', locked: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>' };
+function setupStep(x, n, current) {
+  // A finished step with something left to fix asks for attention instead of saying Done.
+  const state = x.done ? (x.attention ? 'attention' : 'done') : x.locked ? 'locked' : current ? 'current' : 'todo';
+  const label = { done: 'Done', attention: x.attention === 1 ? '1 to fix' : `${x.attention} to fix`, locked: 'Not yet', current: 'Next', todo: 'To do' }[state];
+  return h`<details class="setup-step is-${state}" id="step-${x.key}" ${state === 'current' ? raw('open') : ''}>
+    <summary>
+      <span class="step-mark" aria-hidden="true">${STEP_ICON[state] ? raw(`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">${STEP_ICON[state]}</svg>`) : n}</span>
+      <span class="step-text"><b>${x.title}</b><span>${x.locked ? x.why : x.summary}</span></span>
+      <span class="step-state">${label}</span>
+      <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+    </summary>
+    <div class="step-content">${x.locked ? h`<p class="setup-text muted">${x.why}</p>` : x.body}</div>
+  </details>`;
 }
 
 // ---------- Pilot metrics and audit history ----------
@@ -631,14 +707,19 @@ const VIEWS = {
   },
   async setup() {
     scope(null);
-    const s = await api('/api/setup'), st = s.steps;
-    const step = (n, done, title, sub, body) => h`<div class="step${done ? ' done' : ''}"><div class="step-num">${done ? '✓' : n}</div><div class="step-body"><h3>${title}</h3><p class="muted small mb">${sub}</p>${body}</div></div>`;
+    const s = await api('/api/setup');
+    const steps = setupSteps(s), done = steps.filter((x) => x.done).length, next = steps.find((x) => !x.done && !x.locked);
+    const total = steps.length, fix = steps.find((x) => x.done && x.attention);
     return h`<div class="stack">
-    ${step(1, st.connect, 'Connect records or start manually', `${s.summary.workers} workers, ${s.summary.facilities} locations and ${s.summary.entities} employing entities on record.`, h`<div class="row"><a class="top-action-btn" href="#integrations">Connect a system</a><button class="top-action-btn" data-act="importRoster">Upload Excel or CSV</button><button class="top-action-btn" data-act="addWorker">Add a worker</button></div>`)}
-    ${step(2, st.context, 'Confirm company context', 'Confirm entities, locations and each facility’s requirements. Unconfirmed facilities produce Unknown results.', h`${s.gaps.length ? h`<div class="alert-box"><strong>Gaps found</strong><ul>${s.gaps.map((g) => h`<li>${g}</li>`)}</ul></div>` : ''}${table(['Facility', 'State', 'Requirements', 'Status', ''], s.facilities.map((f) => h`<tr><td><strong>${f.name}</strong></td><td>${f.state}</td><td>${f.requirements.map(words).join(', ') || 'None'}</td><td>${f.requirements_confirmed ? h`<span class="pill pill-pass">Confirmed</span>` : h`<span class="pill pill-unknown">Not confirmed</span>`}</td><td style="text-align:right"><button class="btn-link-action" data-act="facility" data-id="${f.id}" data-name="${f.name}" data-state="${f.state}" data-req="${f.requirements.join(',')}">Edit</button></td></tr>`), 'Add records first.')}<div class="mt"><button class="btn-submit-green" data-act="confirmContext" ${st.connect ? '' : raw('disabled')}>Confirm company profile</button></div>`)}
-    ${step(3, st.packs, 'Review and activate packs', 'New packs start in validation mode. Nothing is sent until owners validate findings.', h`${table(['Pack', 'Recommended', 'Status', ''], s.recommended.map((p) => h`<tr><td>${p.icon} <strong>${p.name}</strong></td><td>${p.recommended ? 'Yes' : 'Not yet'}</td><td>${statePill(p.status)}</td><td style="text-align:right"><button class="btn-link-action" data-act="reviewPack" data-id="${p.key}">Review</button></td></tr>`), '')}`)}
-    ${step(4, st.channel, 'Connect the reporting channel', s.slack_ready ? 'Slack is configured on this server.' : 'Slack needs a bot token on the server. Until then, messages stay in the in-app outbox.', h`<form class="row" data-form="channel"><select name="type" class="mini-select"><option value="outbox" ${s.channel.type !== 'slack' ? raw('selected') : ''}>In-app outbox</option><option value="slack" ${s.channel.type === 'slack' ? raw('selected') : ''} ${s.slack_ready ? '' : raw('disabled')}>Slack</option></select><input name="channel" class="mini-select" value="${s.channel.channel || '#compliance-alerts'}" aria-label="Channel"><button class="btn-card-outline">Save</button></form>`)}
-    ${step(5, st.assessed, 'Run the initial assessment', st.assessed ? s.coverage.scope_statement : 'Shows checked records, missing evidence and unknown results.', h`${st.assessed ? h`<div class="grid-3 mb" style="max-width:420px"><div class="tile"><b>${s.coverage.pass}</b><span>Pass</span></div><div class="tile"><b>${s.coverage.fail}</b><span>Fail</span></div><div class="tile"><b>${s.coverage.unknown}</b><span>Unknown</span></div></div>` : ''}<button class="btn-submit-green" data-act="assess" ${st.packs ? '' : raw('disabled')}>${st.assessed ? 'Run again' : 'Run assessment'}</button>`)}
+      <section class="panel setup-progress" aria-labelledby="setupProgress">
+        <div class="setup-progress-text">
+          <h2 id="setupProgress">${done === total ? 'Setup is complete' : `${done} of ${total} steps done`}</h2>
+          <p>${done === total ? `Aegis is checking ${plural(s.summary.workers, 'worker')} against ${plural(s.recommended.filter((p) => p.status === 'active').length, 'active pack')}.${fix ? ` One step needs attention: ${fix.title.toLowerCase()}.` : ' You can change any step below.'}` : `Next: ${next ? next.title.toLowerCase() : 'finish the steps above'}.`}</p>
+        </div>
+        <ol class="setup-meter" aria-hidden="true">${steps.map((x) => h`<li class="${x.done ? 'is-done' : x === next ? 'is-current' : ''}"></li>`)}</ol>
+        ${next ? h`<button class="btn-submit-green" data-act="openStep" data-step="${next.key}">Continue</button>` : fix ? h`<button class="btn-card-outline" data-act="openStep" data-step="${fix.key}">Review</button>` : ''}
+      </section>
+      <div class="setup-steps">${steps.map((x, n) => setupStep(x, n + 1, x === next))}</div>
     </div>`;
   },
   async cases() {
@@ -1188,6 +1269,12 @@ const ACT = {
       <button class="btn-submit-green">Log notice</button></form>`);
   },
   retryView() { refresh(); },
+  openStep(el) {
+    const d = document.getElementById(`step-${el.dataset.step}`); if (!d) return;
+    d.open = true;
+    d.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+    d.querySelector('summary')?.focus({ preventScroll: true });
+  },
   jumpGroup(el) {
     const row = document.getElementById(el.dataset.g); if (!row) return;
     row.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'center' });
