@@ -16,12 +16,39 @@ function ensureFacility(t, name, state) {
   if (!f) { f = { id: id('fac'), tenant_id: t, name, state: state || null }; db.insert('facilities', f); }
   return f.id;
 }
+function assignWorker(t, worker, facility, state, start, actor) {
+  const fid = ensureFacility(t, facility, state);
+  const cur = db.get("SELECT * FROM assignments WHERE tenant_id=? AND worker_id=? AND status='active'", t, worker.id);
+  if (cur?.facility_id === fid) return false;
+  if (cur) db.update('assignments', cur.id, { status: 'ended', end_date: clock.today() });
+  db.insert('assignments', { id: id('asn'), tenant_id: t, worker_id: worker.id, facility_id: fid, role: worker.role, start_date: normDate(start) || clock.today(), status: 'active' });
+  if (cur) P.audit(t, 'ASSIGNMENT_CHANGED', worker.name, `Assignment moved to ${facility}.`, actor);
+  return true;
+}
+function changeAssignment(t, worker, facility, state, actor) {
+  return db.tx(() => {
+    if (worker.status !== 'active') throw new HttpError(409, 'Only an active worker can be reassigned.');
+    if (assignWorker(t, worker, facility, state, null, actor)) {
+      P.enqueue(t, 'evaluate_subject', { type: 'worker', id: worker.id, trigger: 'assignment_changed' }, { dedupe: `eval:worker:${worker.id}` });
+    }
+  });
+}
 function upsertWorker(t, rec, source, actor = SYSTEM) {
   return db.tx(() => {
     let w = rec.external_id ? db.get('SELECT * FROM workers WHERE tenant_id=? AND source=? AND external_id=?', t, source, rec.external_id) : null;
-    if (!w && rec.email) w = db.get('SELECT * FROM workers WHERE tenant_id=? AND lower(email)=lower(?)', t, rec.email);
+    if (!w && rec.email) {
+      const matches = db.all('SELECT * FROM workers WHERE tenant_id=? AND lower(email)=lower(?) LIMIT 2', t, rec.email);
+      if (matches.length > 1 || (source === 'manual' && matches.length)) throw new HttpError(409, 'A worker with this email already exists. Open the existing worker record.');
+      w = matches[0];
+    }
     const entity_id = ensureEntity(t, rec.entity), now = clock.iso();
     const fields = { name: rec.name, email: rec.email || null, slack_id: rec.slack_id || null, role: rec.role || null, category: rec.category || inferCategory(rec), dept: rec.dept || null, license_type: rec.license_type || null, entity_id, status: rec.status || 'active', hire_date: normDate(rec.hire_date), work_auth_expires: normDate(rec.work_auth_expires), attrs_json: JSON.stringify(rec.attrs || {}), updated_at: now };
+    if (w && source === 'spreadsheet') {
+      for (const key of Object.keys(fields)) {
+        const input = { entity_id: 'entity', attrs_json: 'attrs' }[key] || key;
+        if (key !== 'updated_at' && (rec[input] == null || rec[input] === '' || fields[key] == null)) delete fields[key];
+      }
+    }
     let changed = true, created = false;
     if (w) {
       changed = Object.keys(fields).some((k) => k !== 'updated_at' && (w[k] ?? null) !== (fields[k] ?? null));
@@ -31,17 +58,8 @@ function upsertWorker(t, rec, source, actor = SYSTEM) {
       db.insert('workers', w); created = true;
       P.audit(t, 'WORKER_ADDED', rec.name, `Added from ${source}.`, actor);
     }
-    let moved = false;
-    if (rec.facility) {
-      const fid = ensureFacility(t, rec.facility, rec.facility_state);
-      const cur = db.get("SELECT * FROM assignments WHERE tenant_id=? AND worker_id=? AND status='active'", t, w.id);
-      if (!cur || cur.facility_id !== fid) {
-        if (cur) db.update('assignments', cur.id, { status: 'ended', end_date: clock.today() });
-        db.insert('assignments', { id: id('asn'), tenant_id: t, worker_id: w.id, facility_id: fid, role: rec.role, start_date: normDate(rec.assignment_start) || clock.today(), status: 'active' });
-        moved = true;
-        if (cur) P.audit(t, 'ASSIGNMENT_CHANGED', rec.name, `Assignment moved to ${rec.facility}.`, actor);
-      }
-    }
+    const moved = rec.facility && !(source === 'spreadsheet' && w.status !== 'active')
+      ? assignWorker(t, { ...w, ...fields }, rec.facility, rec.facility_state, rec.assignment_start, actor) : false;
     if (created || changed || moved) P.enqueue(t, 'evaluate_subject', { type: 'worker', id: w.id, trigger: created ? 'worker_added' : moved ? 'assignment_changed' : 'worker_updated' }, { dedupe: `eval:worker:${w.id}` });
     return { id: w.id, created, changed: changed || moved };
   });
@@ -292,20 +310,24 @@ function processHrmsEvent(t, { event_id }) {
   db.update('events', ev.id, { status: 'processed', processed_at: clock.iso() });
   P.audit(t, 'HRMS_EVENT', rec.name, `Processed ${p.type || 'event'}.`);
 }
-const HEADERS = { name: /^(full ?)?name|worker|employee$/i, email: /e-?mail/i, role: /role|title|position/i, dept: /dep(t|artment)/i, facility: /facility|location|site/i, facility_state: /^state|work state/i, entity: /entity|employer/i, license_type: /licen[sc]e ?type/i, hire_date: /hire|start/i, category: /category|worker type/i, external_id: /^(employee )?id$|employee ?(id|no)/i };
+const HEADERS = { external_id: /^(?:(?:employee|worker|external)\s*)?(?:id|number|no\.?)$/i, name: /^(?:(?:full|worker|employee)\s*)?name$|^(worker|employee)$/i, email: /e-?mail/i, role: /role|title|position/i, dept: /dep(t|artment)/i, facility_state: /^(?:(?:facility|work|location) )?state$/i, facility: /facility|location|site/i, entity: /entity|employer/i, license_type: /licen[sc]e ?type/i, hire_date: /hire|start/i, category: /category|worker type/i };
 function previewImport(t, user, { filename, data }) {
   let rows;
   try { rows = /\.xlsx$/i.test(filename) ? parseXlsx(data) : parseCsv(data.toString('utf8')); }
   catch (e) { throw new HttpError(400, `Could not read file: ${e.message}`); }
   if (rows.length < 2) throw new HttpError(400, 'The file needs a header row and at least one worker.');
-  const mapping = rows[0].map((h) => Object.keys(HEADERS).find((k) => HEADERS[k].test(String(h).trim())) || null);
+  const mapping = rows[0].map((h) => Object.keys(HEADERS).find((k) => HEADERS[k].test(String(h).trim().replace(/[_-]+/g, ' '))) || null);
   if (!mapping.includes('name')) throw new HttpError(400, 'No name column found.');
   const out = [], errors = [], unmapped = rows[0].filter((_, i) => !mapping[i]);
   rows.slice(1).forEach((r, i) => {
     const rec = {};
     mapping.forEach((k, c) => { if (k && r[c] !== undefined && String(r[c]).trim()) rec[k] = String(r[c]).trim(); });
     if (!rec.name) { errors.push({ row: i + 2, error: 'Missing name' }); return; }
-    if (rec.category) rec.category = /clin/i.test(rec.category) ? 'clinical' : 'corporate';
+    if (rec.category) {
+      const category = rec.category.toLowerCase().replace(/[\s-]+/g, '');
+      if (!['clinical', 'nonclinical', 'corporate'].includes(category)) { errors.push({ row: i + 2, error: 'Category must be clinical, non-clinical or corporate' }); return; }
+      rec.category = category === 'clinical' ? 'clinical' : 'corporate';
+    }
     out.push(rec);
   });
   const imp = { id: id('imp'), tenant_id: t, filename, rows_json: JSON.stringify(out), status: 'preview', created_by: user.name, created_at: clock.iso() };
@@ -313,6 +335,7 @@ function previewImport(t, user, { filename, data }) {
   return { id: imp.id, filename, total: out.length, errors, unmapped, sample: out.slice(0, 10), missing: { facility: out.filter((r) => !r.facility).length, email: out.filter((r) => !r.email).length, hire_date: out.filter((r) => !r.hire_date).length } };
 }
 function commitImport(t, user, impId) {
+  return db.tx(() => {
   const imp = db.get("SELECT * FROM imports WHERE id=? AND tenant_id=? AND status='preview'", impId, t);
   if (!imp) throw new HttpError(404, 'Import not found or already committed.');
   let created = 0, updated = 0;
@@ -320,5 +343,6 @@ function commitImport(t, user, impId) {
   db.update('imports', imp.id, { status: 'committed' });
   P.audit(t, 'ROSTER_IMPORT', imp.filename, `Imported roster: ${created} added, ${updated} updated.`, user);
   return { created, updated };
+  });
 }
-module.exports = { upsertWorker, createConnector, syncConnector, testConnection, processHrmsEvent, previewImport, commitImport, ensureEntity, ensureFacility, configOf, saveConfig, validateConfig, publicConfig, mapHrms };
+module.exports = { upsertWorker, changeAssignment, createConnector, syncConnector, testConnection, processHrmsEvent, previewImport, commitImport, ensureEntity, ensureFacility, configOf, saveConfig, validateConfig, publicConfig, mapHrms };

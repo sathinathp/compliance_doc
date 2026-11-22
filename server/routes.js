@@ -116,20 +116,26 @@ add('GET', '/api/workers', ({ t, user }) => V.listWorkers(t, user));
 add('GET', '/api/workers/:id', ({ t, user, p }) => V.workerDetail(t, user, p.id));
 add('POST', '/api/workers', ({ t, user, body }) => {
   edit(user); if (!P.isAdmin(user) && user.role !== 'hr') throw new HttpError(403, 'HR or administrator role required.');
-  if (!body.name) throw new HttpError(400, 'Name is required.');
-  const r = C.upsertWorker(t, { name: body.name, email: body.email, role: body.role, license_type: body.license_type || null, category: body.category, dept: body.dept, facility: body.facility, facility_state: body.facility_state, entity: body.entity, hire_date: body.hire_date || clock.today(), work_auth_expires: body.work_auth_expires, attrs: {} }, 'manual', user);
+  const name = String(body.name || '').trim();
+  if (!name) throw new HttpError(400, 'Name is required.');
+  const r = C.upsertWorker(t, { name, email: String(body.email || '').trim(), role: body.role, license_type: body.license_type || null, category: body.category, dept: body.dept, facility: body.facility, facility_state: body.facility_state, entity: body.entity, hire_date: body.hire_date || clock.today(), work_auth_expires: body.work_auth_expires, attrs: {} }, 'manual', user);
   return r;
 });
 add('POST', '/api/workers/:id/assignment', ({ t, user, p, body }) => {
   edit(user); const w = db.get('SELECT * FROM workers WHERE id=? AND tenant_id=?', p.id, t); if (!w) throw new HttpError(404, 'Worker not found.');
-  if (!body.facility) throw new HttpError(400, 'Facility is required.');
-  C.upsertWorker(t, { external_id: w.external_id, email: w.email, name: w.name, role: w.role, category: w.category, dept: w.dept, license_type: w.license_type, entity: db.get('SELECT name FROM entities WHERE id=?', w.entity_id)?.name, hire_date: w.hire_date, status: w.status, work_auth_expires: w.work_auth_expires, attrs: j(w.attrs_json, {}), facility: body.facility, facility_state: body.facility_state }, w.source, user);
+  const facility = String(body.facility || '').trim();
+  if (!facility) throw new HttpError(400, 'Facility is required.');
+  C.changeAssignment(t, w, facility, body.facility_state, user);
   return { ok: true };
 });
-add('POST', '/api/workers/:id/readiness-review', ({ t, user, p }) => { edit(user); const d = V.workerDetail(t, user, p.id); E.requestDecision(t, user, 'readiness_decision', null, `Assignment readiness: ${d.name}`, d.readiness_view.statement, 'onboarding', d.id); return { ok: true }; });
+add('POST', '/api/workers/:id/readiness-review', ({ t, user, p }) => {
+  edit(user); const d = V.workerDetail(t, user, p.id);
+  // One open request per worker, so two answers can never contradict each other.
+  if (d.readiness_request) throw new HttpError(409, `${d.name} is already waiting for a readiness decision in Approvals.`);
+  E.requestDecision(t, user, 'readiness_decision', null, `Assignment readiness: ${d.name}`, d.readiness_view.statement, 'onboarding', d.id); return { ok: true }; });
 add('GET', '/api/evidence', ({ t, user }) => V.listEvidence(t, user));
 add('POST', '/api/evidence', async ({ t, user, body }) => { edit(user); const ev = await Ev.intake(t, { subject_type: body.subject_type || 'worker', subject_id: body.subject_id, control_key: body.control_key || null, ...file(body), claimed: body.claimed || {}, source: body.bulk ? 'bulk_upload' : 'upload' }, user); return { id: ev.id, status: ev.status, duplicate: !!ev.duplicate, reasons: j(ev.review_reasons_json, []) }; });
-const getEv = (t, u, eid) => { const e = db.get('SELECT * FROM evidence WHERE id=? AND tenant_id=?', eid, t); if (!e) throw new HttpError(404, 'Evidence not found.'); if (e.restricted && !P.canSeeRestricted(u)) throw new HttpError(403, 'This evidence is restricted.'); return e; };
+const getEv = (t, u, eid) => { const e = db.get('SELECT * FROM evidence WHERE id=? AND tenant_id=?', eid, t); if (!e) throw new HttpError(404, 'Evidence not found.'); if (!Ev.canView(u, e)) throw new HttpError(403, 'This evidence is restricted.'); return e; };
 add('POST', '/api/evidence/:id/review', ({ t, user, p, body }) => { edit(user); Ev.review(t, user, getEv(t, user, p.id), body); return { ok: true }; });
 add('GET', '/api/evidence/:id/file', async ({ t, user, p, res }) => {
   const e = getEv(t, user, p.id); if (!e.stored_path) throw new HttpError(404, 'Demo evidence has no file.');
@@ -143,7 +149,12 @@ add('GET', '/api/evidence/:id/file', async ({ t, user, p, res }) => {
 add('GET', '/api/packs', ({ t }) => V.packRows(t));
 add('POST', '/api/packs/:key/activate', ({ t, user, p, body }) => { R.activatePack(t, user, p.key, body); return { ok: true }; });
 add('POST', '/api/packs/:key/mode', ({ t, user, p, body }) => { E.setMode(t, user, p.key, body.mode); return { ok: true }; });
-add('GET', '/api/controls', ({ t }) => ({ controls: R.effectiveControls(t).map((c) => ({ key: c.key, name: c.name, pack: c.pack_key, requirement_type: c.requirement_type, type: c.type, version: c.version_label, overridden: !!c.overridden, custom: !!c.custom, remediation: c.remediation, params: c.params })), changes: db.all('SELECT * FROM control_changes WHERE tenant_id=? ORDER BY created_at DESC', t).map((c) => ({ ...c, preview: j(c.preview_json) })) }));
+add('GET', '/api/controls', ({ t, user }) => ({
+  controls: R.effectiveControls(t).filter((c) => !c.restricted || P.canSeeRestricted(user)).map((c) => ({ key: c.key, name: c.name, pack: c.pack_key, requirement_type: c.requirement_type, type: c.type, version: c.version_label, overridden: !!c.overridden, custom: !!c.custom, remediation: c.remediation, params: c.params })),
+  changes: db.all('SELECT * FROM control_changes WHERE tenant_id=? ORDER BY created_at DESC', t)
+    .filter((c) => P.canPack(user, c.pack_key) && (!R.packDef(c.pack_key)?.restricted || P.canSeeRestricted(user)))
+    .map((c) => ({ ...c, preview: j(c.preview_json) })),
+}));
 add('POST', '/api/controls/draft', ({ t, user, body }) => { edit(user); return R.draftControl(t, user, body, E.loadCtx); });
 add('POST', '/api/controls/:id/submit', ({ t, user, p }) => { edit(user); R.submitDraft(t, user, p.id); return { ok: true }; });
 add('GET', '/api/approvals', ({ t, user, q }) => V.listApprovals(t, user, q.get('status') || 'pending'));

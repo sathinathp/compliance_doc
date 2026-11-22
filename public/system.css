@@ -1187,3 +1187,225 @@ a.today-item:hover {
 
 /* Long suggested questions wrap inside the panel. */
 :is(html, #aegis) .prompt-pill { max-width: 100%; white-space: normal; text-align: left; }
+
+/* ==========================================================================
+   EVIDENCE PAGE
+   ========================================================================== */
+/* Two columns down to small laptops; the list gets more room than the panel. */
+:is(html, #aegis) #view .evidence-layout {
+  grid-template-columns: minmax(0, 1.5fr) minmax(340px, 1fr);
+  align-items: start;
+}
+
+/* The right panel sticks while the list scrolls, never taller than the screen,
+   and scrolls inside itself. */
+:is(html, #aegis) #view .split-card.inspector {
+  position: sticky;
+  top: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 48px);
+  max-height: calc(100dvh - 48px);
+  padding: 0;
+  overflow: hidden;
+}
+
+.inspector-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex: none;
+  padding: var(--space-5) var(--space-5) var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.inspector-head p { margin-top: 2px; }
+
+.inspector-form {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.inspector-body {
+  flex: 1;
+  min-height: 0;
+  padding: var(--space-4) var(--space-5) var(--space-5);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+/* Accept and Reject are always visible at the bottom of the panel. */
+.inspector-foot {
+  flex: none;
+  padding: var(--space-3) var(--space-5) var(--space-4);
+  border-top: 1px solid var(--border);
+  background: var(--bg-subtle);
+}
+
+.inspector-foot .row {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.inspector-sub {
+  margin: var(--space-5) 0 var(--space-2);
+  color: var(--text);
+  font-size: var(--fs-13);
+  font-weight: 650;
+}
+
+:is(html, #aegis) .inspector .kv {
+  grid-template-columns: 120px minmax(0, 1fr);
+  margin-top: 0;
+}
+
+.inspector .kv dt { color: var(--text-muted); }
+.inspector .kv dd { overflow-wrap: anywhere; }
+
+.conf {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: var(--radius-xs);
+  background: var(--bg-fill);
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+  font-weight: 600;
+}
+
+/* "Why this needs a person": heading on top, a clean list below, amber. */
+.why-box {
+  margin-bottom: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius);
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+  font-size: var(--fs-13);
+}
+
+.why-box strong { display: block; margin-bottom: 4px; }
+.why-box ul { margin: 0; padding-left: var(--space-5); }
+.why-box li + li { margin-top: 2px; }
+
+/* Stacked on small screens: the panel comes first, at full height. */
+@media (max-width: 900px) {
+  :is(html, #aegis) #view .evidence-layout { grid-template-columns: minmax(0, 1fr); }
+  :is(html, #aegis) #view .split-card.inspector { position: static; order: -1; max-height: none; }
+  .inspector-body { overflow: visible; }
+}
+
+/* ==========================================================================
+   UPLOAD EVIDENCE WINDOW
+   ========================================================================== */
+/* One drop area for one file or many. The file input covers it, so clicking,
+   dropping and the keyboard all work natively. */
+.upload-drop {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-6) var(--space-5);
+  border: 1.5px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-size: var(--fs-13);
+  text-align: center;
+  cursor: pointer;
+  transition: border-color .15s ease, background-color .15s ease;
+}
+
+.upload-drop input[type=file] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.upload-drop b { color: var(--text); font-size: var(--fs-14); font-weight: 600; }
+.upload-drop u { color: var(--primary); text-decoration: none; }
+
+.upload-drop-icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: var(--space-1);
+  border-radius: var(--radius-full);
+  background: var(--brand-50);
+  color: var(--primary);
+}
+
+.upload-drop:hover,
+.upload-drop.is-over { border-color: var(--primary); background: var(--brand-50); }
+.upload-drop.is-over .upload-drop-icon { background: var(--bg-surface); }
+.upload-drop:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
+.upload-drop.has-files { border-style: solid; border-color: var(--brand-200); }
+
+.upload-list {
+  display: grid;
+  gap: 1px;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--border);
+  list-style: none;
+}
+
+.upload-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-surface);
+  font-size: var(--fs-13);
+}
+
+.upload-file-name { min-width: 0; overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
+.upload-file-size { flex: none; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+/* Case window: who is expected to send the document. */
+.who-uploads {
+  display: grid;
+  gap: 2px;
+  margin: var(--space-4) 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--info-line);
+  border-radius: var(--radius);
+  background: var(--info-bg);
+  color: var(--info-fg);
+  font-size: var(--fs-13);
+}
+
+/* Readiness confirm: the checks that are still open. */
+.open-list {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.open-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-subtle);
+}
+
+.open-list li b { display: block; color: var(--text); font-size: var(--fs-14); font-weight: 600; }
+.open-list li span:not(.pill) { display: block; margin-top: 2px; color: var(--text-secondary); font-size: var(--fs-13); }

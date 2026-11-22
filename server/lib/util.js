@@ -15,6 +15,11 @@ const sha256 = (x) => crypto.createHash('sha256').update(x).digest('hex');
 const token = () => crypto.randomBytes(32).toString('base64url');
 const addDays = (d, n) => new Date(new Date(d + 'T00:00:00Z').getTime() + n * 864e5).toISOString().slice(0, 10);
 const daysBetween = (a, b) => Math.round((new Date(b + 'T00:00:00Z') - new Date(a + 'T00:00:00Z')) / 864e5);
+function sameName(a, b) {
+  const parts = (name) => String(name || '').normalize('NFD').toLowerCase().replace(/,.*$/, '').replace(/\p{M}/gu, '').replace(/[^\p{L}\s]/gu, '').trim().split(/\s+/).filter(Boolean);
+  const x = parts(a), y = parts(b);
+  return x.length > 0 && y.length > 0 && x[0] === y[0] && x.at(-1) === y.at(-1);
+}
 const j = (s, d = null) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
 
 function hashPassword(pw) {
@@ -110,4 +115,4 @@ const csvCell = (v) => {
   if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`; // stops spreadsheet formula injection
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
-module.exports = { clock, id, shortId, sha256, token, addDays, daysBetween, j, hashPassword, checkPassword, setSecret, encrypt, decrypt, parseCsv, parseXlsx, normDate, csvCell };
+module.exports = { clock, id, shortId, sha256, token, addDays, daysBetween, sameName, j, hashPassword, checkPassword, setSecret, encrypt, decrypt, parseCsv, parseXlsx, normDate, csvCell };

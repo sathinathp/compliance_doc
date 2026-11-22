@@ -79,7 +79,7 @@ async function sendEmail(to, subject, text) {
 // - "sent": an email or Slack provider accepted the message. (Whether it reached the inbox is not known.)
 // - "outbox": no email or Slack is set up for this recipient, so the message stayed inside Aegis.
 // If an email or Slack provider is set up but fails, delivery throws, so the job retries and the failure is visible.
-async function deliver(tenant, action) {
+async function deliver(tenant, action, maySend = () => true) {
   if (hooks.failNext > 0) { hooks.failNext--; throw new Error('Simulated channel failure'); }
   const ch = j(tenant.channel_json, { type: 'outbox' });
   let channel = 'outbox', ref = null;
@@ -88,12 +88,13 @@ async function deliver(tenant, action) {
   const slackOn = ch.type === 'slack' && slack.configured(tenant.id);
   // A failed lookup (for example a missing Slack permission) falls back to email instead of blocking the message.
   const slackId = slackOn ? action.recipient_slack || await slack.findUserByEmail(tenant.id, action.recipient_email).catch((e) => { console.error('[slack] email lookup failed:', e.message); return null; }) : null;
+  if (!maySend()) return 'paused';
   if (slackId) {
     ref = await slack.postMessage(tenant.id, slackId, action.body);
     channel = 'slack';
   }
   // Try Email (if recipient has an email address)
-  else if (action.recipient_email || (action.recipient && action.recipient.includes('@'))) {
+  else if (action.recipient_email || (!Object.hasOwn(action, 'recipient_email') && action.recipient?.includes('@'))) {
     const to = action.recipient_email || action.recipient;
     const emailRef = await sendEmail(to, action.subject, action.body).catch((e) => {
       throw new Error(`Email to ${to} failed: ${e.message}`);

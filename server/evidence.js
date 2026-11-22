@@ -2,7 +2,7 @@
 // Evidence intake: store privately, extract, match, then accept or send to review.
 // "Document uploaded" never means "requirement satisfied": the evaluator decides that.
 const zlib = require('zlib');
-const db = require('./lib/db'), storage = require('./lib/storage'), { clock, id, sha256, normDate, j } = require('./lib/util');
+const db = require('./lib/db'), storage = require('./lib/storage'), { clock, id, sha256, normDate, sameName, j } = require('./lib/util');
 const P = require('./platform'), R = require('./registry'), { latestDuePeriod } = require('./evaluator'), llm = require('./llm');
 const { HttpError, SYSTEM } = P;
 const DOC_KEYWORDS = [['professional_license', /(registered nurse|nursing|medical|physical therapy|professional)\s+licen[sc]e|licen[sc]e (type|class)/i], ['acls_card', /\bACLS\b|advanced cardiovascular/i], ['bls_card', /\bBLS\b|basic life support/i], ['tb_screening', /\bTB\b|tuberculosis|quantiferon/i], ['flu_vaccine', /influenza|flu (vaccine|shot)/i], ['facility_orientation', /facility orientation/i], ['handbook_ack', /handbook|policy acknowledg/i], ['security_training', /security (awareness )?training/i], ['i9_record', /\bI-9\b|employment eligibility/i], ['work_authorization', /employment authorization|\bEAD\b/i], ['w4', /\bW-?4\b|withholding certificate/i], ['payroll_filing_receipt', /form 941|payroll filing|filing receipt|acknowledg(e)?ment of filing/i]];
@@ -53,12 +53,13 @@ async function extract(t, buf, mime, name) {
   }
   return { ...out, flags: [...new Set(flags)], hadText: !!text, aiRead, aiNote };
 }
-const sameName = (a, b) => {
-  const n = (s) => String(s || '').toLowerCase().replace(/,.*$/, '').replace(/[^a-z ]/g, '').trim().split(/\s+/).filter(Boolean);
-  const x = n(a), y = n(b);
-  return x.length > 0 && y.length > 0 && x[0] === y[0] && x[x.length - 1] === y[y.length - 1];
-};
+const restrictedType = (type) => ['i9_record', 'work_authorization'].includes(type);
+const canView = (user, ev) => ev.doc_type === 'unknown' ? P.isAdmin(user)
+  : !(ev.restricted || restrictedType(ev.doc_type)) || P.canSeeRestricted(user);
+const canReview = (user, ev, control) => user.role !== 'viewer' && canView(user, ev)
+  && (control ? P.canPack(user, control.pack_key) : P.isAdmin(user));
 function subjectOf(t, type, sid) {
+  if (!['worker', 'entity'].includes(type)) throw new HttpError(400, 'Choose a worker or company record.');
   const s = db.get(`SELECT * FROM ${type === 'worker' ? 'workers' : 'entities'} WHERE id=? AND tenant_id=?`, sid, t);
   if (!s) throw new HttpError(404, 'Subject not found.');
   return s;
@@ -68,15 +69,31 @@ async function intake(t, { subject_type, subject_id, control_key, filename, mime
   if (data.length > 10 * 1024 * 1024) throw new HttpError(413, 'File is larger than 10 MB.');
   const subject = subjectOf(t, subject_type, subject_id), hash = sha256(data);
   const dupe = db.get("SELECT * FROM evidence WHERE tenant_id=? AND subject_type=? AND subject_id=? AND sha256=? AND status IN ('accepted','needs_review')", t, subject_type, subject_id, hash);
-  if (dupe) return { ...dupe, duplicate: true };
-  const x = await extract(t, data, mime, filename), controls = R.effectiveControls(t);
+  const controls = R.effectiveControls(t).filter((c) => c.subject === subject_type && c.evidence?.doc_types?.length);
+  const hinted = control_key && controls.find((c) => c.key === control_key);
+  if (control_key && !hinted) throw new HttpError(400, 'Choose an active evidence requirement for this record.');
+  if (actor?.type === 'user' && hinted) P.assertPack(actor, hinted.pack_key);
+  if (dupe && (!hinted || dupe.control_key === hinted.key)) {
+    if (actor?.type === 'user' && !canView(actor, dupe)) throw new HttpError(403, 'This evidence is restricted.');
+    return { ...dupe, duplicate: true };
+  }
+  const x = await extract(t, data, mime, filename);
   const f = { ...x.fields }, conf = { ...x.confidence }, reasons = [];
   for (const [k, v] of Object.entries(claimed)) if (v && !f[k]) { f[k] = /_on$/.test(k) ? normDate(v) : v; conf[k] = 0.5; }
-  const hinted = control_key && controls.find((c) => c.key === control_key);
+  const extractedRestricted = restrictedType(f.doc_type);
   let ctrl = controls.find((c) => c.evidence?.doc_types?.includes(f.doc_type) && (!hinted || c.key === hinted.key));
-  if (!ctrl && hinted) { ctrl = hinted; if (f.doc_type && !hinted.evidence.doc_types.includes(f.doc_type)) reasons.push(`Document looks like ${f.doc_type.replace(/_/g, ' ')}, not ${hinted.name}.`); else if (!f.doc_type) { reasons.push('Document type could not be read from the file.'); } f.doc_type = hinted.evidence.doc_types[0]; conf.doc_type = 0.5; }
+  if (!ctrl && hinted) {
+    ctrl = hinted;
+    if (f.doc_type) reasons.push(`Document looks like ${f.doc_type.replace(/_/g, ' ')}, not ${hinted.name}.`);
+    else reasons.push('Document type could not be read from the file.');
+  }
   if (!ctrl) reasons.push('Document could not be matched to an active control.');
   else if (actor?.type === 'user') P.assertPack(actor, ctrl.pack_key);
+  if (extractedRestricted && actor?.type === 'user' && !P.canSeeRestricted(actor)) throw new HttpError(403, 'This document needs a restricted evidence reviewer.');
+  if (extractedRestricted && ctrl && !ctrl.restricted) {
+    ctrl = null;
+    case_id = null;
+  }
   if (x.flags.length) reasons.push('File text contains instruction-like content. Treated as data and held for review.');
   if (!x.hadText && x.aiRead) reasons.push('Fields were read by AI from an image, so a person must confirm them.');
   else if (!x.hadText) reasons.push(x.aiNote || 'No readable text in this file, so fields need human confirmation.');
@@ -93,24 +110,41 @@ async function intake(t, { subject_type, subject_id, control_key, filename, mime
   try { stored = await storage.put(t, fid, data); }
   catch (e) { console.error('[storage]', e.message); throw new HttpError(503, 'The document could not be stored. Please try again in a few minutes.'); }
   const confs = Object.values(conf);
-  db.insert('evidence', { id: fid, tenant_id: t, subject_type, subject_id, doc_type: f.doc_type || 'unknown', status, source, filename, mime, size: data.length, sha256: hash, stored_path: stored, doc_number: f.doc_number, holder_name: f.holder_name, state: f.state, entity_name: f.entity_name, period: f.period, issued_on: f.issued_on, expires_on: f.expires_on, fields_json: JSON.stringify(conf), confidence: confs.length ? Math.min(...confs) : 0, review_reasons_json: JSON.stringify(reasons), flags_json: JSON.stringify(x.flags), case_id: case_id || null, control_key: ctrl?.key || null, restricted: ctrl?.restricted ? 1 : 0, created_at: clock.iso() });
-  P.audit(t, status === 'accepted' ? 'EVIDENCE_MATCHED' : 'EVIDENCE_REVIEW', subject.name, `${filename}: ${status === 'accepted' ? `matched to ${ctrl.name}.` : `sent to review. ${reasons.join(' ')}`}`, actor, { case_id, detail: { sha256: hash } });
+  db.insert('evidence', { id: fid, tenant_id: t, subject_type, subject_id, doc_type: f.doc_type || 'unknown', status, source, filename, mime, size: data.length, sha256: hash, stored_path: stored, doc_number: f.doc_number, holder_name: f.holder_name, state: f.state, entity_name: f.entity_name, period: f.period, issued_on: f.issued_on, expires_on: f.expires_on, fields_json: JSON.stringify(conf), confidence: confs.length ? Math.min(...confs) : 0, review_reasons_json: JSON.stringify(reasons), flags_json: JSON.stringify(x.flags), case_id: case_id || null, control_key: ctrl?.key || null, restricted: ctrl?.restricted || extractedRestricted ? 1 : 0, created_at: clock.iso() });
+  const auditText = !f.doc_type ? 'A document was submitted for private classification.'
+    : `${filename}: ${status === 'accepted' ? `matched to ${ctrl.name}.` : `sent to review. ${reasons.join(' ')}`}`;
+  P.audit(t, status === 'accepted' ? 'EVIDENCE_MATCHED' : 'EVIDENCE_REVIEW', subject.name, auditText, actor, { case_id, detail: { sha256: hash } });
   P.enqueue(t, 'evaluate_subject', { type: subject_type, id: subject_id, trigger: 'evidence_received' }, { dedupe: `eval:${subject_type}:${subject_id}` });
   return db.get('SELECT * FROM evidence WHERE id=?', fid);
 }
 function review(t, user, ev, { decision, fields = {}, reason }) {
-  const pack = ev.control_key ? R.effectiveControls(t).find((c) => c.key === ev.control_key)?.pack_key : null;
-  if (pack) P.assertPack(user, pack); else P.assertAdmin(user);
+  const controls = R.effectiveControls(t).filter((c) => c.subject === ev.subject_type);
+  const current = controls.find((c) => c.key === ev.control_key);
+  if (!canReview(user, ev, current)) throw new HttpError(403, 'Your role cannot review this document.');
   if (ev.status !== 'needs_review') throw new HttpError(409, 'This evidence is not awaiting review.');
   const sub = subjectOf(t, ev.subject_type, ev.subject_id);
   if (decision === 'accept') {
     const u = { status: 'accepted', reviewed_by: user.name, reviewed_at: clock.iso() };
-    for (const k of ['doc_type', 'doc_number', 'holder_name', 'state', 'entity_name', 'period', 'issued_on', 'expires_on']) if (fields[k]) u[k] = /_on$/.test(k) ? normDate(fields[k]) : fields[k];
-    if (!u.doc_type && ev.doc_type === 'unknown') throw new HttpError(400, 'Choose the document type before accepting.');
+    for (const k of ['doc_type', 'doc_number', 'holder_name', 'state', 'entity_name', 'period', 'issued_on', 'expires_on']) {
+      if (typeof fields[k] === 'string' && fields[k].trim()) u[k] = /_on$/.test(k) ? normDate(fields[k].trim()) : fields[k].trim();
+    }
+    const next = { ...ev, ...u };
+    const target = current || controls.find((c) => c.evidence?.doc_types?.includes(next.doc_type));
+    if (next.doc_type === 'unknown' || (!target && !DOC_KEYWORDS.some(([type]) => type === next.doc_type))) throw new HttpError(400, 'Choose a supported document type before accepting.');
+    if (current && !current.evidence?.doc_types?.includes(next.doc_type)) throw new HttpError(400, 'This document type does not match the linked requirement.');
+    u.restricted = ev.restricted || target?.restricted || restrictedType(next.doc_type) ? 1 : 0;
+    if (!canReview(user, { ...next, restricted: u.restricted }, target)) throw new HttpError(403, 'Your role cannot review the selected document type.');
+    u.control_key = target?.key || ev.control_key || null;
+    const holderVerifiedFromFile = (j(ev.fields_json, {}).holder_name || 0) >= 0.95 && ev.holder_name;
+    if (ev.subject_type === 'worker' && ((holderVerifiedFromFile && !sameName(ev.holder_name, sub.name))
+      || ((next.holder_name || target?.evidence?.required_fields?.includes('holder_name')) && !sameName(next.holder_name, sub.name)))) {
+      throw new HttpError(422, 'The document holder must match the worker. Reject the document and request a replacement if it belongs to someone else.');
+    }
+    if (ev.restricted && !restrictedType(next.doc_type) && !target?.restricted) throw new HttpError(422, 'A restricted document cannot be accepted for an unrestricted requirement.');
     db.update('evidence', ev.id, u);
     P.audit(t, 'EVIDENCE_ACCEPTED', sub.name, `${ev.filename} accepted by reviewer.`, user, { case_id: ev.case_id });
   } else if (decision === 'reject') {
-    if (!reason) throw new HttpError(400, 'A rejection reason is required.');
+    if (typeof reason !== 'string' || !reason.trim()) throw new HttpError(400, 'A rejection reason is required.');
     db.update('evidence', ev.id, { status: 'rejected', reject_reason: reason, reviewed_by: user.name, reviewed_at: clock.iso() });
     P.audit(t, 'EVIDENCE_REJECTED', sub.name, `${ev.filename} rejected: ${reason}`, user, { case_id: ev.case_id });
     require('./engine').notifyRejected(t, ev, reason);
@@ -121,4 +155,4 @@ const readFile = (ev) => storage.get(ev.stored_path);
 function seedAccepted(t, type, sid, f) {
   db.insert('evidence', { id: id('ev'), tenant_id: t, subject_type: type, subject_id: sid, status: 'accepted', source: 'demo_seed', filename: `${f.doc_type}.txt`, mime: 'text/plain', size: 0, sha256: sha256(id('x')), stored_path: '', confidence: 1, fields_json: '{}', created_at: clock.iso(), reviewed_by: 'Demo seed', reviewed_at: clock.iso(), ...f });
 }
-module.exports = { intake, review, readFile, seedAccepted, heuristicExtract, INJECTION };
+module.exports = { intake, review, canView, canReview, readFile, seedAccepted, heuristicExtract, INJECTION };

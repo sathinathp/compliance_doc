@@ -321,3 +321,37 @@ test('message status is honest and messages to a worker are written to them, wit
   assert.match(rej.body, /^Hi Tara, the document you sent for your Professional license could not be accepted: Name on the license does not match the worker\. Please upload/);
   assert.doesNotMatch(rej.body, /\.\./);
 });
+
+test('readiness: one open request per worker, and approval reopens when a passing check stops passing', async () => {
+  const E = require('../server/engine');
+  // A worker with a passing check that rests on a document.
+  const ev = db.all("SELECT * FROM evaluations WHERE is_current=1 AND subject_type='worker' AND status='pass' AND evidence_ids_json != '[]'")
+    .find((e) => db.get("SELECT readiness FROM workers WHERE id=?", e.subject_id).readiness === 'pending');
+  assert.ok(ev, 'demo data has a worker with a document-backed pass');
+  const wid = ev.subject_id;
+
+  assert.equal((await admin.post(`/api/workers/${wid}/readiness-review`)).status, 200);
+  const again = await admin.post(`/api/workers/${wid}/readiness-review`);
+  assert.equal(again.status, 409, 'a second request while one is waiting is refused');
+  const d = (await admin.get(`/api/workers/${wid}`)).data;
+  assert.ok(d.readiness_request, 'the worker window knows a request is waiting');
+
+  const apr = (await admin.get('/api/approvals')).data.filter((a) => a.ref_id === wid);
+  assert.equal(apr.length, 1);
+  assert.equal(apr[0].detail, d.readiness_view.statement, 'the approver sees what the worker window shows');
+  await admin.post(`/api/approvals/${apr[0].id}/decide`, { decision: 'approved' });
+  assert.equal(db.get('SELECT readiness FROM workers WHERE id=?', wid).readiness, 'approved');
+  assert.equal((await admin.get(`/api/workers/${wid}`)).data.readiness_request, null);
+
+  // Re-checking with nothing changed keeps the approval.
+  E.evaluateById(bid().id, 'worker', wid, 'test');
+  assert.equal(db.get('SELECT readiness FROM workers WHERE id=?', wid).readiness, 'approved');
+
+  // The document behind a passing check is withdrawn: the check fails and readiness goes back to pending.
+  for (const id of JSON.parse(ev.evidence_ids_json)) db.run("UPDATE evidence SET status='rejected' WHERE id=?", id);
+  E.evaluateById(bid().id, 'worker', wid, 'test');
+  const now = db.get("SELECT status FROM evaluations WHERE is_current=1 AND subject_id=? AND control_key=?", wid, ev.control_key).status;
+  assert.notEqual(now, 'pass');
+  assert.equal(db.get('SELECT readiness FROM workers WHERE id=?', wid).readiness, 'pending');
+  assert.ok(db.get("SELECT 1 AS x FROM audit_log WHERE type='READINESS_REOPENED' AND subject LIKE ?", `%${d.name}%`));
+});

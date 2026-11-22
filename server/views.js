@@ -76,7 +76,14 @@ function workerDetail(t, user, wid) {
   if (!w) throw new P.HttpError(404, 'Worker not found.');
   const ch = checks(t, user, { subject: wid }), blockers = ch.filter((c) => c.status === 'fail' || c.status === 'unknown');
   const summary = ['onboarding', 'healthcare', 'immigration', 'payroll'].map((k) => ({ pack: k, status: w.packs[k], open: ch.filter((c) => c.pack_key === k && ['fail', 'unknown'].includes(c.status)).length }));
-  return { ...w, checks_list: ch, cases: listCases(t, user).filter((c) => c.subject_id === wid), readiness_view: { summary, blockers: blockers.map((b) => ({ control: b.control_name, pack: b.pack_key, status: b.status, reason: b.reason })), statement: blockers.length ? `Assignment readiness remains pending: ${blockers.length} check(s) unresolved.` : w.checks.total ? 'All checks in activated packs pass. An authorized owner makes the readiness decision.' : 'No checks have been run yet.' } };
+  return { ...w, checks_list: ch, cases: listCases(t, user).filter((c) => c.subject_id === wid), readiness_view: { summary, blockers: blockers.map((b) => ({ control: b.control_name, pack: b.pack_key, status: b.status, reason: b.reason })), statement: readinessStatement(w, blockers) }, readiness_request: db.get("SELECT id, requested_by, created_at FROM approvals WHERE tenant_id=? AND kind='readiness_decision' AND ref_id=? AND status='pending' ORDER BY created_at DESC LIMIT 1", t, wid) || null };
+}
+// Plain words for the worker window and for the approver. Open checks are named.
+function readinessStatement(w, blockers) {
+  if (!w.checks.total) return 'No checks have been run yet.';
+  if (!blockers.length) return w.readiness === 'approved' ? 'All checks in activated packs pass. Approved for assignment by an owner.' : w.readiness === 'blocked' ? 'All checks in activated packs pass. An owner blocked the assignment; ask again for a new decision.' : 'All checks in activated packs pass. An authorized owner makes the readiness decision.';
+  const n = blockers.length, open = `${n} check${n === 1 ? '' : 's'} unresolved (${blockers.map((b) => b.control_name).join(', ')})`;
+  return w.readiness === 'approved' ? `Approved by an owner with ${open}.` : w.readiness === 'blocked' ? `Blocked by an owner. ${open[0].toUpperCase()}${open.slice(1)}.` : `Readiness pending: ${open}.`;
 }
 function listEvidence(t, user) {
   const names = {};

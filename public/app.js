@@ -149,9 +149,9 @@ async function boot() {
 }
 
 // Header buttons per page. The search box shows on pages that are mostly tables.
-const PAGE_TOOLS = { workers: ['importRoster', 'addWorker'], evidence: ['bulkUpload', 'uploadEvidence'] };
+const PAGE_TOOLS = { cases: ['uploadEvidence'], workers: ['importRoster', 'addWorker'], evidence: ['uploadEvidence'] };
 const SEARCH_PAGES = new Set(['cases', 'evidence', 'approvals', 'workers', 'checks', 'controls', 'audit', 'settings']);
-const TOOL_ALLOWED = { addWorker: () => canAddWorker(), importRoster: () => canEdit(), bulkUpload: () => canEdit(), uploadEvidence: () => canEdit() };
+const TOOL_ALLOWED = { addWorker: () => canAddWorker(), importRoster: () => canEdit(), uploadEvidence: () => canEdit() };
 function syncTools() {
   if (!me?.user) return;
   const mine = PAGE_TOOLS[route] || [];
@@ -235,6 +235,7 @@ async function go(r, arg = null, keep) {
     if (version !== navigation) return;
     $('#view').innerHTML = render(out);
     labelTableCells($('#view'));
+    fitInspector();
     if (!keep) window.scrollTo(0, 0);
     const q = $('#globalSearch')?.value; if (q) filterRows(q);
     syncCaseSelection();
@@ -330,6 +331,19 @@ function confirmFollowUps(ids, scopeText) {
     h`<button class="btn-cancel" data-act="closeModal">Cancel</button><button class="btn-submit-green" data-act="confirmChaseAll" data-ids="${JSON.stringify(ids)}" ${willSend.length ? '' : raw('disabled')}>${willSend.length ? `Send ${willSend.length} follow-up${willSend.length === 1 ? '' : 's'}` : 'Nothing to send'}</button>`);
 }
 
+// Worker window buttons. When every check passes, asking for the readiness decision is the main step.
+// While checks are open, getting the missing documents is, and the decision is still there but quieter.
+function workerFoot(w, openN, total) {
+  const move = h`<button class="btn-cancel" data-act="moveWorker" data-id="${w.id}">Change assignment</button>`;
+  const upload = (cls) => (canEdit() ? h`<button class="${cls}" data-act="uploadEvidence" data-subject="worker:${w.id}" data-name="${w.name}">Upload evidence</button>` : '');
+  // Already asked: one open request at a time (the backend refuses a second one).
+  if (w.readiness_request) return h`${move}<button class="btn-cancel" data-act="openApprovals">Waiting in Approvals</button>${upload(openN ? 'btn-submit-green' : 'btn-cancel')}`;
+  // Already approved: nothing to ask. If a passing check fails later, the backend sets it back to pending.
+  if (w.readiness === 'approved') return h`${move}${upload(openN ? 'btn-submit-green' : 'btn-cancel')}`;
+  const label = w.readiness === 'blocked' ? 'Ask for a new decision' : 'Request readiness decision';
+  if (total && !openN) return h`${move}${upload('btn-cancel')}<button class="btn-submit-green" data-act="readiness" data-id="${w.id}">${label}</button>`;
+  return h`${move}<button class="btn-cancel" data-act="readiness" data-id="${w.id}" data-open="${openN || 1}">Request decision anyway</button>${upload('btn-submit-green')}`;
+}
 function openCaseCell(c) { return h`<button class="btn-link-action" data-act="caseDetail" data-id="${c.id}">Open</button>`; }
 const VIEWS = {
   async overview() {
@@ -467,10 +481,15 @@ const VIEWS = {
   },
   async evidence() {
     scope(null);
-    const rows = (await api('/api/evidence')).sort((a, b) => (b.status === 'needs_review') - (a.status === 'needs_review'));
+    const [list, ctl] = await Promise.all([api('/api/evidence'), api('/api/controls')]);
+    // Waiting for a person first, then rejected, then everything else (newest first within each group).
+    const order = { needs_review: 0, rejected: 1 };
+    const rows = list.sort((a, b) => (order[a.status] ?? 2) - (order[b.status] ?? 2));
+    const controls = Object.fromEntries(ctl.controls.map((c) => [c.key, c]));
     const ev = rows.find((e) => e.id === evidenceSel) || rows.find((e) => e.status === 'needs_review') || null;
-    return h`<div class="bottom-split-row"><div class="split-card"><div class="split-card-header"><h3 class="split-title">Evidence inbox</h3></div>${table(['Document', 'Subject', 'Confidence', 'Status'], rows.map((e) => h`<tr class="click${e.id === ev?.id ? ' selected' : ''}" data-act="selectEvidence" data-id="${e.id}"><td><button class="row-title" data-act="selectEvidence" data-id="${e.id}">${words(e.doc_type)}</button><div class="muted small">${e.filename}</div></td><td class="text-secondary">${e.subject_name}</td><td>${e.source === 'demo_seed' ? '—' : `${Math.round((e.confidence || 0) * 100)}%`}</td><td>${statePill(e.status)}</td></tr>`), ['No evidence yet', 'Documents appear here when workers send them or you upload them.'])}</div>
-    <div class="split-card" style="position:sticky;top:80px;align-self:start"><div class="split-card-header"><h3 class="split-title">Field Inspector</h3>${ev ? statePill(ev.status) : ''}</div>${ev ? evidencePanel(ev) : h`<div class="empty">Select a document to inspect it.</div>`}</div></div>`;
+    const waiting = rows.filter((e) => e.status === 'needs_review').length;
+    return h`<div class="bottom-split-row evidence-layout"><div class="split-card"><div class="split-card-header"><div><h3 class="split-title">Evidence inbox</h3><p class="muted small">${rows.length} document${rows.length === 1 ? '' : 's'}${waiting ? ` · ${waiting} waiting for review` : ''}</p></div></div>${table(['Document', 'Subject', 'Confidence', 'Status'], rows.map((e) => h`<tr class="click${e.id === ev?.id ? ' selected' : ''}" data-act="selectEvidence" data-id="${e.id}"><td><button class="row-title" data-act="selectEvidence" data-id="${e.id}">${words(e.doc_type)}</button><div class="muted small">${e.filename}</div></td><td class="text-secondary">${e.subject_name}</td><td>${e.source === 'demo_seed' ? '—' : `${Math.round((e.confidence || 0) * 100)}%`}</td><td>${statePill(e.status)}</td></tr>`), ['No evidence yet', 'Documents appear here when workers send them or you upload them.'])}</div>
+    ${ev ? evidencePanel(ev, controls) : h`<aside class="split-card inspector" aria-label="Document details"><div class="inspector-head"><h3 class="split-title">Document details</h3></div><div class="inspector-body">${emptyState(['Pick a document', 'Its details and what Aegis read from it show here.'])}</div></aside>`}</div>`;
   },
   async packs() {
     scope(null);
@@ -615,12 +634,37 @@ function draftCard(d) {
   const p = d.preview;
   return h`<div class="tile mt"><div class="between"><strong>${p.control}</strong><button class="btn-submit-green" data-act="submitDraft" data-id="${d.id}">Submit for approval</button></div><p class="small mt"><strong>${p.would_act}</strong> of ${p.applicable} applicable records would be acted on. ${p.schedule}.</p><p class="small muted">Message: ${p.sample_message}</p><div class="small mt">${p.rows.filter((r) => r.would_act).slice(0, 6).map((r) => h`<div>${statusPill(r.status)} ${r.name}: ${r.reason}</div>`)}</div></div>`;
 }
-function evidencePanel(e) {
-  const pending = e.status === 'needs_review', f = (k, l, type = 'text') => h`<div class="form-group"><label class="form-label">${l} ${e.field_confidence[k] ? h`<span class="muted">(${Math.round(e.field_confidence[k] * 100)}%)</span>` : ''}</label><input name="${k}" type="${type}" class="form-select" value="${e[k] || ''}" ${pending ? '' : raw('disabled')}></div>`;
-  return h`${e.review_reasons.length ? h`<div class="alert-box"><strong>Why this needs a person</strong><ul>${e.review_reasons.map((r) => h`<li>${r}</li>`)}</ul></div>` : ''}
-  <dl class="kv mb"><dt>File</dt><dd>${e.filename} ${e.has_file ? h`<a class="btn-link-action" href="/api/evidence/${e.id}/file">Download</a>` : ''}</dd><dt>Subject</dt><dd>${e.subject_name}</dd><dt>Control</dt><dd>${e.control_key || 'Not matched'}</dd><dt>Source</dt><dd>${words(e.source)}</dd>${e.reviewed_by ? h`<dt>Reviewed by</dt><dd>${e.reviewed_by}</dd>` : ''}${e.reject_reason ? h`<dt>Rejected</dt><dd>${e.reject_reason}</dd>` : ''}</dl>
-  <form data-form="reviewEvidence" data-id="${e.id}"><div class="form-grid">${f('holder_name', 'Name on document')}${f('doc_number', 'Document number')}${f('issued_on', 'Issued', 'date')}${f('expires_on', 'Expires', 'date')}${f('state', 'State')}${f('period', 'Period')}${f('entity_name', 'Entity')}</div>${e.doc_type === 'unknown' && pending ? h`<div class="form-group"><label class="form-label">Document type</label><select name="doc_type" class="form-select" required><option value="">Choose</option>${['professional_license', 'bls_card', 'acls_card', 'tb_screening', 'flu_vaccine', 'facility_orientation', 'handbook_ack', 'security_training', 'i9_record', 'work_authorization', 'w4', 'payroll_filing_receipt'].map((x) => h`<option value="${x}">${words(x)}</option>`)}</select></div>` : ''}
-  ${pending ? h`<div class="form-group"><label class="form-label">Rejection reason</label><input name="reason" class="form-select" placeholder="Required when rejecting"></div><div class="row"><button class="btn-submit-green" name="decision" value="accept">Accept evidence</button><button class="btn-danger" name="decision" value="reject">Reject</button></div><p class="muted small mt">Accepting records the document. The check is then rerun, and the case closes only if it passes.</p>` : ''}</form>`;
+// The right-hand panel on Evidence. It fits the screen and scrolls on its own; for a document
+// waiting for review, Accept and Reject stay pinned at the bottom.
+const EV_FIELDS = [['holder_name', 'Name on document'], ['doc_number', 'Document number'], ['issued_on', 'Issued', 'date'], ['expires_on', 'Expires', 'date'], ['state', 'State'], ['period', 'Period'], ['entity_name', 'Company']];
+function evidencePanel(e, controls = {}) {
+  const pending = e.status === 'needs_review' && canEdit();
+  const conf = (k) => e.field_confidence[k] ? h` <span class="conf">${Math.round(e.field_confidence[k] * 100)}%</span>` : '';
+  const ctl = controls[e.control_key];
+  const requirement = ctl ? `${ctl.name} · ${words(ctl.pack)}` : e.control_key ? words(e.control_key) : 'Not matched yet';
+  const reasons = e.review_reasons.length ? h`<div class="why-box"><strong>Why this needs a person</strong><ul>${e.review_reasons.map((r) => h`<li>${r}</li>`)}</ul></div>` : '';
+  const facts = h`<dl class="kv ev-facts"><dt>File</dt><dd>${e.filename}${e.has_file ? h` · <a class="btn-link-action" href="/api/evidence/${e.id}/file">Download</a>` : ''}</dd><dt>For</dt><dd>${e.subject_name}</dd><dt>Requirement</dt><dd>${requirement}</dd><dt>Source</dt><dd>${words(e.source)}</dd>${e.reviewed_by ? h`<dt>Reviewed by</dt><dd>${e.reviewed_by}</dd>` : ''}${e.reject_reason ? h`<dt>Rejected because</dt><dd>${e.reject_reason}</dd>` : ''}</dl>`;
+  const head = h`<div class="inspector-head"><div><h3 class="split-title">${words(e.doc_type)}</h3><p class="muted small">${e.subject_name}</p></div>${statePill(e.status)}</div>`;
+  if (!pending) {
+    // Finished documents: plain read-only details, no empty boxes.
+    const read = EV_FIELDS.filter(([k]) => e[k]);
+    return h`<aside class="split-card inspector" aria-label="Document details">${head}<div class="inspector-body">${reasons}${facts}
+      <h4 class="inspector-sub">What the document says</h4>
+      ${read.length ? h`<dl class="kv ev-read">${read.map(([k, l, t]) => h`<dt>${l}</dt><dd>${t === 'date' ? date(e[k]) : e[k]}${conf(k)}</dd>`)}</dl>` : h`<p class="muted small">No details were read from this document.</p>`}
+    </div></aside>`;
+  }
+  const f = ([k, l, type = 'text']) => h`<div class="form-group"><label class="form-label">${l}${conf(k)}</label><input name="${k}" type="${type}" class="form-select" value="${e[k] || ''}"></div>`;
+  return h`<aside class="split-card inspector" aria-label="Review document">${head}
+    <form class="inspector-form" data-form="reviewEvidence" data-id="${e.id}">
+      <div class="inspector-body">${reasons}${facts}
+        <h4 class="inspector-sub">What the document says</h4>
+        <p class="muted small">Correct anything Aegis read wrongly. The percentage shows how sure Aegis was.</p>
+        ${e.doc_type === 'unknown' ? h`<div class="form-group"><label class="form-label">Document type</label><select name="doc_type" class="form-select" required><option value="">Choose a type</option>${['professional_license', 'bls_card', 'acls_card', 'tb_screening', 'flu_vaccine', 'facility_orientation', 'handbook_ack', 'security_training', 'i9_record', 'work_authorization', 'w4', 'payroll_filing_receipt'].map((x) => h`<option value="${x}">${words(x)}</option>`)}</select></div>` : ''}
+        <div class="form-grid">${EV_FIELDS.map(f)}</div>
+        <div class="form-group"><label class="form-label">Reason, if you reject it</label><input name="reason" class="form-select" placeholder="Required to reject. The sender sees this."></div>
+      </div>
+      <div class="inspector-foot"><p class="muted small">Accepting records the document. Aegis reruns the check; the case closes only if it passes.</p><div class="row"><button class="btn-danger" name="decision" value="reject">Reject</button><button class="btn-submit-green" name="decision" value="accept">Accept evidence</button></div></div>
+    </form></aside>`;
 }
 const LIFE = [['Identify', ['identified']], ['Assign', ['assigned']], ['Request', ['requested']], ['Follow up', ['following_up']], ['Review', ['in_review']], ['Re-evaluate', ['reevaluating']], ['Close', ['closed']]];
 const lifecycle = (s) => { const i = LIFE.findIndex(([, a]) => a.includes(s)); return h`<div class="lifecycle">${LIFE.map(([l], n) => h`<div class="${n < i ? 'done' : n === i ? 'now' : ''}">${l}</div>`)}</div>`; };
@@ -711,10 +755,11 @@ const ACT = {
     <div class="case-result"><div>${e ? statusPill(e.status) : ''}</div><p>${e?.reason || c.gap || 'No current result.'}</p></div>
     <dl class="kv mb"><dt>Due</dt><dd>${date(c.due_date)} ${dueNote(c.due_date, open)}</dd><dt>Reminders sent</dt><dd>${c.reminders_sent}${c.escalated ? ' · Escalated' : ''}</dd>${c.closure ? h`<dt>How it closed</dt><dd>${words(c.closure)}</dd>` : ''}<dt>Finding</dt><dd>${c.finding_verdict ? `${words(c.finding_verdict)} (${c.verdict_by})` : 'Not reviewed yet'}</dd></dl>
     ${c.evidence.length ? h`<h4 class="detail-heading">Evidence</h4>${c.evidence.map((x) => h`<div class="timeline-item"><span>${statePill(x.status)}</span><span>${x.filename}${x.review_reasons.length ? ` · ${x.review_reasons.join(' ')}` : ''}</span></div>`)}` : ''}
+    ${open ? h`<div class="who-uploads"><b>Who sends the document?</b><span>${c.subject_type === 'worker' ? 'Send a follow-up and the worker uploads it from a secure link, no login needed.' : 'Send a follow-up to the owner.'} If you already have the file, upload it yourself.</span></div>` : ''}
     <h4 class="detail-heading">History</h4><div class="history">${history.map((x) => h`<div class="timeline-item${x.who ? ' is-note' : ''}"><time>${dt(x.at)}</time><span>${x.who ? h`<strong>${x.who}:</strong> ` : ''}${x.text}</span></div>`)}</div>
     <details class="tech-details"><summary>Technical details</summary><dl class="kv"><dt>Case ID</dt><dd class="mono">${c.id}</dd><dt>Rule version</dt><dd class="mono">${e?.control_version || '—'}</dd><dt>Evidence used</dt><dd class="mono">${e?.evidence_ids.join(', ') || 'None'}</dd></dl></details>
     ${open && canEdit() ? h`<form class="row mt" data-form="note" data-id="${c.id}"><input name="note" class="form-select" style="flex:1" placeholder="Add a note" required aria-label="Note"><button class="btn-card-outline">Add note</button></form>` : ''}`,
-      open && c.can_act ? h`${!c.finding_verdict ? h`<button class="btn-cancel" data-act="verdict" data-id="${c.id}" data-v="false_finding">False finding</button><button class="btn-cancel" data-act="verdict" data-id="${c.id}" data-v="confirmed">Confirm finding</button>` : ''}<button class="btn-cancel" data-act="humanDecision" data-id="${c.id}">Request decision</button><button class="btn-submit-green" data-act="followUp" data-id="${c.id}">Send follow-up</button>` : '', true);
+      open && c.can_act ? h`${!c.finding_verdict ? h`<button class="btn-cancel" data-act="verdict" data-id="${c.id}" data-v="false_finding">False finding</button><button class="btn-cancel" data-act="verdict" data-id="${c.id}" data-v="confirmed">Confirm finding</button>` : ''}<button class="btn-cancel" data-act="humanDecision" data-id="${c.id}">Request decision</button><button class="btn-cancel" data-act="uploadEvidence" data-subject="${c.subject_type}:${c.subject_id}" data-control="${c.control_key}" data-name="${c.subject_name}">Upload evidence</button><button class="btn-submit-green" data-act="followUp" data-id="${c.id}">Send follow-up</button>` : '', true);
   },
   async followUp(el, ev) { ev?.stopPropagation(); const r = await api(`/api/cases/${el.dataset.id}/follow-up`, {}); toast(r.message, r.sent ? 'success' : 'warning'); after(); },
   async verdict(el) { await api(`/api/cases/${el.dataset.id}/verdict`, { verdict: el.dataset.v }); toast('Finding recorded.', 'success'); closeModal(); refresh(); },
@@ -751,21 +796,53 @@ const ACT = {
     const list = w.checks_list.filter((c) => c.status !== 'not_applicable').sort((a, b) => rank[a.status] - rank[b.status]);
     const openN = list.filter((c) => c.status !== 'pass').length;
     openModal(w.name, `${w.role || 'No role'} · ${w.facility || 'No confirmed location'}`, h`<div class="pack-boxes">${rv.summary.map((s) => h`<div class="pack-box pack-box-${s.status}"><span>${words(s.pack)}</span>${statusPill(s.status)}<small>${s.open ? `${s.open} open` : s.status === 'restricted' ? 'Restricted' : 'Nothing open'}</small></div>`)}</div>
-      <div class="readiness-note ${openN ? 'is-open' : 'is-clear'}"><b>${openN ? `${openN} of ${list.length} checks still open` : `All ${list.length} checks pass`}</b><span>${rv.statement} Readiness now: ${words(w.readiness)}.</span></div>
-      ${table(['Requirement', 'Result', 'Why'], list.map((c) => h`<tr><td>${c.control_name}<div class="case-sub">${words(c.pack_key)}</div></td><td>${statusPill(c.status)}</td><td class="small">${c.reason}</td></tr>`), 'No checks yet.')}`, h`<button class="btn-cancel" data-act="moveWorker" data-id="${w.id}">Change assignment</button><button class="btn-submit-green" data-act="readiness" data-id="${w.id}">Request readiness decision</button>`, true);
+      <div class="readiness-note ${openN ? 'is-open' : 'is-clear'}"><b>${openN ? `${openN} of ${list.length} checks still open` : `All ${list.length} checks pass`}</b><span>${rv.statement}${w.readiness_request ? ` Waiting in Approvals since ${date(w.readiness_request.created_at)}, asked by ${w.readiness_request.requested_by}.` : ''}</span></div>
+      ${table(['Requirement', 'Result', 'Why', ''], list.map((c) => h`<tr><td>${c.control_name}<div class="case-sub">${words(c.pack_key)}</div></td><td>${statusPill(c.status)}</td><td class="small">${c.reason}</td><td class="row-action">${canEdit() && (c.status !== 'pass' || /expir/.test(c.code || '')) ? h`<button class="btn-link-action" data-act="uploadEvidence" data-subject="worker:${w.id}" data-control="${c.control_key}" data-name="${w.name}">Upload</button>` : ''}</td></tr>`), 'No checks yet.')}`, workerFoot(w, openN, list.length), true);
   },
   moveWorker(el) { openModal('Change assignment', 'Aegis re-runs the checks that apply to the new location.', h`<form data-form="move" data-id="${el.dataset.id}"><div class="form-group"><label class="form-label">Facility</label><input name="facility" class="form-select" required></div><div class="form-group"><label class="form-label">State</label><input name="facility_state" class="form-select" maxlength="2"></div><button class="btn-submit-green">Save</button></form>`); },
-  async readiness(el) { await api(`/api/workers/${el.dataset.id}/readiness-review`, {}); toast('Sent to Approvals.', 'success'); closeModal(); refresh(); },
+  openApprovals() { closeModal(); location.hash = 'approvals'; },
+  // With checks still open, ask once more and show what the approver will see.
+  async readiness(el) {
+    if (+el.dataset.open > 0 && !el.dataset.confirmed) {
+      const w = await api(`/api/workers/${el.dataset.id}`);
+      const open = w.checks_list.filter((c) => c.status !== 'pass' && c.status !== 'not_applicable');
+      const n = open.length, checks = `${n} open check${n === 1 ? '' : 's'}`;
+      openModal(n ? `${w.name} still has ${checks}` : `No checks have run for ${w.name} yet`, 'You can still ask, for example when a renewal is already booked. The approver sees this.', n ? h`<ul class="open-list">${open.map((c) => h`<li>${statusPill(c.status)}<div><b>${c.control_name}</b><span>${c.reason}</span></div></li>`)}</ul>` : h`<p class="small">Aegis has nothing to show the approver for this person.</p>`,
+        h`<button class="btn-cancel" data-act="workerDetail" data-id="${w.id}">Back</button><button class="btn-submit-green" data-act="readiness" data-id="${w.id}" data-confirmed="1">Send to Approvals</button>`);
+      return;
+    }
+    await api(`/api/workers/${el.dataset.id}/readiness-review`, {}); toast('Sent to Approvals.', 'success'); closeModal(); refresh();
+  },
   selectEvidence(el, ev) { ev?.stopPropagation(); evidenceSel = el.dataset.id; refresh(); },
   addWorker() { openModal('Add Worker', 'Added workers are checked against activated packs.', h`<form data-form="addWorker"><div class="form-grid"><div class="form-group"><label class="form-label">Full name</label><input name="name" class="form-select" required></div><div class="form-group"><label class="form-label">Email</label><input name="email" type="email" class="form-select"></div><div class="form-group"><label class="form-label">Role</label><input name="role" class="form-select" required></div><div class="form-group"><label class="form-label">Category</label><select name="category" class="form-select"><option value="clinical">Clinical</option><option value="corporate">Corporate</option></select></div><div class="form-group"><label class="form-label">License type</label><select name="license_type" class="form-select"><option value="">None</option><option>RN</option><option>NP</option><option>MD</option><option>PT</option></select></div><div class="form-group"><label class="form-label">Hire date</label><input name="hire_date" type="date" class="form-select" value="${me.today}"></div><div class="form-group"><label class="form-label">Facility</label><input name="facility" class="form-select"></div><div class="form-group"><label class="form-label">State</label><input name="facility_state" maxlength="2" class="form-select"></div><div class="form-group"><label class="form-label">Employing entity</label><input name="entity" class="form-select"></div></div><button class="btn-submit-green">Save worker</button></form>`, null, true); },
   importRoster() { importPreview = null; openModal('Import Worker Roster', 'Excel or CSV. You review the mapping before anything is saved.', h`<form data-form="importFile"><div class="drop-zone-box"><input type="file" name="file" accept=".csv,.xlsx" required aria-label="Roster file"><span class="subtext mt">Columns like Name, Email, Role, Facility, State, License Type, Hire Date</span></div><button class="btn-submit-green mt">Preview import</button></form>`); },
   async commitImport(el) { const r = await api(`/api/import/${el.dataset.id}/commit`, {}); toast(`${r.created} added, ${r.updated} updated.`, 'success'); closeModal(); after(); },
-  async uploadEvidence(el, ev, bulk) {
-    const [ws, ctl] = await Promise.all([api('/api/workers'), api('/api/controls')]);
-    const setup = await api('/api/setup');
-    openModal(bulk ? 'Bulk upload' : 'Intake Evidence', 'AI proposes fields. The evaluator decides the result.', h`<form data-form="upload" data-bulk="${bulk ? '1' : ''}"><div class="form-group"><label class="form-label">Subject</label><select name="subject" class="form-select" required>${ws.map((w) => h`<option value="worker:${w.id}">${w.name}</option>`)}${setup.entities.map((e) => h`<option value="entity:${e.id}">${e.name} (company)</option>`)}</select></div><div class="form-group"><label class="form-label">Requirement</label><select name="control_key" class="form-select"><option value="">Let Aegis match it</option>${ctl.controls.filter((c) => c.remediation && c.type !== 'field_required').map((c) => h`<option value="${c.key}">${c.pack}: ${c.name}</option>`)}</select></div><div class="form-group"><label class="form-label">File${bulk ? 's' : ''}</label><input type="file" name="file" class="form-select" required ${bulk ? raw('multiple') : ''}></div><div class="form-grid"><div class="form-group"><label class="form-label">Document number (optional)</label><input name="doc_number" class="form-select"></div><div class="form-group"><label class="form-label">Expiration (optional)</label><input name="expires_on" type="date" class="form-select"></div></div><button class="btn-submit-green">Scan & match</button></form>`);
+  // Opened from the page header (nothing chosen yet), or from a case or a worker,
+  // in which case the person and the requirement are already filled in.
+  async uploadEvidence(el, ev) {
+    ev?.stopPropagation();
+    const pre = el?.dataset || {};
+    const [ws, ctl, setup] = await Promise.all([api('/api/workers'), api('/api/controls'), api('/api/setup')]);
+    const sel = (on) => (on ? raw('selected') : '');
+    openModal(pre.name ? `Upload evidence for ${pre.name}` : 'Upload evidence', 'Upload one file, or several at once. Aegis reads each one and suggests what it is; unclear ones go to a person.', h`<form data-form="upload" class="upload-form">
+      <div class="form-grid">
+        <div class="form-group"><label class="form-label" for="upSubject">Who is this for</label><select id="upSubject" name="subject" class="form-select" required>${ws.map((w) => h`<option value="worker:${w.id}" ${sel(pre.subject === `worker:${w.id}`)}>${w.name}</option>`)}${setup.entities.map((e) => h`<option value="entity:${e.id}" ${sel(pre.subject === `entity:${e.id}`)}>${e.name} (company)</option>`)}</select></div>
+        <div class="form-group"><label class="form-label" for="upControl">Requirement</label><select id="upControl" name="control_key" class="form-select"><option value="">Let Aegis match each file</option>${ctl.controls.filter((c) => c.remediation && c.type !== 'field_required').map((c) => h`<option value="${c.key}" ${sel(pre.control === c.key)}>${words(c.pack)}: ${c.name}</option>`)}</select></div>
+      </div>
+      <div class="form-group"><span class="form-label">Files</span>
+        <label class="upload-drop" data-upload-drop>
+          <input type="file" name="file" required multiple data-upload-files aria-describedby="upHint">
+          <span class="upload-drop-icon" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg></span>
+          <b data-upload-title>Drop files here, or <u>choose files</u></b>
+          <span id="upHint" data-upload-count>One file, or select several at once to upload in bulk. PDF or photo.</span>
+        </label>
+        <ul class="upload-list" data-upload-list hidden></ul>
+      </div>
+      <div class="form-grid" data-single-only><div class="form-group"><label class="form-label">Document number (optional)</label><input name="doc_number" class="form-select"></div><div class="form-group"><label class="form-label">Expires (optional)</label><input name="expires_on" type="date" class="form-select"></div></div>
+      <button class="btn-submit-green" data-upload-go>Upload</button></form>`);
   },
-  bulkUpload(el, ev) { return ACT.uploadEvidence(el, ev, true); },
+  // Older links may still ask for "bulk upload"; it is the same window now.
+  bulkUpload() { return ACT.uploadEvidence(); },
   async reviewPack(el) {
     const [packs, owners] = await Promise.all([api('/api/packs'), api('/api/owners')]), p = packs.find((x) => x.key === el.dataset.id);
     openModal(p.name, `Version ${p.latest_version}`, h`<div class="alert-box">${p.review_note}</div>${table(['Control', 'Type', 'Source'], p.controls.map((c) => h`<tr><td><strong>${c.name}</strong></td><td class="muted">${words(c.requirement_type)}</td><td class="small">${c.source}</td></tr>`), '')}<p class="small mt"><strong>Validation tests:</strong> ${p.validation.filter((v) => v.ok).length} of ${p.validation.length} pass.</p>${me.user.is_admin ? h`<form data-form="activate" data-id="${p.key}" class="mt"><div class="form-group"><label class="form-label">Responsible owner</label><select name="owner_user_id" class="form-select" required>${owners.map((o) => h`<option value="${o.id}" ${(p.owner_user_id ? o.id === p.owner_user_id : o.role === p.owner_role) ? raw('selected') : ''}>${o.name} (${words(o.role)})</option>`)}</select></div><label class="row small"><input type="checkbox" name="reviewed" required> I reviewed applicability, sources and deadlines for this company.</label><button class="btn-submit-green mt">${p.status === 'active' ? 'Update' : 'Activate in validation mode'}</button></form>` : ''}`, null, true);
@@ -864,9 +941,15 @@ const FORM = {
     openModal(`Review ${p.filename}`, `${p.total} worker(s) ready. Nothing is saved yet.`, h`${p.errors.length ? h`<div class="alert-box">${p.errors.length} row(s) will be skipped: ${p.errors.map((e) => `row ${e.row}: ${e.error}`).join('; ')}</div>` : ''}${p.unmapped.length ? h`<p class="small muted mb">Ignored columns: ${p.unmapped.join(', ')}</p>` : ''}<p class="small mb">Missing: ${p.missing.facility} location, ${p.missing.email} email, ${p.missing.hire_date} hire date. These will show as data gaps.</p>${table(['Name', 'Email', 'Role', 'Facility', 'Hire date'], p.sample.map((r) => h`<tr><td>${r.name}</td><td>${r.email}</td><td>${r.role}</td><td>${r.facility}</td><td>${r.hire_date}</td></tr>`), '')}`, h`<button class="btn-cancel" data-act="closeModal">Cancel</button><button class="btn-submit-green" data-act="commitImport" data-id="${p.id}">Import ${p.total} worker(s)</button>`, true);
   },
   async upload(d, f) {
-    const [subject_type, subject_id] = d.subject.split(':'); let last;
-    for (const file of f.elements.file.files) last = await api('/api/evidence', { subject_type, subject_id, control_key: d.control_key || null, bulk: !!f.dataset.bulk, file: await fileData(file), claimed: { doc_number: d.doc_number, expires_on: d.expires_on } });
-    toast(last.duplicate ? 'That file is already on record.' : last.status === 'accepted' ? 'Evidence matched. Re-running the check.' : `Sent to review: ${last.reasons[0]}`, last.status === 'accepted' ? 'success' : 'warning');
+    const [subject_type, subject_id] = d.subject.split(':'), files = [...f.elements.file.files], many = files.length > 1;
+    let last, matched = 0, review = 0, dup = 0;
+    for (const file of files) {
+      // With several files the document number and expiry are left for Aegis to read from each file.
+      last = await api('/api/evidence', { subject_type, subject_id, control_key: d.control_key || null, bulk: many, file: await fileData(file), claimed: many ? {} : { doc_number: d.doc_number, expires_on: d.expires_on } });
+      if (last.duplicate) dup++; else if (last.status === 'accepted') matched++; else review++;
+    }
+    if (!many) toast(last.duplicate ? 'That file is already on record.' : last.status === 'accepted' ? 'Evidence matched. Re-running the check.' : `Sent to review: ${last.reasons[0]}`, last.status === 'accepted' ? 'success' : 'warning');
+    else toast([matched ? `${matched} matched` : '', review ? `${review} sent to review` : '', dup ? `${dup} already on record` : ''].filter(Boolean).join(' · ') + '.', review || dup ? 'warning' : 'success');
     closeModal(); evidenceSel = last.id; if (route !== 'evidence') location.hash = 'evidence'; setTimeout(after, 1200);
   },
   async reviewEvidence(d, f, sub) {
@@ -1452,5 +1535,39 @@ document.addEventListener('keydown', (e) => {
   }
 });
 $('#globalSearch')?.addEventListener('input', (e) => filterRows(e.target.value));
+// Evidence: the right panel is sized to the space left on screen, so its bottom (Accept / Reject)
+// is visible at every scroll position, not only once it starts to stick.
+let fitQueued = false;
+function fitInspector() {
+  fitQueued = false;
+  const el = $('#view .inspector'); if (!el) return;
+  if (matchMedia('(max-width: 900px)').matches) { el.style.maxHeight = ''; return; }
+  const top = Math.max(el.getBoundingClientRect().top, 24);
+  el.style.maxHeight = `${Math.max(320, innerHeight - top - 24)}px`;
+}
+const queueFit = () => { if (!fitQueued) { fitQueued = true; requestAnimationFrame(fitInspector); } };
+addEventListener('scroll', queueFit, { passive: true });
+addEventListener('resize', queueFit, { passive: true });
+// Upload window: list the chosen files. The document number and expiry boxes only make sense for one file.
+const fileSize = (b) => (b < 1024 * 1024 ? `${Math.max(1, Math.round(b / 1024))} KB` : `${(b / 1024 / 1024).toFixed(1)} MB`);
+document.addEventListener('change', (e) => {
+  const input = e.target.closest?.('[data-upload-files]'); if (!input) return;
+  const form = input.form, files = [...input.files], n = files.length;
+  form.querySelector('[data-single-only]').hidden = n > 1;
+  form.querySelector('[data-upload-drop]').classList.toggle('has-files', n > 0);
+  form.querySelector('[data-upload-title]').innerHTML = n ? `${n} file${n > 1 ? 's' : ''} chosen · <u>change</u>` : 'Drop files here, or <u>choose files</u>';
+  form.querySelector('[data-upload-count]').textContent = n > 1 ? 'Bulk upload: Aegis reads the document number and expiry from each file.' : 'One file, or select several at once to upload in bulk. PDF or photo.';
+  const list = form.querySelector('[data-upload-list]');
+  list.hidden = !n;
+  list.innerHTML = render(files.map((f) => h`<li><span class="upload-file-name">${f.name}</span><span class="upload-file-size">${fileSize(f.size)}</span></li>`));
+  form.querySelector('[data-upload-go]').textContent = n > 1 ? `Upload ${n} files` : 'Upload';
+});
+// Highlight the drop area while files are dragged over it. The file input covers it, so the drop itself is native.
+for (const type of ['dragenter', 'dragover', 'dragleave', 'drop']) {
+  document.addEventListener(type, (e) => {
+    const zone = e.target.closest?.('[data-upload-drop]'); if (!zone) return;
+    zone.classList.toggle('is-over', type === 'dragenter' || type === 'dragover');
+  });
+}
 window.addEventListener('hashchange', readHash);
 fetch('/api/me').then((r) => { if (r.ok) boot(); else showLogin(); });

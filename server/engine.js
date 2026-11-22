@@ -30,10 +30,10 @@ function recordEvaluation(t, type, s, c, r, trigger) {
   return cur ? cur.status : null;
 }
 function audience(t, cs) {
-  if (cs.subject_type === 'worker') { const w = db.get('SELECT * FROM workers WHERE id=?', cs.subject_id); return { worker: w }; }
+  if (cs.subject_type === 'worker') { const w = db.get('SELECT * FROM workers WHERE id=? AND tenant_id=?', cs.subject_id, t); return { worker: w }; }
   return { worker: null };
 }
-function owner(t, cs) { return cs.owner_user_id ? db.get('SELECT * FROM users WHERE id=?', cs.owner_user_id) : null; }
+function owner(t, cs) { return cs.owner_user_id ? db.get('SELECT * FROM users WHERE id=? AND tenant_id=?', cs.owner_user_id, t) : null; }
 function newLink(t, cs) {
   const raw = token();
   db.insert('submission_tokens', { token_hash: sha256(raw), tenant_id: t, case_id: cs.id, expires_at: new Date(clock.now().getTime() + 14 * 864e5).toISOString(), created_at: clock.iso() });
@@ -42,9 +42,11 @@ function newLink(t, cs) {
 function enqueueAction(t, a, actor = SYSTEM) {
   return db.tx(() => {
     const existing = db.get('SELECT * FROM actions WHERE tenant_id=? AND idempotency_key=?', t, a.idempotency_key);
-    if (existing) { P.bump(t, 'duplicates_blocked'); return { ...existing, duplicate: true }; }
-    const row = { id: id('act'), tenant_id: t, case_id: a.case_id, type: a.type, idempotency_key: a.idempotency_key, status: a.requires_approval ? 'pending_approval' : 'queued', automated: actor.type === 'system' ? 1 : 0, recipient: a.recipient, recipient_type: a.recipient_type, subject: a.subject, body: a.body, created_by: actor.name, created_at: clock.iso() };
-    db.insert('actions', row);
+    if (existing && existing.status !== 'paused') { P.bump(t, 'duplicates_blocked'); return { ...existing, duplicate: true }; }
+    const row = { tenant_id: t, case_id: a.case_id, type: a.type, idempotency_key: a.idempotency_key, status: a.requires_approval ? 'pending_approval' : 'queued', automated: actor.type === 'system' ? 1 : 0, recipient: a.recipient, recipient_type: a.recipient_type, subject: a.subject, body: a.body, created_by: actor.name, created_at: clock.iso() };
+    if (existing) db.update('actions', existing.id, row);
+    row.id = existing?.id || id('act');
+    if (!existing) db.insert('actions', row);
     if (a.requires_approval) {
       db.insert('approvals', { id: id('apr'), tenant_id: t, kind: 'action', ref_id: row.id, case_id: a.case_id, pack_key: a.pack_key, title: a.approval_title || `Approve message to ${a.recipient}`, detail: a.body, requested_by: actor.name, created_at: clock.iso() });
       P.audit(t, 'APPROVAL_REQUESTED', a.recipient, `Awaiting approval: ${a.subject}`, actor, { case_id: a.case_id });
@@ -160,12 +162,28 @@ function evaluateSubject(t, type, s, trigger, only) {
   const controls = R.effectiveControls(t).filter((c) => c.subject === type && (!only || c.key === only));
   const subject = { ...s, attrs: j(s.attrs_json, {}) };
   const ctx = loadCtx(t, type, s);
-  return db.tx(() => controls.map((c) => {
-    const r = evaluate(c, subject, ctx);
-    const prevStatus = recordEvaluation(t, type, s, c, r, trigger);
-    reconcile(t, type, s, c, r, prevStatus);
-    return { control: c.key, ...r };
-  }));
+  return db.tx(() => {
+    const newlyOpen = [];
+    const out = controls.map((c) => {
+      const r = evaluate(c, subject, ctx);
+      const prevStatus = recordEvaluation(t, type, s, c, r, trigger);
+      reconcile(t, type, s, c, r, prevStatus);
+      if (UNRESOLVED.has(r.status) && !UNRESOLVED.has(prevStatus)) newlyOpen.push(c.name);
+      return { control: c.key, ...r };
+    });
+    if (type === 'worker' && newlyOpen.length) reopenReadiness(t, s.id, newlyOpen);
+    return out;
+  });
+}
+const UNRESOLVED = new Set(['fail', 'unknown']);
+// An approved worker goes back to pending when a check that passed stops passing
+// (a credential expires, a new requirement applies). Checks that were already open
+// when the owner approved do not reopen it: the owner saw those.
+function reopenReadiness(t, wid, names) {
+  const w = db.get('SELECT id, name, readiness FROM workers WHERE id=? AND tenant_id=?', wid, t);
+  if (w?.readiness !== 'approved') return;
+  db.update('workers', wid, { readiness: 'pending' });
+  P.audit(t, 'READINESS_REOPENED', `Assignment readiness: ${w.name}`, `Back to pending. No longer passing: ${names.join(', ')}.`);
 }
 function evaluateTenant(t, trigger) {
   for (const w of db.all('SELECT * FROM workers WHERE tenant_id=?', t)) evaluateSubject(t, 'worker', w, trigger);
@@ -180,21 +198,21 @@ const evaluateById = (t, type, sid, trigger) => {
 async function sendAction(t, { action_id }) {
   const a = db.get('SELECT * FROM actions WHERE id=? AND tenant_id=?', action_id, t);
   if (!a || a.status !== 'queued') return; // retried or duplicate job: nothing to send again
-  const cs = a.case_id ? db.get('SELECT * FROM cases WHERE id=?', a.case_id) : null;
-  if (cs?.closed_at && a.type !== 'notify') { db.update('actions', a.id, { status: 'cancelled' }); return; }
+  const cs = a.case_id ? db.get('SELECT * FROM cases WHERE id=? AND tenant_id=?', a.case_id, t) : null;
+  if (!cs || cs.closed_at) { db.update('actions', a.id, { status: 'cancelled' }); return; }
+  const maySend = () => {
+    const pack = R.tenantPack(t, cs.pack_key);
+    const target = db.get('SELECT closed_at FROM cases WHERE id=? AND tenant_id=?', cs.id, t);
+    const action = db.get('SELECT status FROM actions WHERE id=? AND tenant_id=?', a.id, t);
+    return pack?.status === 'active' && pack.mode === 'auto' && target && !target.closed_at && action?.status === 'queued';
+  };
+  if (!maySend()) { R.pausePackActions(t, cs.pack_key); return; }
   const tn = db.get('SELECT * FROM tenants WHERE id=?', t);
-  let slack = null, email = null;
-  if (a.recipient_type === 'worker') {
-    const w = db.get('SELECT slack_id s, email FROM workers WHERE tenant_id=? AND name=?', t, a.recipient);
-    slack = w?.s;
-    email = w?.email;
-  } else {
-    const u = db.get('SELECT slack_id s, email FROM users WHERE tenant_id=? AND name=?', t, a.recipient);
-    slack = u?.s;
-    email = u?.email;
-  }
+  const recipient = a.recipient_type === 'worker' ? audience(t, cs).worker : owner(t, cs);
+  const canReceive = recipient && (a.recipient_type === 'worker' ? recipient.status === 'active' : P.canPack(recipient, cs.pack_key));
   try {
-    const channel = await channels.deliver(tn, { ...a, recipient_slack: slack, recipient_email: email });
+    const channel = await channels.deliver(tn, { ...a, recipient_slack: canReceive ? recipient.slack_id : null, recipient_email: canReceive ? recipient.email : null }, maySend);
+    if (channel === 'paused') return;
     db.tx(() => {
       db.update('actions', a.id, { status: 'sent', sent_at: clock.iso(), error: null });
       const how = channel === 'outbox' ? 'kept in the Aegis outbox: no email or Slack is set up for this person, so it did not leave Aegis' : `sent by ${channel}`;
@@ -243,12 +261,16 @@ function runReminders(t) {
 function setMode(t, user, pack, mode) {
   P.assertPack(user, pack);
   if (!['shadow', 'auto'].includes(mode)) throw new HttpError(400, 'Invalid mode.');
+  if (R.tenantPack(t, pack)?.status !== 'active') throw new HttpError(404, 'Activate this pack before changing its mode.');
   if (mode === 'auto') {
     const un = db.get(`SELECT COUNT(*) n FROM cases WHERE tenant_id=? AND pack_key=? AND ${OPEN} AND finding_verdict IS NULL`, t, pack).n;
     if (un) throw new HttpError(409, `${un} finding(s) still need owner validation before automatic requests can be turned on.`);
   }
-  db.run('UPDATE tenant_packs SET mode=? WHERE tenant_id=? AND pack_key=?', mode, t, pack);
-  P.audit(t, 'PACK_MODE', pack, `Automation set to ${mode === 'auto' ? 'automatic requests' : 'validation only'}.`, user);
+  db.tx(() => {
+    db.run('UPDATE tenant_packs SET mode=? WHERE tenant_id=? AND pack_key=?', mode, t, pack);
+    if (mode === 'shadow') R.pausePackActions(t, pack);
+    P.audit(t, 'PACK_MODE', pack, `Automation set to ${mode === 'auto' ? 'automatic requests' : 'validation only'}.`, user);
+  });
   if (mode === 'auto') {
     const controls = R.effectiveControls(t);
     for (const cs of db.all(`SELECT * FROM cases WHERE tenant_id=? AND pack_key=? AND ${OPEN} AND state='assigned' AND (finding_verdict IS NULL OR finding_verdict='confirmed')`, t, pack)) planNext(t, cs, controls.find((c) => c.key === cs.control_key));

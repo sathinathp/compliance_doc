@@ -2,17 +2,50 @@
 // Coworker orchestrator. Interprets a request, reads the same records as the dashboard,
 // and routes anything that changes state through the action service.
 const db = require('./lib/db'), { clock, id, j, addDays } = require('./lib/util');
-const P = require('./platform'), V = require('./views'), E = require('./engine'), llm = require('./llm');
-const INTENTS = ['missing_new_workers', 'expiring', 'request_missing', 'approvals', 'unresolved_by_team', 'coverage', 'create_dashboard', 'worker_status', 'help'];
+const P = require('./platform'), V = require('./views'), E = require('./engine'), R = require('./registry'), llm = require('./llm');
+const READ_INTENTS = ['missing_new_workers', 'expiring', 'approvals', 'unresolved_by_team', 'coverage', 'help'];
+const CONFIRM_FOLLOW_UP = /^confirm follow-ups ([a-f0-9]{12})\.?$/;
 function detect(q) {
-  if (/create|build|make/.test(q) && /dashboard|view/.test(q)) return 'create_dashboard';
-  if (/request|chase|send/.test(q) && /missing|document|evidence/.test(q)) return 'request_missing';
+  if (/^(please )?(create|build|make)\s+[^?]*\b(dashboard|view)\b[^?]*$/.test(q)) return 'create_dashboard';
+  if (/^(please )?request (the )?missing documents\.?$/.test(q)) return 'request_missing';
   if (/need.*approv|pending approv|my approval|approvals/.test(q)) return 'approvals';
   if (/expir/.test(q)) return 'expiring';
   if (/new (workers?|hires?|employees?)/.test(q)) return 'missing_new_workers';
   if (/unresolved|open cases?|by team/.test(q)) return 'unresolved_by_team';
   if (/100|complian(t|ce)|coverage|how are we|status overall/.test(q)) return 'coverage';
   return null;
+}
+function eligibleFollowUps(t, user) {
+  const controls = new Set(R.effectiveControls(t).filter((c) => c.mode === 'auto' && P.canPack(user, c.pack_key)).map((c) => c.key));
+  return V.listCases(t, user).filter((c) => controls.has(c.control_key) && c.gap_kind !== 'review' && c.finding_verdict !== 'false_finding');
+}
+const followUpKey = (t, user) => `chat_follow_ups:${t}:${user.id}`;
+function previewFollowUps(t, user) {
+  if (user.role === 'viewer') return 'Your read-only role cannot queue follow-ups.';
+  const cases = eligibleFollowUps(t, user);
+  if (!cases.length) return 'No open cases in your authorized automatic packs are ready for a follow-up.';
+  const code = id('preview').slice('preview_'.length);
+  const proposal = JSON.stringify({ code, expiresAt: Date.now() + 5 * 60 * 1000, caseIds: cases.map((c) => c.id) });
+  db.run('INSERT INTO meta(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v', followUpKey(t, user), proposal);
+  return `${cases.length} case(s) are eligible for a follow-up. Review them in Cases. To queue follow-ups for this set, reply within five minutes with: Confirm follow-ups ${code}`;
+}
+function confirmFollowUps(t, user, code) {
+  if (user.role === 'viewer') return 'Your read-only role cannot queue follow-ups.';
+  return db.tx(() => {
+    const key = followUpKey(t, user), value = db.get('SELECT v FROM meta WHERE k=?', key)?.v;
+    const proposal = j(value);
+    if (!proposal || proposal.code !== code || proposal.expiresAt <= Date.now()
+      || !db.run('DELETE FROM meta WHERE k=? AND v=?', key, value).changes) {
+      return 'This confirmation is unavailable. Request a fresh preview with “Request the missing documents”.';
+    }
+    const selected = new Set(proposal.caseIds);
+    let sent = 0;
+    for (const c of eligibleFollowUps(t, user)) {
+      if (selected.has(c.id) && E.followUp(t, user, c).sent) sent++;
+    }
+    P.audit(t, 'CHAT_COMMAND', user.name, `Confirmed open-case follow-ups. ${sent} queued.`, user);
+    return `Queued **${sent}** follow-up(s). ${selected.size - sent} skipped because they were already queued or no longer eligible.`;
+  });
 }
 function expiryWindow(q) {
   const today = clock.today();
@@ -22,14 +55,16 @@ function expiryWindow(q) {
   return [today, addDays(today, 60), 'the next 60 days'];
 }
 async function respond(t, user, text) {
-  const q = text.toLowerCase();
+  const q = text.trim().toLowerCase();
+  const confirmation = CONFIRM_FOLLOW_UP.exec(q);
+  if (confirmation) return confirmFollowUps(t, user, confirmation[1]);
   let intent = detect(q), workerName = null;
   const workers = V.listWorkers(t, user);
   const named = workers.find((w) => q.includes(w.name.toLowerCase().split(/[ ,]/)[0]));
   if (!intent && named) { intent = 'worker_status'; workerName = named; }
   if (!intent && llm.enabled(t)) {
-    const r = await llm.callTool(t, 'Classify the compliance coworker request. Reply only through the tool.', [{ type: 'text', text }], 'classify', { type: 'object', properties: { intent: { type: 'string', enum: INTENTS } }, required: ['intent'] });
-    if (r?.intent && r.intent !== 'worker_status') intent = r.intent;
+    const r = await llm.callTool(t, 'Classify this read-only compliance question. Reply only through the tool.', [{ type: 'text', text }], 'classify', { type: 'object', properties: { intent: { type: 'string', enum: READ_INTENTS } }, required: ['intent'] });
+    if (READ_INTENTS.includes(r?.intent)) intent = r.intent;
   }
   const open = V.listCases(t, user);
   switch (intent) {
@@ -43,12 +78,7 @@ async function respond(t, user, text) {
       const [a, b, label] = expiryWindow(q), ev = V.listEvidence(t, user).filter((e) => e.status === 'accepted' && e.expires_on && e.expires_on >= a && e.expires_on <= b).sort((x, y) => x.expires_on.localeCompare(y.expires_on));
       return ev.length ? `**${ev.length} credential(s)** expire in ${label}:\n${ev.map((e) => `• **${e.subject_name}**: ${e.doc_type.replace(/_/g, ' ')}, ${e.expires_on}`).join('\n')}` : `No accepted credentials expire in ${label}.`;
     }
-    case 'request_missing': {
-      let sent = 0, held = 0, dup = 0;
-      for (const c of open.filter((x) => P.canPack(user, x.pack_key))) { const r = E.followUp(t, user, c); if (r.sent) sent++; else if (/validation/.test(r.message)) held++; else dup++; }
-      P.audit(t, 'CHAT_COMMAND', user.name, `Chat request: follow up on open cases. ${sent} queued.`, user);
-      return `Queued **${sent}** follow-up(s). ${held ? `${held} held because the pack is in validation mode. ` : ''}${dup ? `${dup} skipped because they were already sent today or are under review. ` : ''}A follow-up does not resolve a case. Cases close only when accepted evidence passes the check.`;
-    }
+    case 'request_missing': return previewFollowUps(t, user);
     case 'approvals': {
       const a = V.listApprovals(t, user);
       return a.length ? `**${a.length}** item(s) need your approval:\n${a.slice(0, 10).map((x) => `• ${x.title}`).join('\n')}` : 'Nothing needs your approval.';
@@ -63,6 +93,7 @@ async function respond(t, user, text) {
       return `${c.pass} of ${c.total} applicable checks pass, ${c.fail} fail and ${c.unknown} are unknown.\n${c.scope_statement} I can report verified completion of these checks, but I cannot say the whole company is compliant.`;
     }
     case 'create_dashboard': {
+      if (user.role === 'viewer') return 'Your read-only role cannot create dashboards.';
       const pack = /health/.test(q) ? 'healthcare' : /onboard/.test(q) ? 'onboarding' : /immig/.test(q) ? 'immigration' : /payroll|tax/.test(q) ? 'payroll' : null;
       const metric = /missing/.test(q) ? 'missing_evidence' : /expir/.test(q) ? 'expirations' : 'open_gaps';
       const group_by = /by team/.test(q) ? 'team' : /by pack/.test(q) ? 'pack' : /by control|by credential/.test(q) ? 'control' : 'facility';
@@ -76,7 +107,7 @@ async function respond(t, user, text) {
       return `**${d.name}**\n${d.readiness_view.summary.map((s) => `• ${s.pack}: ${s.status.replace('_', ' ')}`).join('\n')}\n${d.readiness_view.statement}`;
     }
     default:
-      return 'I can answer questions from the compliance record. Try: "What is missing for new workers?", "Which credentials expire next month?", "Request the missing documents.", "What needs my approval?", "Show unresolved cases by team.", or "Create a healthcare dashboard showing missing evidence by facility."';
+      return `I can answer questions from the compliance record. Try “What is missing for new workers?”, “Which credentials expire next month?”, or “Show unresolved cases by team”.${user.role === 'viewer' ? '' : ' Say “Request the missing documents” to preview follow-ups before confirming.'}`;
   }
 }
 async function handle(t, user, text) {
