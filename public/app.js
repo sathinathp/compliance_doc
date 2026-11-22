@@ -99,9 +99,22 @@ const stepper = (state) => {
   const at = Math.max(0, STEPS.findIndex(([k]) => k === state));
   return h`<ol class="stepper" aria-label="Case progress">${STEPS.map(([, label], i) => h`<li class="${i < at ? 'done' : i === at ? 'now' : ''}" ${i === at ? raw('aria-current="step"') : ''}><span class="dot" aria-hidden="true"></span><span class="label">${label}</span></li>`)}</ol>`;
 };
+// Line icons for the packs, in the same style as the side menu.
+const PACK_ICONS = {
+  healthcare: '<path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/><path d="M3.22 12H9.5l.5-1 2 4.5 2-7 1.5 3.5h5.27"/>',
+  immigration: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
+  onboarding: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/>',
+  payroll: '<path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z"/><path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8"/><path d="M12 17.5v-11"/>',
+};
+const packIcon = (k) => h`<span class="pack-icon pack-icon-${k}" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${raw(PACK_ICONS[k] || '<circle cx="12" cy="12" r="9"/>')}</svg></span>`;
 const hookSvg = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v11a4 4 0 1 1-4-4"/></svg>';
-const empty = (cols, t) => h`<tr><td colspan="${cols}"><div class="empty"><span class="hook">${raw(hookSvg)}</span><div><b>No items</b><span>${t}</span></div></div></td></tr>`;
-const table = (heads, rows, none) => h`<div class="table-scroll-container"><table><thead><tr>${heads.map((x) => h`<th>${x}</th>`)}</tr></thead><tbody>${rows.length ? rows : empty(heads.length, none)}</tbody></table></div>`;
+// An empty list says what will appear there and what to do next. "none" is a title, or [title, hint].
+const emptySvg = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>';
+const emptyState = (none) => { const [title, hint] = Array.isArray(none) ? none : [none, '']; return h`<div class="empty-state"><span class="empty-icon" aria-hidden="true">${raw(emptySvg)}</span><div><b>${title}</b>${hint ? h`<span>${hint}</span>` : ''}</div></div>`; };
+// With no rows the table is replaced by the empty state, so empty column headings never show.
+const table = (heads, rows, none) => rows.length
+  ? h`<div class="table-scroll-container"><table><thead><tr>${heads.map((x) => h`<th>${x}</th>`)}</tr></thead><tbody>${rows}</tbody></table></div>`
+  : emptyState(none);
 const card = (title, sub, body, tools) => h`<div class="panel"><div class="ph2"><div><h2>${title}</h2><p>${sub}</p></div>${tools ? h`<div>${tools}</div>` : ''}</div>${body}</div>`;
 
 const I = { overview: '<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>', setup: '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>', cases: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>', approvals: '<path d="M20 6 9 17l-5-5"/>', checks: '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>', workers: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>', evidence: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M12 18v-6m-3 3 3-3 3 3"/>', packs: '<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/>', controls: '<path d="M4 21h16M4 14h16M4 7h16"/><circle cx="8" cy="7" r="2"/><circle cx="16" cy="14" r="2"/>', integrations: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="m9 12 2 2 4-4"/>', dashboards: '<rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/>', audit: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>', reports: '<path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/>', metrics: '<path d="M12 20V10M18 20V4M6 20v-4"/>', settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>' };
@@ -202,7 +215,7 @@ function readHash() {
 
 async function go(r, arg = null, keep) {
   const version = ++navigation;
-  if (!keep && r !== route) { $('#globalSearch').value = ''; caseSel.clear(); }
+  if (!keep && r !== route) { $('#globalSearch').value = ''; caseSel.clear(); closeChat(); }
   route = r; routeArg = arg;
   closeAllDirMenus();
   setNavigationOpen(false);
@@ -221,6 +234,7 @@ async function go(r, arg = null, keep) {
       : await VIEWS[r](arg);
     if (version !== navigation) return;
     $('#view').innerHTML = render(out);
+    labelTableCells($('#view'));
     if (!keep) window.scrollTo(0, 0);
     const q = $('#globalSearch')?.value; if (q) filterRows(q);
     syncCaseSelection();
@@ -244,6 +258,19 @@ const scope = (c) => {
   }
   el.innerHTML = render(h`${c.all_pass ? h`<span class="pill pill-pass">All checks in scope pass</span> ` : h`<span class="pill pill-warn">Verified scope only</span> `}${c.scope_statement} Evidence as of ${dt(c.as_of)} UTC.`);
 };
+// Phones show each table row as a card. Every cell gets its column name, and the first named cell is the card title.
+function labelTableCells(root) {
+  for (const t of root.querySelectorAll('.table-scroll-container table')) {
+    const heads = [...t.querySelectorAll('thead th')].map((th) => th.textContent.trim());
+    for (const tr of t.querySelectorAll('tbody tr')) {
+      let titled = false;
+      [...tr.children].forEach((td, i) => {
+        if (heads[i]) td.dataset.label = heads[i];
+        if (heads[i] && !titled) { td.classList.add('cell-title'); titled = true; }
+      });
+    }
+  }
+}
 function filterRows(q) { q = q.toLowerCase(); document.querySelectorAll('#view tbody tr').forEach((r) => { r.hidden = !r.textContent.toLowerCase().includes(q); }); syncCaseSelection(); }
 
 // ---- Ticking cases (Cases page)
@@ -408,26 +435,27 @@ const VIEWS = {
       <td>${packTag(c.pack_key)}</td>
       <td><div class="stage-cell">${statePill(c.state)}${c.escalated ? h`<span class="pill pill-fail">Escalated</span>` : ''}</div></td>
       <td class="owner-cell">${c.owner_name || c.owner_team || 'Unassigned'}</td>
-      <td class="due-cell">${date(c.due_date)}${dueNote(c.due_date, !caseClosed)}</td>
+      <td class="due-cell"><span>${date(c.due_date)}${dueNote(c.due_date, !caseClosed)}</span></td>
       <td class="${c.finding_verdict ? '' : 'muted'}">${c.finding_verdict ? words(c.finding_verdict) : 'Not reviewed yet'}</td>
       <td class="row-action">${caseClosed ? words(c.closure) : c.can_act ? h`<button class="top-action-btn btn-row" data-act="followUp" data-id="${c.id}">Follow up</button>` : ''}</td>
     </tr>`);
     const followUps = selectable ? h`<button class="btn-intake-evidence" id="chaseAllBtn" data-act="chaseAll">Follow up on all</button>` : '';
     const allBox = h`<label class="select-all"><input type="checkbox" class="case-check-all" aria-label="Select all cases shown"></label>`;
     return card(caseClosed ? 'Closed cases' : 'Open cases', caseClosed ? 'Cases closed by accepted evidence or no longer applicable.' : `${rows.length} open${rows.filter((c) => (daysFromToday(c.due_date) ?? 1) < 0).length ? ` · ${rows.filter((c) => (daysFromToday(c.due_date) ?? 1) < 0).length} overdue` : ''}. Open a case to see its gap and history.`,
-      h`${tabs}${table([...(selectable ? [allBox] : []), 'Case', 'Pack', 'Stage', 'Owner', 'Due', 'Finding', caseClosed ? 'How it closed' : ''], caseRows, caseClosed ? 'No closed cases yet.' : 'No open cases.')}`, followUps);
+      h`${tabs}${table([...(selectable ? [allBox] : []), 'Case', 'Pack', 'Stage', 'Owner', 'Due', 'Finding', caseClosed ? 'How it closed' : ''], caseRows, caseClosed ? ['No closed cases yet', 'Cases appear here once accepted evidence closes them.'] : ['No open cases', 'Every check in scope passes, or its gap is already closed.'])}`, followUps);
   },
   async approvals() {
     scope(null);
-    const rows = await api('/api/approvals'), done = await api('/api/approvals?status=approved');
-    return h`<div class="stack">${card('Waiting for you', 'Only items your role can decide appear here.', table(['Type', 'Item', 'Detail', 'Requested by', ''], rows.map((a) => h`<tr><td><span class="priority-pill pill-low">${words(a.kind)}</span></td><td><strong>${a.title}</strong></td><td class="text-secondary">${a.detail}</td><td class="text-muted">${a.requested_by}</td><td style="text-align:right;white-space:nowrap"><button class="btn-link-action" data-act="decide" data-id="${a.id}" data-d="approved">Approve</button> <button class="btn-link-action danger" data-act="decide" data-id="${a.id}" data-d="rejected">Reject</button></td></tr>`), 'Nothing needs your approval.'))}
-    ${card('Recently approved', 'Decisions stay in the audit trail.', table(['Item', 'Decided by', 'When', 'Note'], done.slice(0, 10).map((a) => h`<tr><td>${a.title}</td><td>${a.decided_by}</td><td class="mono">${dt(a.decided_at)}</td><td class="text-muted">${a.note}</td></tr>`), 'No decisions yet.'))}</div>`;
+    const [rows, approved, rejected] = await Promise.all([api('/api/approvals'), api('/api/approvals?status=approved'), api('/api/approvals?status=rejected')]);
+    const done = [...approved, ...rejected].sort((a, b) => (a.decided_at < b.decided_at ? 1 : -1));
+    return h`<div class="stack">${card('Waiting for you', 'Only items your role can decide appear here.', table(['Type', 'Item', 'Detail', 'Requested by', ''], rows.map((a) => h`<tr><td><span class="pill pill-blue">${words(a.kind)}</span></td><td><strong>${a.title}</strong></td><td class="text-secondary">${a.detail}</td><td class="text-muted">${a.requested_by}</td><td style="text-align:right;white-space:nowrap"><button class="btn-link-action" data-act="decide" data-id="${a.id}" data-d="approved">Approve</button> <button class="btn-link-action danger" data-act="decide" data-id="${a.id}" data-d="rejected">Reject</button></td></tr>`), ['Nothing waiting for you', 'When Aegis needs a person to decide something, it appears here.']))}
+    ${card('Recent decisions', 'Approved and rejected items. Every decision also stays in the audit history.', table(['Item', 'Decision', 'Decided by', 'When', 'Note'], done.slice(0, 15).map((a) => h`<tr><td><strong>${a.title}</strong><div class="case-sub">${words(a.kind)}</div></td><td><span class="pill ${a.status === 'approved' ? 'pill-pass' : 'pill-fail'}">${a.status === 'approved' ? 'Approved' : 'Rejected'}</span></td><td>${a.decided_by}</td><td class="nowrap">${dt(a.decided_at)}</td><td class="text-muted">${a.note || '—'}</td></tr>`), ['No decisions yet', 'Approved and rejected items appear here.']))}</div>`;
   },
   async checks() {
     const qs = new URLSearchParams(Object.entries(checkFilter).filter(([, v]) => v)).toString();
     const d = await api(`/api/checks?${qs}`); scope(d.coverage);
     const chip = (k, v, l) => h`<button class="chip${(checkFilter[k] || '') === v ? ' on' : ''}" data-act="checkFilter" data-k="${k}" data-v="${v}">${l}</button>`;
-    return card('All Evaluations', `${d.rows.length} shown. Unknown means the record cannot prove the requirement yet.`, h`<div class="filters">${chip('status', '', 'All')}${chip('status', 'pass', 'Pass')}${chip('status', 'fail', 'Fail')}${chip('status', 'unknown', 'Unknown')}${chip('status', 'not_applicable', 'N/A')}<span style="width:12px"></span>${chip('pack', '', 'All packs')}${['healthcare', 'onboarding', 'immigration', 'payroll'].map((p) => chip('pack', p, words(p)))}</div>${table(['Subject', 'Control', 'Requirement', 'Result', 'Reason', 'Evidence', 'Version'], d.rows.map((c) => h`<tr><td><strong>${c.subject_name}</strong><div class="muted small">${c.facility}</div></td><td>${c.control_name}</td><td class="muted">${words(c.requirement_type)}</td><td>${statusPill(c.status)}</td><td>${c.reason}</td><td class="mono">${c.evidence_ids.length ? c.evidence_ids.length : '—'}</td><td class="mono">${c.control_version}</td></tr>`), 'No checks match.')}`);
+    return card('All Evaluations', `${d.rows.length} shown. Unknown means the record cannot prove the requirement yet.`, h`<div class="filters">${chip('status', '', 'All')}${chip('status', 'pass', 'Pass')}${chip('status', 'fail', 'Fail')}${chip('status', 'unknown', 'Unknown')}${chip('status', 'not_applicable', 'N/A')}<span style="width:12px"></span>${chip('pack', '', 'All packs')}${['healthcare', 'onboarding', 'immigration', 'payroll'].map((p) => chip('pack', p, words(p)))}</div>${table(['Subject', 'Control', 'Requirement', 'Result', 'Reason', 'Evidence', 'Version'], d.rows.map((c) => h`<tr><td><strong>${c.subject_name}</strong><div class="muted small">${c.facility}</div></td><td>${c.control_name}</td><td class="muted">${words(c.requirement_type)}</td><td>${statusPill(c.status)}</td><td>${c.reason}</td><td class="mono">${c.evidence_ids.length ? c.evidence_ids.length : '—'}</td><td class="mono">${c.control_version}</td></tr>`), ['No checks match', 'Try another result or pack filter.'])}`);
   },
   async workers() {
     scope(null);
@@ -435,27 +463,27 @@ const VIEWS = {
     const openOf = (w) => (w.checks?.fail || 0) + (w.checks?.unknown || 0);
     const rows = (await api('/api/workers')).sort((a, b) => openOf(b) - openOf(a) || a.name.localeCompare(b.name));
     const withGaps = rows.filter((w) => openOf(w)).length;
-    return card('All workers', `${rows.length} workers${withGaps ? ` · ${withGaps} with open checks` : ''}. A tick means the pack passes; only problems are highlighted.`, table(['Worker', 'Location', 'Onboarding', 'Healthcare', 'Immigration', 'Payroll', 'Overall', 'Open', 'Readiness'], rows.map((w) => h`<tr class="click" data-act="workerDetail" data-id="${w.id}"><td><button class="row-title" data-act="workerDetail" data-id="${w.id}">${w.name}</button>${w.status !== 'active' ? h` <span class="pill pill-na">${words(w.status)}</span>` : ''}<div class="case-sub">${w.role || 'No role'}</div></td><td class="${w.facility ? '' : 'muted'}">${w.facility || 'No confirmed location'}</td><td class="result-cell">${quietStatus(w.packs.onboarding)}</td><td class="result-cell">${quietStatus(w.packs.healthcare)}</td><td class="result-cell">${quietStatus(w.packs.immigration)}</td><td class="result-cell">${quietStatus(w.packs.payroll)}</td><td class="result-cell">${quietStatus(w.overall)}</td><td class="open-cell">${openOf(w) ? h`<b>${openOf(w)}</b>` : h`<span class="muted">0</span>`}</td><td class="${w.readiness === 'blocked' ? 'text-fail' : 'muted'}">${words(w.readiness)}</td></tr>`), 'No workers yet. Add one or import a roster.'));
+    return card('All workers', `${rows.length} workers${withGaps ? ` · ${withGaps} with open checks` : ''}. A tick means the pack passes; only problems are highlighted.`, table(['Worker', 'Location', 'Onboarding', 'Healthcare', 'Immigration', 'Payroll', 'Overall', 'Open', 'Readiness'], rows.map((w) => h`<tr class="click" data-act="workerDetail" data-id="${w.id}"><td><button class="row-title" data-act="workerDetail" data-id="${w.id}">${w.name}</button>${w.status !== 'active' ? h` <span class="pill pill-na">${words(w.status)}</span>` : ''}<div class="case-sub">${w.role || 'No role'}</div></td><td class="${w.facility ? '' : 'muted'}">${w.facility || 'No confirmed location'}</td><td class="result-cell">${quietStatus(w.packs.onboarding)}</td><td class="result-cell">${quietStatus(w.packs.healthcare)}</td><td class="result-cell">${quietStatus(w.packs.immigration)}</td><td class="result-cell">${quietStatus(w.packs.payroll)}</td><td class="result-cell">${quietStatus(w.overall)}</td><td class="open-cell">${openOf(w) ? h`<b>${openOf(w)}</b>` : h`<span class="muted">0</span>`}</td><td class="${w.readiness === 'blocked' ? 'text-fail' : 'muted'}">${words(w.readiness)}</td></tr>`), ['No workers yet', 'Add a worker, import a roster, or connect your HR system under Connections.']));
   },
   async evidence() {
     scope(null);
     const rows = (await api('/api/evidence')).sort((a, b) => (b.status === 'needs_review') - (a.status === 'needs_review'));
     const ev = rows.find((e) => e.id === evidenceSel) || rows.find((e) => e.status === 'needs_review') || null;
-    return h`<div class="bottom-split-row"><div class="split-card"><div class="split-card-header"><h3 class="split-title">Evidence inbox</h3></div>${table(['Document', 'Subject', 'Confidence', 'Status'], rows.map((e) => h`<tr class="click${e.id === ev?.id ? ' selected' : ''}" data-act="selectEvidence" data-id="${e.id}"><td><button class="row-title" data-act="selectEvidence" data-id="${e.id}">${words(e.doc_type)}</button><div class="muted small">${e.filename}</div></td><td class="text-secondary">${e.subject_name}</td><td>${e.source === 'demo_seed' ? '—' : `${Math.round((e.confidence || 0) * 100)}%`}</td><td>${statePill(e.status)}</td></tr>`), 'No evidence yet.')}</div>
+    return h`<div class="bottom-split-row"><div class="split-card"><div class="split-card-header"><h3 class="split-title">Evidence inbox</h3></div>${table(['Document', 'Subject', 'Confidence', 'Status'], rows.map((e) => h`<tr class="click${e.id === ev?.id ? ' selected' : ''}" data-act="selectEvidence" data-id="${e.id}"><td><button class="row-title" data-act="selectEvidence" data-id="${e.id}">${words(e.doc_type)}</button><div class="muted small">${e.filename}</div></td><td class="text-secondary">${e.subject_name}</td><td>${e.source === 'demo_seed' ? '—' : `${Math.round((e.confidence || 0) * 100)}%`}</td><td>${statePill(e.status)}</td></tr>`), ['No evidence yet', 'Documents appear here when workers send them or you upload them.'])}</div>
     <div class="split-card" style="position:sticky;top:80px;align-self:start"><div class="split-card-header"><h3 class="split-title">Field Inspector</h3>${ev ? statePill(ev.status) : ''}</div>${ev ? evidencePanel(ev) : h`<div class="empty">Select a document to inspect it.</div>`}</div></div>`;
   },
   async packs() {
     scope(null);
     const rows = await api('/api/packs');
-    return h`<div class="grid-2">${rows.map((p) => h`<div class="plain-card"><div class="between"><strong style="font-size:14px">${p.icon} ${p.name}</strong>${p.status === 'active' ? modePill(p.mode) : h`<span class="pill pill-na">Not active</span>`}</div><p class="muted small mt">${p.description}</p><p class="small mt"><span class="version-tag">v${p.version}${p.pilot ? ' pilot' : ''}</span> · ${p.controls.length} controls · Owner: ${p.owner || 'not assigned'}</p>
+    return h`<div class="grid-2">${rows.map((p) => h`<div class="plain-card"><div class="between"><strong class="pack-title">${packIcon(p.key)}${p.name}</strong>${p.status === 'active' ? modePill(p.mode) : h`<span class="pill pill-na">Not active</span>`}</div><p class="muted small mt">${p.description}</p><p class="small mt"><span class="version-tag">v${p.version}${p.pilot ? ' pilot' : ''}</span> · ${p.controls.length} controls · Owner: ${p.owner || 'not assigned'}</p>
     ${p.status === 'active' ? h`<p class="small mt">${p.pass} pass · ${p.fail} fail · ${p.unknown} unknown · ${p.unvalidated ? `${p.unvalidated} finding${p.unvalidated === 1 ? '' : 's'} to review` : 'No findings to review'}</p>` : ''}<div class="row mt"><button class="btn-card-outline" data-act="reviewPack" data-id="${p.key}">${p.status === 'active' ? 'View controls' : 'Review & activate'}</button>${p.status === 'active' ? (p.mode === 'shadow' ? h`<button class="btn-submit-green" data-act="packMode" data-id="${p.key}" data-m="auto">Enable automatic requests</button>` : h`<button class="btn-card-outline" data-act="packMode" data-id="${p.key}" data-m="shadow">Return to validation mode</button>`) : ''}</div></div>`)}</div>`;
   },
   async controls() {
     scope(null);
     const d = await api('/api/controls');
     return h`<div class="stack">${card('Natural Language Rule Drafter', 'Aegis drafts the change and previews it. Nothing takes effect until it is approved.', h`<form class="row" data-form="draftRule"><input name="text" class="form-select" style="flex:1;min-width:220px" required placeholder="Request renewals 30 days before expiration and escalate after two unanswered reminders." aria-label="Rule"><button class="btn-submit-green">Draft & preview</button></form>${lastDraft ? lastDraft.map(draftCard) : ''}`)}
-    ${card('Active Controls', 'Reviewed pack requirements stay separate from customer overrides.', table(['Control', 'Pack', 'Requirement', 'Schedule', 'Version', 'Source'], d.controls.map((c) => h`<tr><td><strong>${c.name}</strong><div class="mono muted">${c.key}</div></td><td><span class="priority-pill pill-low">${c.pack}</span></td><td class="muted">${words(c.requirement_type)}</td><td class="small">${c.remediation?.request_days_before !== undefined ? `${c.remediation.request_days_before}d before expiry; ` : ''}${c.remediation?.max_reminders !== undefined ? `escalate after ${c.remediation.max_reminders}` : 'owner task'}</td><td class="mono">${c.version}</td><td>${c.custom ? h`<span class="pill pill-blue">Custom</span>` : c.overridden ? h`<span class="pill pill-warn">Override</span>` : h`<span class="pill pill-na">Pack</span>`}</td></tr>`), 'No active controls.'))}
-    ${card('Change History', 'Drafts, approvals and superseded versions.', table(['Change', 'Control', 'Request', 'Status', 'By'], d.changes.map((c) => h`<tr><td>${c.kind}</td><td class="mono">${c.control_key}</td><td class="small">${c.source_text}</td><td>${statePill(c.status)}</td><td class="muted">${c.created_by}${c.approved_by ? ` → ${c.approved_by}` : ''}</td></tr>`), 'No changes yet.'))}</div>`;
+    ${card('Active Controls', 'Reviewed pack requirements stay separate from customer overrides.', table(['Control', 'Pack', 'Requirement', 'Schedule', 'Version', 'Source'], d.controls.map((c) => h`<tr><td><strong>${c.name}</strong><div class="mono muted">${c.key}</div></td><td><span class="priority-pill pill-low">${c.pack}</span></td><td class="muted">${words(c.requirement_type)}</td><td class="small">${c.remediation?.request_days_before !== undefined ? `${c.remediation.request_days_before}d before expiry; ` : ''}${c.remediation?.max_reminders !== undefined ? `escalate after ${c.remediation.max_reminders}` : 'owner task'}</td><td class="mono">${c.version}</td><td>${c.custom ? h`<span class="pill pill-blue">Custom</span>` : c.overridden ? h`<span class="pill pill-warn">Override</span>` : h`<span class="pill pill-na">Pack</span>`}</td></tr>`), ['No active controls', 'Activate a compliance pack to see its rules here.']))}
+    ${card('Change History', 'Drafts, approvals and superseded versions.', table(['Change', 'Control', 'Request', 'Status', 'By'], d.changes.map((c) => h`<tr><td>${c.kind}</td><td class="mono">${c.control_key}</td><td class="small">${c.source_text}</td><td>${statePill(c.status)}</td><td class="muted">${c.created_by}${c.approved_by ? ` → ${c.approved_by}` : ''}</td></tr>`), ['No rule changes yet', 'Drafted and approved changes to rules are listed here.']))}</div>`;
   },
   async integrations() {
     const [health, messages, connections] = await Promise.all([api('/api/health'), api('/api/messages'), api('/api/integrations')]);
@@ -468,23 +496,23 @@ const VIEWS = {
     return h`<div class="stack">
       ${me.sandbox ? h`<p class="alert-box">The sandbox uses the sample HRMS and records messages in the local outbox.</p>` : ''}
       <div class="grid-2">${hrmsCard(health.connectors)}${slackCard(connections.slack)}</div>
-      ${card('Failures', 'Review failed jobs, deliveries and connections.', table(['Type', 'Item', 'Error'], failures.map(([kind, item, error]) => h`<tr><td>${kind}</td><td>${item}</td><td>${error}</td></tr>`), 'No failures.'))}
-      ${card('Message Outbox', 'Delivery status and secure worker links.', table(['When', 'To', 'Subject', 'Delivery', ''], messages.map(outboxRow), 'No messages yet.'))}
+      ${card('Failures', 'Review failed jobs, deliveries and connections.', table(['Type', 'Item', 'Error'], failures.map(([kind, item, error]) => h`<tr><td>${kind}</td><td>${item}</td><td>${error}</td></tr>`), ['Everything is running', 'Failed syncs, messages or background jobs would show up here.']))}
+      ${card('Message Outbox', 'Delivery status and secure worker links.', table(['When', 'To', 'Subject', 'Delivery', ''], messages.map(outboxRow), ['No messages yet', 'Every message Aegis sends is kept here, including ones held in the outbox.']))}
     </div>`;
   },
   async dashboards(arg) {
     scope(null);
     const list = await api('/api/dashboards'), cur = arg ? await api(`/api/dashboards/${arg}`) : null;
     return h`<div class="stack">${cur ? card(cur.name, `Grouped by ${cur.definition.group_by}. ${cur.data.total} item(s). Access: ${JSON.parse(cur.roles_json).map(words).join(', ')}.`, cur.data.groups.length ? cur.data.groups.map((g) => h`<div class="bar-row"><span>${g.name}</span><div class="bar-track"><div class="bar-fill" style="width:${g.count / cur.data.groups[0].count * 100}%"></div></div><strong>${g.count}</strong></div><div class="muted small mb">${g.items.slice(0, 5).map((i) => `${i.subject}: ${i.control}`).join(' · ')}</div>`) : h`<div class="empty">Nothing to show for this view.</div>`, h`<button class="btn-card-outline" data-act="copyLink">Copy link</button>`) : ''}
-    ${card('Saved Views', 'Ask the coworker to create one, or use the form.', table(['Name', 'Created by', ''], list.map((d) => h`<tr><td><strong>${d.name}</strong></td><td class="muted">${d.created_by}</td><td style="text-align:right"><a class="btn-link-action" href="#dashboards/${d.id}">Open</a></td></tr>`), 'No saved views yet.'))}
+    ${card('Saved Views', 'Ask the coworker to create one, or use the form.', table(['Name', 'Created by', ''], list.map((d) => h`<tr><td><strong>${d.name}</strong></td><td class="muted">${d.created_by}</td><td style="text-align:right"><a class="btn-link-action" href="#dashboards/${d.id}">Open</a></td></tr>`), ['No saved views yet', 'Create one below, or ask the coworker, for example "Show open gaps by facility".']))}
     <form class="plain-card" data-form="dashboard"><strong>New view</strong><div class="form-grid mt"><div class="form-group"><label class="form-label">Name</label><input name="name" class="form-select" required></div><div class="form-group"><label class="form-label">Pack</label><select name="pack" class="form-select"><option value="">All</option><option>healthcare</option><option>onboarding</option><option>immigration</option><option>payroll</option></select></div><div class="form-group"><label class="form-label">Show</label><select name="metric" class="form-select"><option value="open_gaps">Open gaps</option><option value="missing_evidence">Missing evidence</option><option value="expirations">Expirations</option><option value="coverage">All applicable checks</option></select></div><div class="form-group"><label class="form-label">Group by</label><select name="group_by" class="form-select"><option>facility</option><option>team</option><option>pack</option><option>status</option><option>control</option></select></div></div><button class="btn-submit-green">Save view</button></form></div>`;
   },
   async reports() {
     const o = await api('/api/overview'); scope(o.coverage);
     const canFin = me.user.is_admin || me.user.role === 'finance', notices = canFin ? await api('/api/notices') : [];
-    return h`<div class="stack"><div class="grid-3">${o.packs.map((p) => h`<div class="plain-card"><strong>${p.icon} ${p.name}</strong><p class="muted small mt">${p.pass} pass, ${p.fail} fail and ${p.unknown} unknown of ${p.total} applicable checks.</p><a class="btn-card-outline mt" href="/api/reports/${p.key}" download>Download CSV</a></div>`)}<div class="plain-card"><strong>All activated packs</strong><p class="muted small mt">Includes the scope statement, reasons and evidence references.</p><a class="btn-card-outline mt" href="/api/reports/all" download>Download CSV</a></div>
+    return h`<div class="stack"><div class="grid-3">${o.packs.map((p) => h`<div class="plain-card"><strong class="pack-title">${packIcon(p.key)}${p.name}</strong><p class="muted small mt">${p.pass} pass, ${p.fail} fail and ${p.unknown} unknown of ${p.total} applicable checks.</p><a class="btn-card-outline mt" href="/api/reports/${p.key}" download>Download CSV</a></div>`)}<div class="plain-card"><strong>All activated packs</strong><p class="muted small mt">Includes the scope statement, reasons and evidence references.</p><a class="btn-card-outline mt" href="/api/reports/all" download>Download CSV</a></div>
     ${me.user.is_admin ? h`<div class="plain-card"><strong>Digest</strong><p class="muted small mt">Posted daily to the reporting channel. Uses the same records as this page.</p><button class="btn-card-outline mt" data-act="sendDigest">Send digest now</button></div>` : ''}</div>
-    ${canFin ? h`${card('Tax Notice Intake', 'Aegis drafts a response. Finance reviews it, and nothing is filed by Aegis.', table(['Agency', 'Type', 'Respond by', 'Status', ''], notices.map((n) => h`<tr><td><strong>${n.agency}</strong></td><td>${n.notice_type}</td><td class="date-urgent">${date(n.response_due)}</td><td>${statePill(n.status)}</td><td style="text-align:right"><button class="btn-link-action" data-act="viewNotice" data-text="${n.draft_response}">View draft</button></td></tr>`), 'No notices logged.'))}<form class="plain-card" data-form="notice"><strong>Log a notice</strong><div class="form-grid mt"><div class="form-group"><label class="form-label">Agency</label><input name="agency" class="form-select" required></div><div class="form-group"><label class="form-label">Notice type</label><input name="notice_type" class="form-select" required></div><div class="form-group"><label class="form-label">Respond by</label><input name="response_due" type="date" class="form-select"></div><div class="form-group"><label class="form-label">Summary</label><input name="summary" class="form-select" required></div></div><button class="btn-submit-green">Draft response</button></form>` : ''}</div>`;
+    ${canFin ? h`${card('Tax Notice Intake', 'Aegis drafts a response. Finance reviews it, and nothing is filed by Aegis.', table(['Agency', 'Type', 'Respond by', 'Status', ''], notices.map((n) => h`<tr><td><strong>${n.agency}</strong></td><td>${n.notice_type}</td><td class="date-urgent">${date(n.response_due)}</td><td>${statePill(n.status)}</td><td style="text-align:right"><button class="btn-link-action" data-act="viewNotice" data-text="${n.draft_response}">View draft</button></td></tr>`), ['No tax notices yet', 'Log a notice and Aegis drafts a response for Finance to review.']))}<form class="plain-card" data-form="notice"><strong>Log a notice</strong><div class="form-grid mt"><div class="form-group"><label class="form-label">Agency</label><input name="agency" class="form-select" required></div><div class="form-group"><label class="form-label">Notice type</label><input name="notice_type" class="form-select" required></div><div class="form-group"><label class="form-label">Respond by</label><input name="response_due" type="date" class="form-select"></div><div class="form-group"><label class="form-label">Summary</label><input name="summary" class="form-select" required></div></div><button class="btn-submit-green">Draft response</button></form>` : ''}</div>`;
   },
   async metrics() {
     scope(null);
@@ -499,7 +527,7 @@ const VIEWS = {
     scope(null);
     if (!me.user.is_admin) return h`<div class="plain-card empty">The audit trail is available to administrators.</div>`;
     const rows = await api('/api/audit'), v = await api('/api/audit/verify');
-    return card('Audit Log', `${v.entries} entries. Chain ${v.ok ? 'verified' : `broken at entry ${v.broken_at_seq}`}.`, table(['Time (UTC)', 'Event', 'Subject', 'Action', 'Actor', 'Hash'], rows.map((a) => h`<tr><td class="mono">${dt(a.ts)}</td><td><span class="priority-pill pill-low">${a.type}</span></td><td><strong>${a.subject}</strong></td><td>${a.action}</td><td class="text-muted">${a.actor}</td><td class="mono" title="${a.hash}">${a.hash.slice(0, 10)}…</td></tr>`), 'No entries yet.'), h`<span class="pill ${v.ok ? 'pill-pass' : 'pill-fail'}">${v.ok ? 'Chain verified' : 'Chain broken'}</span><a class="btn-card-outline" href="/api/audit/export" download>Export JSON</a>`);
+    return card('Audit Log', `${v.entries} entries. Chain ${v.ok ? 'verified' : `broken at entry ${v.broken_at_seq}`}.`, table(['Time (UTC)', 'Event', 'Subject', 'Action', 'Actor', 'Hash'], rows.map((a) => h`<tr><td class="mono">${dt(a.ts)}</td><td><span class="priority-pill pill-low">${a.type}</span></td><td><strong>${a.subject}</strong></td><td>${a.action}</td><td class="text-muted">${a.actor}</td><td class="mono" title="${a.hash}">${a.hash.slice(0, 10)}…</td></tr>`), ['No entries yet', 'Every check, request and decision is recorded here.']), h`<span class="pill ${v.ok ? 'pill-pass' : 'pill-fail'}">${v.ok ? 'Chain verified' : 'Chain broken'}</span><a class="btn-card-outline" href="/api/audit/export" download>Export JSON</a>`);
   },
   async settings() {
     scope(null);
@@ -508,7 +536,7 @@ const VIEWS = {
     return h`<div class="stack">${card('AI Engine', 'Reads photos and scanned documents, and helps chat understand free-form questions. It cannot accept evidence or set a result.', h`${ai.last_error ? h`<div class="alert-box"><strong>Last AI problem:</strong> ${ai.last_error.message}</div>` : ''}${ai.configured ? h`<dl class="kv mb"><dt>Status</dt><dd><span class="pill pill-pass">Connected</span></dd><dt>Provider</dt><dd>${ai.provider_label} (${ai.model})</dd><dt>Key</dt><dd class="mono">${ai.key_hint}</dd><dt>Set from</dt><dd>${ai.source}${ai.approved_by ? ` · approved by ${ai.approved_by}` : ''}</dd><dt>Scanned PDFs</dt><dd>${ai.reads_scanned_pdf ? 'Supported' : 'Not supported by this provider. They go to human review.'}</dd></dl><div class="row mb"><button class="btn-card-outline" data-act="aiTest">Test connection</button>${ai.source === 'settings' ? h`<button class="btn-danger" data-act="aiRemove">Remove key</button>` : ''}</div>` : ''}<form data-form="aiKey"><div class="form-grid"><div class="form-group"><label class="form-label">Provider</label><select name="provider" class="form-select">${ai.providers.slice().sort((a) => (a.key === 'deepseek' ? -1 : 1)).map((p) => h`<option value="${p.key}" ${(ai.provider || 'deepseek') === p.key ? raw('selected') : ''}>${p.label}</option>`)}</select></div><div class="form-group"><label class="form-label">API key</label><input name="api_key" type="password" class="form-select" autocomplete="off" required placeholder="${ai.configured ? 'Paste a new key to replace it' : 'Paste your key'}"></div></div><label class="row small mb"><input type="checkbox" name="approved" required> Our compliance owner approved sending worker documents to this provider.</label><button class="btn-submit-green">Test & save</button></form>`)}
     ${card('Users & Roles', 'Roles limit which packs a person can act on. Immigration records are restricted.', table(['Name', 'Email', 'Role', 'Slack ID'], users.map((u) => h`<tr><td><strong>${u.name}</strong></td><td>${u.email}</td><td>${words(u.role)}</td><td class="mono">${u.slack_id}</td></tr>`), ''))}
     <form class="plain-card" data-form="user"><strong>Add user</strong><div class="form-grid mt"><div class="form-group"><label class="form-label">Name</label><input name="name" class="form-select" required></div><div class="form-group"><label class="form-label">Email</label><input name="email" type="email" class="form-select" required></div><div class="form-group"><label class="form-label">Role</label><select name="role" class="form-select"><option>hr</option><option>healthcare_compliance</option><option>immigration_owner</option><option>finance</option><option>viewer</option><option>admin</option></select></div><div class="form-group"><label class="form-label">Temporary password</label><input name="password" type="password" minlength="8" class="form-select" required></div></div><button class="btn-submit-green">Add user</button></form>
-    ${card('Schedules', 'Checks run daily. Reminders run on each control’s cadence.', table(['Job', 'Cadence', 'Next run'], hl.schedules.map((s) => h`<tr><td>${s.kind}</td><td>${s.cadence}</td><td class="mono">${dt(s.next_run_at)}</td></tr>`), 'No schedules.'))}</div>`;
+    ${card('Schedules', 'Checks run daily. Reminders run on each control’s cadence.', table(['Job', 'Cadence', 'Next run'], hl.schedules.map((s) => h`<tr><td>${s.kind}</td><td>${s.cadence}</td><td class="mono">${dt(s.next_run_at)}</td></tr>`), ['No schedules', 'Daily checks and digests appear here once set up.']))}</div>`;
   },
 };
 
@@ -670,7 +698,7 @@ const ACT = {
       go(VIEWS[r] ? r : 'overview', a || null);
     }
   },
-  closeModal, openChat: () => { $('#chatDrawer').classList.add('open'); loadChat(); }, closeChat: () => $('#chatDrawer').classList.remove('open'),
+  closeModal, openChat: () => { $('#chatDrawer').classList.add('open'); loadChat(); setTimeout(() => $('#chatDrawer [name="text"]')?.focus(), 120); }, closeChat: () => closeChat(),
   async logout() { await api('/api/logout', {}); location.hash = ''; location.reload(); },
   prompt: (el) => { $('#chatDrawer').classList.add('open'); sendChat(el.dataset.q); },
   async caseDetail(el) {
@@ -740,7 +768,7 @@ const ACT = {
   bulkUpload(el, ev) { return ACT.uploadEvidence(el, ev, true); },
   async reviewPack(el) {
     const [packs, owners] = await Promise.all([api('/api/packs'), api('/api/owners')]), p = packs.find((x) => x.key === el.dataset.id);
-    openModal(`${p.icon} ${p.name}`, `Version ${p.latest_version}`, h`<div class="alert-box">${p.review_note}</div>${table(['Control', 'Type', 'Source'], p.controls.map((c) => h`<tr><td><strong>${c.name}</strong></td><td class="muted">${words(c.requirement_type)}</td><td class="small">${c.source}</td></tr>`), '')}<p class="small mt"><strong>Validation tests:</strong> ${p.validation.filter((v) => v.ok).length} of ${p.validation.length} pass.</p>${me.user.is_admin ? h`<form data-form="activate" data-id="${p.key}" class="mt"><div class="form-group"><label class="form-label">Responsible owner</label><select name="owner_user_id" class="form-select" required>${owners.map((o) => h`<option value="${o.id}" ${(p.owner_user_id ? o.id === p.owner_user_id : o.role === p.owner_role) ? raw('selected') : ''}>${o.name} (${words(o.role)})</option>`)}</select></div><label class="row small"><input type="checkbox" name="reviewed" required> I reviewed applicability, sources and deadlines for this company.</label><button class="btn-submit-green mt">${p.status === 'active' ? 'Update' : 'Activate in validation mode'}</button></form>` : ''}`, null, true);
+    openModal(p.name, `Version ${p.latest_version}`, h`<div class="alert-box">${p.review_note}</div>${table(['Control', 'Type', 'Source'], p.controls.map((c) => h`<tr><td><strong>${c.name}</strong></td><td class="muted">${words(c.requirement_type)}</td><td class="small">${c.source}</td></tr>`), '')}<p class="small mt"><strong>Validation tests:</strong> ${p.validation.filter((v) => v.ok).length} of ${p.validation.length} pass.</p>${me.user.is_admin ? h`<form data-form="activate" data-id="${p.key}" class="mt"><div class="form-group"><label class="form-label">Responsible owner</label><select name="owner_user_id" class="form-select" required>${owners.map((o) => h`<option value="${o.id}" ${(p.owner_user_id ? o.id === p.owner_user_id : o.role === p.owner_role) ? raw('selected') : ''}>${o.name} (${words(o.role)})</option>`)}</select></div><label class="row small"><input type="checkbox" name="reviewed" required> I reviewed applicability, sources and deadlines for this company.</label><button class="btn-submit-green mt">${p.status === 'active' ? 'Update' : 'Activate in validation mode'}</button></form>` : ''}`, null, true);
   },
   async packMode(el) { await api(`/api/packs/${el.dataset.id}/mode`, { mode: el.dataset.m }); toast('Pack mode updated.', 'success'); after(); },
   async submitDraft(el) { await api(`/api/controls/${el.dataset.id}/submit`, {}); lastDraft = (lastDraft || []).filter((d) => d.id !== el.dataset.id); toast('Sent to Approvals. It is not active yet.', 'success'); refresh(); },
@@ -880,9 +908,16 @@ const FORM = {
   async login(d) { await api('/api/login', d); location.reload(); },
 };
 const md = (t) => esc(t).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/#dashboards\/(dash_[a-f0-9]+)/g, '<a href="#dashboards/$1">Open dashboard</a>').replace(/\n/g, '<br>');
+// Closing the panel returns focus to the button that opened it.
+function closeChat() {
+  const d = $('#chatDrawer'); if (!d?.classList.contains('open')) return false;
+  d.classList.remove('open');
+  $('.rail-assistant')?.focus({ preventScroll: true });
+  return true;
+}
 async function loadChat() {
   const list = await api('/api/chat'), m = $('#chatMessages');
-  m.innerHTML = list.length ? list.map((x) => `<div class="chat-bubble ${x.sender === 'bot' ? 'bot' : 'user'}"><span class="chat-bubble-author">${esc(x.author)}</span><div class="chat-bubble-content">${md(x.text)}</div></div>`).join('') : '<div class="empty">Ask about gaps, expirations or approvals.</div>';
+  m.innerHTML = list.length ? list.map((x) => `<div class="chat-bubble ${x.sender === 'bot' ? 'bot' : 'user'}"><span class="chat-bubble-author">${esc(x.author)}</span><div class="chat-bubble-content">${md(x.text)}</div></div>`).join('') : '<div class="empty chat-empty">Ask about gaps, expirations or approvals.</div>';
   m.scrollTop = m.scrollHeight;
 }
 async function sendChat(text) { if (!text) return; try { await api('/api/chat', { text }); } catch (e) { toast(e.message, 'warning'); } await loadChat(); refresh(); }
@@ -1393,8 +1428,10 @@ document.addEventListener('submit', async (ev) => {
 });
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
-    if (!$('#modal').classList.contains('open') && !$('#chatDrawer')?.classList.contains('open') && caseSel.size) clearCaseSelection();
-    closeModal();
+    // Escape closes the top-most thing: a window, then the coworker panel, then the case selection.
+    if ($('#modal').classList.contains('open')) closeModal();
+    else if (closeChat()) { /* closed the coworker panel */ }
+    else if (caseSel.size) clearCaseSelection();
     closeDemoRack();
     closeAllDirMenus();
     setNavigationOpen(false);
