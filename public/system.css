@@ -540,3 +540,410 @@ body.has-selection .toast-container {
   .selection-count b.tick { animation: none; }
   :is(html, #aegis) :is(.case-check, .case-check-all)::after { transition: none; }
 }
+
+/* ==========================================================================
+   KEY SCREENS: Overview, Cases, Workers
+   ========================================================================== */
+
+/* ---------- Overview: "Today" strip ---------- */
+.today-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.today-label {
+  padding: 0 var(--space-3) 0 var(--space-2);
+  border-right: 1px solid var(--border);
+  color: var(--text-muted);
+  font: 650 var(--fs-11)/2 var(--font-sans);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.today-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  font-size: var(--fs-13);
+  text-decoration: none;
+  transition: background-color .15s ease, color .15s ease;
+}
+
+a.today-item:hover {
+  background: var(--bg-fill);
+  color: var(--text);
+}
+
+.today-item b {
+  color: var(--text);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.today-item.is-zero {
+  color: var(--text-muted);
+}
+
+.today-item.is-zero b {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.today-item i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.tone-late { background: var(--fail-dot); box-shadow: 0 0 0 3px var(--fail-bg); }
+.tone-soon { background: var(--warn-dot); box-shadow: 0 0 0 3px var(--warn-bg); }
+.tone-ok { background: var(--pass-dot); box-shadow: 0 0 0 3px var(--pass-bg); }
+.tone-zero { background: var(--gray-300); }
+
+/* ---------- Overview: pack bars ---------- */
+:is(html, #aegis) .ov-pack-score {
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+}
+
+:is(html, #aegis) .ov-pack-score b {
+  color: var(--text);
+  font-size: var(--fs-13);
+  font-weight: 700;
+}
+
+:is(html, #aegis) .ov-pack-bar {
+  height: 8px;
+  margin: 8px 0 8px;
+  border-radius: var(--radius-full);
+  background: var(--gray-100);
+}
+
+:is(html, #aegis) .ov-pack-bar i + i {
+  border-left: 2px solid var(--bg-surface);
+}
+
+.ov-pack-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px var(--space-3);
+}
+
+.ov-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary);
+  font-size: var(--fs-12);
+}
+
+.ov-count i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.ov-count-fail i { background: var(--fail-dot); }
+.ov-count-unknown i { background: var(--warn-dot); }
+.ov-count-pass i { background: var(--pass-dot); }
+
+.ov-mode {
+  margin-left: auto;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-xs);
+  background: var(--bg-fill);
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+  font-weight: 600;
+}
+
+/* Unknown is amber everywhere, also in the coverage bars. */
+:is(html, #aegis) .ov-band-unknown { background: var(--warn-dot); }
+:is(html, #aegis) .ov-coverage .ov-band-unknown { background: var(--gray-400); }
+
+/* ---------- Due dates with urgency ---------- */
+.due-note {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--fs-12);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.due-late { color: var(--fail-fg); }
+.due-soon { color: var(--warn-fg); }
+
+/* ---------- Cases table ---------- */
+:is(html, #aegis) .table-scroll-container td.case-main {
+  min-width: 220px;
+}
+
+.case-sub {
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+  line-height: 1.4;
+}
+
+.case-sub .mono {
+  font-size: var(--fs-11);
+  letter-spacing: .02em;
+}
+
+.pack-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.pack-tag::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--gray-400);
+}
+
+.pack-tag.pack-healthcare::before { background: var(--info-fg); }
+.pack-tag.pack-onboarding::before { background: var(--brand-600); }
+.pack-tag.pack-immigration::before { background: var(--warn-dot); }
+.pack-tag.pack-payroll::before { background: var(--gray-600); }
+
+.stage-cell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+:is(html, #aegis) .table-scroll-container :is(td.owner-cell, td.due-cell) {
+  white-space: nowrap;
+}
+
+/* ---------- Workers table ---------- */
+:is(html, #aegis) .table-scroll-container td.result-cell {
+  text-align: left;
+}
+
+.ok-tick {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--pass-bg);
+  color: var(--pass-dot);
+}
+
+.ok-tick svg {
+  width: 13px;
+  height: 13px;
+}
+
+.na-dash {
+  display: inline-block;
+  width: 22px;
+  color: var(--gray-400);
+  text-align: center;
+}
+
+.open-cell b {
+  display: inline-grid;
+  place-items: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: var(--radius-full);
+  background: var(--fail-bg);
+  color: var(--fail-fg);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Case window ---------- */
+.stepper {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  margin: 0 0 var(--space-5);
+  padding: 0;
+  list-style: none;
+}
+
+.stepper li {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+  text-align: center;
+}
+
+/* the line between the dots */
+.stepper li::before {
+  content: "";
+  position: absolute;
+  top: 5px;
+  right: 50%;
+  width: 100%;
+  height: 2px;
+  background: var(--border);
+}
+
+.stepper li:first-child::before { display: none; }
+.stepper li.done::before,
+.stepper li.now::before { background: var(--primary); }
+
+.stepper .dot {
+  position: relative;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border-strong);
+  border-radius: 50%;
+  background: var(--bg-surface);
+}
+
+.stepper li.done .dot {
+  border-color: var(--primary);
+  background: var(--primary);
+}
+
+.stepper li.now .dot {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 4px var(--brand-100);
+}
+
+.stepper li.done { color: var(--text-secondary); }
+.stepper li.now { color: var(--brand-700); font-weight: 700; }
+
+.case-result {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-subtle);
+}
+
+.case-result p {
+  color: var(--text);
+  font-size: var(--fs-14);
+  line-height: 1.5;
+}
+
+.modal-body .detail-heading {
+  margin: var(--space-4) 0 var(--space-1);
+  color: var(--text);
+  font-size: var(--fs-13);
+  font-weight: 650;
+}
+
+.history .timeline-item.is-note span {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-xs);
+  background: var(--brand-50);
+}
+
+.tech-details {
+  margin-top: var(--space-4);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-3);
+}
+
+.tech-details summary {
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.tech-details summary:hover { color: var(--text); }
+
+/* ---------- Worker window ---------- */
+.pack-boxes {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.pack-box {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-top-width: 3px;
+  border-radius: var(--radius);
+  background: var(--bg-surface);
+  font-size: var(--fs-13);
+  font-weight: 600;
+}
+
+.pack-box small {
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+  font-weight: 500;
+}
+
+.pack-box-pass { border-top-color: var(--pass-dot); }
+.pack-box-fail { border-top-color: var(--fail-dot); }
+.pack-box-unknown { border-top-color: var(--warn-dot); }
+.pack-box-not_applicable,
+.pack-box-restricted,
+.pack-box-not_assessed { border-top-color: var(--gray-300); }
+
+.readiness-note {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius);
+  font-size: var(--fs-13);
+}
+
+.readiness-note b { font-size: var(--fs-14); }
+.readiness-note.is-open { background: var(--warn-bg); color: var(--warn-fg); }
+.readiness-note.is-clear { background: var(--pass-bg); color: var(--pass-fg); }
+
+/* ---------- Phones ---------- */
+@media (max-width: 760px) {
+  .today-strip { padding: var(--space-2); gap: 2px; }
+  .today-label { width: 100%; border-right: 0; padding-bottom: 2px; }
+  .today-item { width: 100%; }
+  .pack-boxes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stepper { grid-template-columns: repeat(4, minmax(0, 1fr)); row-gap: var(--space-3); }
+  .stepper li:nth-child(5)::before { display: none; }
+}
+
+/* Fixes after review: neutral link text in the Today strip; the step dot sits above the line. */
+:is(html, #aegis) .ov-workspace a.today-item { color: var(--text-secondary); text-decoration: none; }
+:is(html, #aegis) .ov-workspace a.today-item:hover { color: var(--text); }
+.stepper .dot { z-index: 1; }
+.history .timeline-item time { flex: none; width: 150px; min-width: 0; white-space: nowrap; }

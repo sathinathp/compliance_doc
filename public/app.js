@@ -77,6 +77,28 @@ const statusPill = (s) => { const [c, l] = PILL[s] || ['pill-na', words(s)]; ret
 const STATE_PILL = { needs_review: 'pill-warn', accepted: 'pill-pass', rejected: 'pill-fail', superseded: 'pill-na', sent: 'pill-pass', queued: 'pill-blue', pending_approval: 'pill-warn' };
 const statePill = (s) => h`<span class="pill ${STATE_PILL[s] || 'pill-blue'}">${words(s)}</span>`;
 const prio = (p) => h`<span class="priority-pill ${p === 'high' ? 'pill-high' : p === 'medium' ? 'pill-med' : 'pill-low'}">${words(p)}</span>`;
+// How urgent a due date is, in words: "22 days overdue", "Due today", "Due in 3 days".
+const daysFromToday = (d) => d ? Math.round((Date.parse(`${String(d).slice(0, 10)}T00:00:00Z`) - Date.parse(`${me.today}T00:00:00Z`)) / 864e5) : null;
+const dueNote = (d, open = true) => {
+  const n = daysFromToday(d);
+  if (!open || n === null || n > 7) return '';
+  if (n < 0) return h`<small class="due-note due-late">${-n} day${n === -1 ? '' : 's'} overdue</small>`;
+  if (n === 0) return h`<small class="due-note due-late">Due today</small>`;
+  return h`<small class="due-note due-soon">Due in ${n} day${n === 1 ? '' : 's'}</small>`;
+};
+// Pack name as a soft label.
+const packTag = (k) => h`<span class="pack-tag pack-${k}">${words(k)}</span>`;
+// For grids full of results: a pass is a quiet tick, "not applicable" a dash, and only problems are loud.
+const tickSvg = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+const quietStatus = (s) => s === 'pass' ? h`<span class="ok-tick" title="Pass">${raw(tickSvg)}<span class="visually-hidden">Pass</span></span>`
+  : s === 'not_applicable' ? h`<span class="na-dash" title="Not applicable"><span aria-hidden="true">—</span><span class="visually-hidden">Not applicable</span></span>`
+  : statusPill(s);
+// Case progress as a line of steps, like a delivery tracker.
+const STEPS = [['identified', 'Found'], ['assigned', 'Assigned'], ['requested', 'Requested'], ['following_up', 'Following up'], ['in_review', 'In review'], ['reevaluating', 'Re-checking'], ['closed', 'Closed']];
+const stepper = (state) => {
+  const at = Math.max(0, STEPS.findIndex(([k]) => k === state));
+  return h`<ol class="stepper" aria-label="Case progress">${STEPS.map(([, label], i) => h`<li class="${i < at ? 'done' : i === at ? 'now' : ''}" ${i === at ? raw('aria-current="step"') : ''}><span class="dot" aria-hidden="true"></span><span class="label">${label}</span></li>`)}</ol>`;
+};
 const hookSvg = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v11a4 4 0 1 1-4-4"/></svg>';
 const empty = (cols, t) => h`<tr><td colspan="${cols}"><div class="empty"><span class="hook">${raw(hookSvg)}</span><div><b>No items</b><span>${t}</span></div></div></td></tr>`;
 const table = (heads, rows, none) => h`<div class="table-scroll-container"><table><thead><tr>${heads.map((x) => h`<th>${x}</th>`)}</tr></thead><tbody>${rows.length ? rows : empty(heads.length, none)}</tbody></table></div>`;
@@ -284,9 +306,10 @@ function confirmFollowUps(ids, scopeText) {
 function openCaseCell(c) { return h`<button class="btn-link-action" data-act="caseDetail" data-id="${c.id}">Open</button>`; }
 const VIEWS = {
   async overview() {
-    const [report, health] = await Promise.all([
+    const [report, health, openCases] = await Promise.all([
       api('/api/overview'),
-      me.user.is_admin ? api('/api/health') : null
+      me.user.is_admin ? api('/api/health') : null,
+      api('/api/cases')
     ]);
     const { coverage, kpi, urgent, packs } = report;
     const percent = (count) => coverage.total ? 100 * count / coverage.total : 0;
@@ -302,7 +325,17 @@ const VIEWS = {
       alert.innerHTML = failedConnector ? render(h`<p><b>${failedConnector.name}</b> needs attention. ${failedConnector.last_error}</p><a class="btn" href="#integrations">Review connection</a>`) : '';
     }
     const subtitle = $('#scope');
-    if (subtitle) subtitle.textContent = `Assessment as of ${dt(coverage.as_of)} UTC`;
+    if (subtitle) subtitle.textContent = `Last checked ${dt(coverage.as_of)} UTC · ${packs.length} active pack${packs.length === 1 ? '' : 's'}`;
+    // "Today": what needs attention now, each part a link to the list behind it.
+    const overdue = openCases.filter((c) => (daysFromToday(c.due_date) ?? 1) < 0).length;
+    const dueSoon = openCases.filter((c) => { const n = daysFromToday(c.due_date); return n !== null && n >= 0 && n <= 7; }).length;
+    const today = [
+      { n: overdue, one: 'case overdue', many: 'cases overdue', tone: 'late', href: '#cases' },
+      { n: dueSoon, one: 'case due this week', many: 'cases due this week', tone: 'soon', href: '#cases' },
+      { n: kpi.expiring, one: 'credential expiring soon', many: 'credentials expiring soon', tone: 'soon', href: '#checks' },
+      { n: kpi.pending_approvals, one: 'approval waiting for you', many: 'approvals waiting for you', tone: 'soon', href: '#approvals' }
+    ];
+    const allClear = today.every((t) => !t.n);
     const workload = [
       { label: 'Open cases', count: kpi.open_cases, destination: 'cases' },
       { label: 'Pending approvals', count: kpi.pending_approvals, destination: 'approvals' },
@@ -310,6 +343,11 @@ const VIEWS = {
     ];
     const fmtDate = (iso) => iso ? new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(new Date(iso)) : 'No deadline';
     return h`<div class="ov-workspace">
+      <nav class="today-strip${allClear ? ' all-clear' : ''}" aria-label="Needs attention today">
+        <span class="today-label">Today</span>
+        ${allClear ? h`<span class="today-item"><i class="tone-ok"></i>Nothing needs attention right now</span>`
+          : today.map((t) => h`<a class="today-item${t.n ? '' : ' is-zero'}" href="${t.href}"><i class="tone-${t.n ? t.tone : 'zero'}"></i><b>${t.n}</b> ${t.n === 1 ? t.one : t.many}</a>`)}
+      </nav>
       <section class="ov-snapshot" aria-label="Assessment summary">
         <div class="ov-coverage">
           <div class="ov-heading"><h2>Verification coverage</h2><a href="#checks">View checks <span aria-hidden="true">↗</span></a></div>
@@ -329,12 +367,12 @@ const VIEWS = {
           ${urgent.length ? h`<div class="ov-table-scroll" tabindex="0" role="region" aria-label="Priority cases table"><table class="ov-table"><thead><tr><th scope="col">Case</th><th scope="col">Owner</th><th scope="col">Due</th></tr></thead><tbody>
             ${urgent.map((c) => h`<tr><td><a class="ov-case-title" href="#cases/${encodeURIComponent(c.id)}">${c.control_name}</a><small>${c.subject_name} <span aria-hidden="true">·</span> ${words(c.state)}</small></td>
             <td>${c.owner_name || c.owner_team || 'Unassigned'}</td>
-            <td><time datetime="${c.due_date || ''}">${fmtDate(c.due_date)}</time>${c.due_date && c.due_date < me.today ? h`<small class="ov-overdue">Overdue</small>` : c.priority === 'high' ? h`<small class="ov-urgent">High priority</small>` : ''}</td></tr>`)}
+            <td><time datetime="${c.due_date || ''}">${fmtDate(c.due_date)}</time>${dueNote(c.due_date) || (c.priority === 'high' ? h`<small class="ov-urgent">High priority</small>` : '')}</td></tr>`)}
           </tbody></table></div>` : h`<div class="ov-empty"><h3>No open cases in your queue</h3><p>${coverage.total ? 'See Checks for individual assessment results.' : 'Cases appear after the first assessment finds a gap.'}</p><a href="#checks">View checks →</a></div>`}
         </section>
         <section class="ov-panel ov-packs" aria-labelledby="ov-packs-title">
           <header class="ov-panel-head"><div><h2 id="ov-packs-title">Active packs</h2><p>Assessment scope by workflow</p></div><a href="#packs">View packs <span aria-hidden="true">→</span></a></header>
-          ${packs.length ? h`<ul class="ov-pack-list">${packs.map((p) => h`<li><div class="ov-pack-heading"><h3>${p.name}</h3><span>${p.pass}/${p.total} pass</span></div><div class="ov-pack-bar" aria-hidden="true">${['pass','fail','unknown'].map((s) => p[s] && p.total ? h`<i class="ov-band-${s}" style="width:${100*p[s]/p.total}%"></i>` : '')}</div><p>${p.fail} fail <span>·</span> ${p.unknown} unknown <span>·</span> ${p.mode === 'auto' ? 'Automatic' : 'Validation only'}</p></li>`)}</ul>` : h`<div class="ov-empty"><h3>No active packs</h3><p>An administrator can review and activate packs in Company setup.</p></div>`}
+          ${packs.length ? h`<ul class="ov-pack-list">${packs.map((p) => h`<li><div class="ov-pack-heading"><h3>${p.name}</h3><span class="ov-pack-score"><b>${p.total ? Math.round(100 * p.pass / p.total) : 0}%</b> ${p.pass} of ${p.total} pass</span></div><div class="ov-pack-bar" role="img" aria-label="${`${p.pass} pass, ${p.fail} fail, ${p.unknown} unknown`}">${['pass','fail','unknown'].map((s) => p[s] && p.total ? h`<i class="ov-band-${s}" style="width:${100*p[s]/p.total}%"></i>` : '')}</div><p class="ov-pack-meta">${p.fail ? h`<span class="ov-count ov-count-fail"><i></i>${p.fail} fail</span>` : ''}${p.unknown ? h`<span class="ov-count ov-count-unknown"><i></i>${p.unknown} unknown</span>` : ''}${!p.fail && !p.unknown ? h`<span class="ov-count ov-count-pass"><i></i>All pass</span>` : ''}<span class="ov-mode">${p.mode === 'auto' ? 'Automatic' : 'Validation only'}</span></p></li>`)}</ul>` : h`<div class="ov-empty"><h3>No active packs</h3><p>An administrator can review and activate packs in Company setup.</p></div>`}
         </section>
       </div>
       <div class="ov-scope-note">${coverage.scope_statement}</div>
@@ -366,16 +404,18 @@ const VIEWS = {
     const tabs = h`<div class="filters"><button class="chip${caseClosed ? '' : ' on'}" data-act="caseTab" data-v="">Open</button><button class="chip${caseClosed ? ' on' : ''}" data-act="caseTab" data-v="1">Closed</button></div>`;
     const caseRows = rows.map((c) => h`<tr class="click${caseSel.has(c.id) ? ' is-picked' : ''}" data-act="caseDetail" data-id="${c.id}" data-can-follow-up="${!caseClosed && c.can_act}" data-skip="${skipOf(c)}" data-name="${c.control_name}" data-subject="${c.subject_name}">
       ${pickCell(c)}
-      <td><button class="row-title" data-act="caseDetail" data-id="${c.id}">${c.control_name}</button><div class="mono muted small">${c.id}</div></td>
-      <td><strong>${c.subject_name}</strong></td><td><span class="priority-pill pill-low">${c.pack_key}</span></td><td>${c.gap}</td>
-      <td>${statePill(c.state)}${c.escalated ? h` <span class="pill pill-fail">Escalated</span>` : ''}</td><td>${c.owner_name || c.owner_team}</td>
-      <td>${date(c.due_date)}</td><td>${c.finding_verdict ? words(c.finding_verdict) : 'Not reviewed yet'}</td>
+      <td class="case-main" title="${c.gap}"><button class="row-title" data-act="caseDetail" data-id="${c.id}">${c.control_name}</button><div class="case-sub">${c.subject_name}<span aria-hidden="true"> · </span><span class="mono">${c.id}</span></div></td>
+      <td>${packTag(c.pack_key)}</td>
+      <td><div class="stage-cell">${statePill(c.state)}${c.escalated ? h`<span class="pill pill-fail">Escalated</span>` : ''}</div></td>
+      <td class="owner-cell">${c.owner_name || c.owner_team || 'Unassigned'}</td>
+      <td class="due-cell">${date(c.due_date)}${dueNote(c.due_date, !caseClosed)}</td>
+      <td class="${c.finding_verdict ? '' : 'muted'}">${c.finding_verdict ? words(c.finding_verdict) : 'Not reviewed yet'}</td>
       <td class="row-action">${caseClosed ? words(c.closure) : c.can_act ? h`<button class="top-action-btn btn-row" data-act="followUp" data-id="${c.id}">Follow up</button>` : ''}</td>
     </tr>`);
     const followUps = selectable ? h`<button class="btn-intake-evidence" id="chaseAllBtn" data-act="chaseAll">Follow up on all</button>` : '';
     const allBox = h`<label class="select-all"><input type="checkbox" class="case-check-all" aria-label="Select all cases shown"></label>`;
-    return card(caseClosed ? 'Closed Cases' : 'Open Cases', 'Review the gap, owner and current outcome.',
-      h`${tabs}${table([...(selectable ? [allBox] : []), 'Case', 'Subject', 'Pack', 'Gap', 'Stage', 'Owner', 'Due', 'Finding', caseClosed ? 'How it closed' : ''], caseRows, caseClosed ? 'No closed cases yet.' : 'No open cases.')}`, followUps);
+    return card(caseClosed ? 'Closed cases' : 'Open cases', caseClosed ? 'Cases closed by accepted evidence or no longer applicable.' : `${rows.length} open${rows.filter((c) => (daysFromToday(c.due_date) ?? 1) < 0).length ? ` · ${rows.filter((c) => (daysFromToday(c.due_date) ?? 1) < 0).length} overdue` : ''}. Open a case to see its gap and history.`,
+      h`${tabs}${table([...(selectable ? [allBox] : []), 'Case', 'Pack', 'Stage', 'Owner', 'Due', 'Finding', caseClosed ? 'How it closed' : ''], caseRows, caseClosed ? 'No closed cases yet.' : 'No open cases.')}`, followUps);
   },
   async approvals() {
     scope(null);
@@ -391,8 +431,11 @@ const VIEWS = {
   },
   async workers() {
     scope(null);
-    const rows = await api('/api/workers');
-    return card('All workers', 'One result per compliance pack for each worker.', table(['Worker', 'Role & facility', 'Onboarding', 'Healthcare', 'Immigration', 'Payroll', 'Overall', 'Readiness'], rows.map((w) => h`<tr class="click" data-act="workerDetail" data-id="${w.id}"><td><button class="row-title" data-act="workerDetail" data-id="${w.id}">${w.name}</button>${w.status !== 'active' ? h` <span class="pill pill-na">${w.status}</span>` : ''}<div class="muted small">${words(w.source?.startsWith('con_') ? 'HRMS' : w.source)}</div></td><td>${w.role}<div class="muted small">${w.facility || 'No confirmed location'}</div></td><td>${statusPill(w.packs.onboarding)}</td><td>${statusPill(w.packs.healthcare)}</td><td>${statusPill(w.packs.immigration)}</td><td>${statusPill(w.packs.payroll)}</td><td>${statusPill(w.overall)}</td><td class="muted">${words(w.readiness)}</td></tr>`), 'No workers yet. Add one or import a roster.'));
+    // Workers with the most open checks come first, so problems are at the top.
+    const openOf = (w) => (w.checks?.fail || 0) + (w.checks?.unknown || 0);
+    const rows = (await api('/api/workers')).sort((a, b) => openOf(b) - openOf(a) || a.name.localeCompare(b.name));
+    const withGaps = rows.filter((w) => openOf(w)).length;
+    return card('All workers', `${rows.length} workers${withGaps ? ` · ${withGaps} with open checks` : ''}. A tick means the pack passes; only problems are highlighted.`, table(['Worker', 'Location', 'Onboarding', 'Healthcare', 'Immigration', 'Payroll', 'Overall', 'Open', 'Readiness'], rows.map((w) => h`<tr class="click" data-act="workerDetail" data-id="${w.id}"><td><button class="row-title" data-act="workerDetail" data-id="${w.id}">${w.name}</button>${w.status !== 'active' ? h` <span class="pill pill-na">${words(w.status)}</span>` : ''}<div class="case-sub">${w.role || 'No role'}</div></td><td class="${w.facility ? '' : 'muted'}">${w.facility || 'No confirmed location'}</td><td class="result-cell">${quietStatus(w.packs.onboarding)}</td><td class="result-cell">${quietStatus(w.packs.healthcare)}</td><td class="result-cell">${quietStatus(w.packs.immigration)}</td><td class="result-cell">${quietStatus(w.packs.payroll)}</td><td class="result-cell">${quietStatus(w.overall)}</td><td class="open-cell">${openOf(w) ? h`<b>${openOf(w)}</b>` : h`<span class="muted">0</span>`}</td><td class="${w.readiness === 'blocked' ? 'text-fail' : 'muted'}">${words(w.readiness)}</td></tr>`), 'No workers yet. Add one or import a roster.'));
   },
   async evidence() {
     scope(null);
@@ -634,10 +677,14 @@ const ACT = {
     const version = navigation;
     const c = await api(`/api/cases/${el.dataset.id}`), e = c.evaluation, open = !c.closed_at;
     if (version !== navigation) return;
-    openModal(`${c.control_name}: ${c.subject_name}`, `${c.id} · ${c.owner_name || c.owner_team}`, h`${lifecycle(c.state)}
-    <dl class="kv mb"><dt>Current result</dt><dd>${e ? statusPill(e.status) : '—'} ${e?.reason}</dd><dt>Control version</dt><dd class="mono">${e?.control_version}</dd><dt>Evidence used</dt><dd class="mono">${e?.evidence_ids.join(', ') || 'None'}</dd><dt>Due</dt><dd>${date(c.due_date)}</dd><dt>Reminders</dt><dd>${c.reminders_sent}${c.escalated ? ' · Escalated' : ''}</dd>${c.closure ? h`<dt>Closure</dt><dd>${words(c.closure)}</dd>` : ''}<dt>Finding</dt><dd>${c.finding_verdict ? `${words(c.finding_verdict)} by ${c.verdict_by}` : 'Not reviewed yet'}</dd></dl>
-    ${c.evidence.length ? h`<strong class="small">Evidence</strong>${c.evidence.map((x) => h`<div class="timeline-item"><span>${statePill(x.status)}</span><span>${x.filename}${x.review_reasons.length ? ` · ${x.review_reasons.join(' ')}` : ''}</span></div>`)}` : ''}
-    <div class="mt"><strong class="small">History</strong>${c.timeline.map((t) => h`<div class="timeline-item"><time>${dt(t.ts)}</time><span>${t.action}</span></div>`)}${c.notes.map((n) => h`<div class="timeline-item"><time>${dt(n.created_at)}</time><span><strong>${n.author}:</strong> ${n.note}</span></div>`)}</div>
+    // History: audit entries and notes in one timeline, oldest first. Note entries in the audit log are shown once, as notes.
+    const history = [...c.timeline.filter((t) => t.type !== 'CASE_NOTE').map((t) => ({ at: t.ts, text: t.action })), ...c.notes.map((n) => ({ at: n.created_at, who: n.author, text: n.note }))].sort((a, b) => (a.at < b.at ? -1 : 1));
+    openModal(`${c.control_name}: ${c.subject_name}`, `${words(c.pack_key)} · Owner ${c.owner_name || c.owner_team || 'not assigned'}`, h`${stepper(c.state)}
+    <div class="case-result"><div>${e ? statusPill(e.status) : ''}</div><p>${e?.reason || c.gap || 'No current result.'}</p></div>
+    <dl class="kv mb"><dt>Due</dt><dd>${date(c.due_date)} ${dueNote(c.due_date, open)}</dd><dt>Reminders sent</dt><dd>${c.reminders_sent}${c.escalated ? ' · Escalated' : ''}</dd>${c.closure ? h`<dt>How it closed</dt><dd>${words(c.closure)}</dd>` : ''}<dt>Finding</dt><dd>${c.finding_verdict ? `${words(c.finding_verdict)} (${c.verdict_by})` : 'Not reviewed yet'}</dd></dl>
+    ${c.evidence.length ? h`<h4 class="detail-heading">Evidence</h4>${c.evidence.map((x) => h`<div class="timeline-item"><span>${statePill(x.status)}</span><span>${x.filename}${x.review_reasons.length ? ` · ${x.review_reasons.join(' ')}` : ''}</span></div>`)}` : ''}
+    <h4 class="detail-heading">History</h4><div class="history">${history.map((x) => h`<div class="timeline-item${x.who ? ' is-note' : ''}"><time>${dt(x.at)}</time><span>${x.who ? h`<strong>${x.who}:</strong> ` : ''}${x.text}</span></div>`)}</div>
+    <details class="tech-details"><summary>Technical details</summary><dl class="kv"><dt>Case ID</dt><dd class="mono">${c.id}</dd><dt>Rule version</dt><dd class="mono">${e?.control_version || '—'}</dd><dt>Evidence used</dt><dd class="mono">${e?.evidence_ids.join(', ') || 'None'}</dd></dl></details>
     ${open && canEdit() ? h`<form class="row mt" data-form="note" data-id="${c.id}"><input name="note" class="form-select" style="flex:1" placeholder="Add a note" required aria-label="Note"><button class="btn-card-outline">Add note</button></form>` : ''}`,
       open && c.can_act ? h`${!c.finding_verdict ? h`<button class="btn-cancel" data-act="verdict" data-id="${c.id}" data-v="false_finding">False finding</button><button class="btn-cancel" data-act="verdict" data-id="${c.id}" data-v="confirmed">Confirm finding</button>` : ''}<button class="btn-cancel" data-act="humanDecision" data-id="${c.id}">Request decision</button><button class="btn-submit-green" data-act="followUp" data-id="${c.id}">Send follow-up</button>` : '', true);
   },
@@ -671,7 +718,13 @@ const ACT = {
   async workerDetail(el, ev) {
     ev?.stopPropagation();
     const w = await api(`/api/workers/${el.dataset.id}`), rv = w.readiness_view;
-    openModal(w.name, `${w.role || ''} · ${w.facility || 'No confirmed location'}`, h`<div class="grid-3 mb" style="grid-template-columns:repeat(4,1fr)">${rv.summary.map((s) => h`<div class="tile"><span>${words(s.pack)}</span><div class="mt">${statusPill(s.status)}</div></div>`)}</div><div class="alert-box">${rv.statement}</div>${table(['Control', 'Result', 'Reason'], w.checks_list.filter((c) => c.status !== 'not_applicable').map((c) => h`<tr><td>${c.control_name}</td><td>${statusPill(c.status)}</td><td class="small">${c.reason}</td></tr>`), 'No checks yet.')}`, h`<button class="btn-cancel" data-act="moveWorker" data-id="${w.id}">Change assignment</button><button class="btn-submit-green" data-act="readiness" data-id="${w.id}">Request readiness decision</button>`, true);
+    // Problems first, then passes. Checks that do not apply are left out.
+    const rank = { fail: 0, unknown: 1, pass: 2 };
+    const list = w.checks_list.filter((c) => c.status !== 'not_applicable').sort((a, b) => rank[a.status] - rank[b.status]);
+    const openN = list.filter((c) => c.status !== 'pass').length;
+    openModal(w.name, `${w.role || 'No role'} · ${w.facility || 'No confirmed location'}`, h`<div class="pack-boxes">${rv.summary.map((s) => h`<div class="pack-box pack-box-${s.status}"><span>${words(s.pack)}</span>${statusPill(s.status)}<small>${s.open ? `${s.open} open` : s.status === 'restricted' ? 'Restricted' : 'Nothing open'}</small></div>`)}</div>
+      <div class="readiness-note ${openN ? 'is-open' : 'is-clear'}"><b>${openN ? `${openN} of ${list.length} checks still open` : `All ${list.length} checks pass`}</b><span>${rv.statement} Readiness now: ${words(w.readiness)}.</span></div>
+      ${table(['Requirement', 'Result', 'Why'], list.map((c) => h`<tr><td>${c.control_name}<div class="case-sub">${words(c.pack_key)}</div></td><td>${statusPill(c.status)}</td><td class="small">${c.reason}</td></tr>`), 'No checks yet.')}`, h`<button class="btn-cancel" data-act="moveWorker" data-id="${w.id}">Change assignment</button><button class="btn-submit-green" data-act="readiness" data-id="${w.id}">Request readiness decision</button>`, true);
   },
   moveWorker(el) { openModal('Change assignment', 'Aegis re-runs the checks that apply to the new location.', h`<form data-form="move" data-id="${el.dataset.id}"><div class="form-group"><label class="form-label">Facility</label><input name="facility" class="form-select" required></div><div class="form-group"><label class="form-label">State</label><input name="facility_state" class="form-select" maxlength="2"></div><button class="btn-submit-green">Save</button></form>`); },
   async readiness(el) { await api(`/api/workers/${el.dataset.id}/readiness-review`, {}); toast('Sent to Approvals.', 'success'); closeModal(); refresh(); },
