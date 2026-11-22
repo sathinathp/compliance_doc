@@ -3,45 +3,7 @@
    ========================================================================== */
 
 :root {
-  --wall: #DCE2E8;
-  /* warm architectural lobby wall */
-  --wall-deep: #CDD5DD;
-  --rail: #9AA6B3;
-  --ink: #16202B;
-  /* navy-slate text & primary buttons */
-  --ink-2: #4B5867;
-  --ink-3: #7A8592;
-  --line: #C4CCD5;
-  --line-soft: #E3E7EC;
-  --white: #FFFFFF;
-  --aegis: #0E8A5F;
-  /* brand green */
-  --pass: #0E8A5F;
-  --fail: #B3261E;
-  --unknown: #4B5867;
-  --unchecked: #A5AFBA;
-  --clinical: #2F6496;
-  --corporate: #B98A00;
-  --role: var(--aegis);
-  /* changes with the active badge in hand */
-  --font: "Archivo", "Helvetica Neue", Arial, sans-serif;
   --swing: cubic-bezier(.3, 1.5, .5, 1);
-
-  /* Legacy aliases to ensure 100% component compatibility */
-  --card-bg: #FFFFFF;
-  --canvas-bg: var(--wall);
-  --border-light: var(--line-soft);
-  --border-subtle: var(--line-soft);
-  --text-dark: var(--ink);
-  --text-body: var(--ink-2);
-  --text-muted: var(--ink-3);
-  --text-subtle: var(--ink-3);
-  --color-primary-green: var(--aegis);
-  --color-primary-green-hover: #0b7a52;
-  --status-pass: var(--pass);
-  --status-fail: var(--fail);
-  --status-warning: #D9622B;
-  --status-unknown: var(--unknown);
 }
 
 *,
@@ -74,7 +36,7 @@ body {
   color: var(--ink);
   background: var(--wall);
   -webkit-font-smoothing: antialiased;
-  font-size: 14px;
+  font-size: var(--fs-14);
   line-height: 1.45;
 }
 
@@ -94,7 +56,7 @@ a {
 :focus-visible {
   outline: 3px solid var(--ink);
   outline-offset: 2px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 
 .num {
@@ -135,14 +97,14 @@ a {
 .brand b {
   width: 32px;
   height: 32px;
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: var(--aegis);
   display: grid;
   place-items: center;
 }
 
 .brand strong {
-  font-size: 19px;
+  font-size: var(--fs-18);
   font-weight: 850;
   font-stretch: 120%;
   letter-spacing: -0.02em;
@@ -154,9 +116,9 @@ a {
   gap: 8px;
   height: 34px;
   padding: 0 10px 0 4px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   border: 1.5px solid var(--line);
-  background: #fff;
+  background: var(--gray-0);
   cursor: pointer;
   flex: none;
   transition: border-color .15s;
@@ -171,21 +133,21 @@ a {
   height: 26px;
   border-radius: 50%;
   background: var(--clinical);
-  color: #fff;
+  color: var(--gray-0);
   font-style: normal;
   font-weight: 800;
-  font-size: 10.5px;
+  font-size: var(--fs-11);
   display: grid;
   place-items: center;
 }
 
 .org span {
   font-weight: 650;
-  font-size: 13.5px;
+  font-size: var(--fs-13);
 }
 
 .org small {
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--ink-2);
 }
 
@@ -206,7 +168,7 @@ a {
   border: 0;
   background: none;
   cursor: pointer;
-  font-size: 14.5px;
+  font-size: var(--fs-14);
   font-weight: 600;
   color: var(--ink-2);
   white-space: nowrap;
@@ -257,10 +219,10 @@ a {
   min-width: 18px;
   height: 18px;
   padding: 0 5px;
-  border-radius: 9px;
+  border-radius: var(--radius);
   background: var(--aegis);
-  color: #fff;
-  font-size: 11px;
+  color: var(--gray-0);
+  font-size: var(--fs-11);
   font-weight: 700;
   display: grid;
   place-items: center;
@@ -276,7 +238,7 @@ a {
   top: calc(100% + 4px);
   left: 0;
   width: 340px;
-  background: #fff;
+  background: var(--gray-0);
   border-radius: 0 0 12px 12px;
   padding: 8px;
   box-shadow: 0 24px 40px -18px rgba(22, 32, 43, .45);
@@ -300,7 +262,7 @@ a {
   gap: 2px 12px;
   align-items: center;
   padding: 10px;
-  border-radius: 8px;
+  border-radius: var(--radius);
   transition: background .12s;
 }
 
@@ -313,7 +275,7 @@ a {
   grid-row: 1/3;
   width: 34px;
   height: 34px;
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: var(--wall);
   display: grid;
   place-items: center;
@@ -321,11 +283,11 @@ a {
 }
 
 .dir a:hover .ic {
-  background: #fff;
+  background: var(--gray-0);
 }
 
 .dir a b {
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 650;
   color: var(--ink);
   grid-column: 2;
@@ -333,7 +295,7 @@ a {
 
 .dir a small {
   grid-column: 2;
-  font-size: 12.5px;
+  font-size: var(--fs-12);
   color: var(--ink-2);
   line-height: 1.35;
 }
@@ -341,19 +303,19 @@ a {
 .dir a .flag {
   grid-column: 3;
   grid-row: 1/3;
-  font-size: 11.5px;
+  font-size: var(--fs-11);
   font-weight: 700;
   padding: 2px 7px;
-  border-radius: 9px;
+  border-radius: var(--radius);
 }
 
 .flag.n {
   background: var(--aegis);
-  color: #fff;
+  color: var(--gray-0);
 }
 
 .flag.bad {
-  background: #FBE9E7;
+  background: var(--fail-bg);
   color: var(--fail);
 }
 
@@ -366,8 +328,8 @@ a {
   height: 38px;
   padding: 0 12px;
   border: 1.5px solid var(--line);
-  border-radius: 8px;
-  background: #fff;
+  border-radius: var(--radius);
+  background: var(--gray-0);
   cursor: pointer;
   align-items: center;
   gap: 8px;
@@ -403,7 +365,7 @@ a {
   height: 8px;
   margin-left: -9px;
   border-radius: 2px 2px 5px 5px;
-  background: linear-gradient(90deg, #8D98A4, #E6EBF0 45%, #9CA7B3);
+  background: linear-gradient(90deg, var(--gray-400), var(--info-bg) 45%, var(--gray-400));
 }
 
 .worn button {
@@ -416,8 +378,8 @@ a {
   gap: 9px;
   padding: 9px 10px 8px;
   border: 0;
-  border-radius: 9px;
-  background: #fff;
+  border-radius: var(--radius);
+  background: var(--gray-0);
   cursor: pointer;
   text-align: left;
   box-shadow: 0 10px 18px -10px rgba(22, 32, 43, .55), inset 0 3px 0 var(--role, var(--aegis));
@@ -438,7 +400,7 @@ a {
   width: 26px;
   height: 4px;
   margin-left: -13px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   background: var(--wall-deep);
 }
 
@@ -446,12 +408,12 @@ a {
   width: 32px;
   height: 32px;
   margin-top: 4px;
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--role, var(--aegis)) 15%, #fff);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--role, var(--aegis)) 15%, var(--gray-0));
   color: var(--role, var(--aegis));
   font-style: normal;
   font-weight: 800;
-  font-size: 12.5px;
+  font-size: var(--fs-12);
   display: grid;
   place-items: center;
   flex: none;
@@ -462,13 +424,13 @@ a {
   display: block;
   margin-top: 4px;
   font-weight: 700;
-  font-size: 13px;
+  font-size: var(--fs-13);
   line-height: 1.15;
 }
 
 .worn small {
   display: block;
-  font-size: 11.5px;
+  font-size: var(--fs-11);
   color: var(--ink-2);
 }
 
@@ -478,7 +440,7 @@ a {
   top: 78px;
   width: 260px;
   max-width: calc(100vw - 32px);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
 }
 
 /* Mobile directory sheet */
@@ -522,13 +484,13 @@ a {
 }
 
 .sheet .shd b {
-  font-size: 20px;
+  font-size: var(--fs-20);
   font-weight: 850;
   font-stretch: 118%;
 }
 
 .sheet h3 {
-  font-size: 13px;
+  font-size: var(--fs-13);
   font-weight: 650;
   color: var(--ink-2);
   margin: 16px 0 6px;
@@ -540,7 +502,7 @@ a {
   visibility: inherit;
   transform: none;
   width: auto;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   box-shadow: none;
 }
 
@@ -583,7 +545,7 @@ h1 {
 .title p {
   margin-top: 8px;
   color: var(--ink-2);
-  font-size: 14.5px;
+  font-size: var(--fs-14);
   max-width: 58ch;
   line-height: 1.5;
 }
@@ -599,7 +561,7 @@ h1 {
 .asof {
   width: 100%;
   text-align: right;
-  font-size: 12.5px;
+  font-size: var(--fs-12);
   color: var(--ink-2);
   margin-top: 2px;
 }
@@ -609,8 +571,8 @@ h1 {
   height: 38px;
   padding: 0 12px 0 34px;
   border: 1.5px solid var(--line);
-  border-radius: 8px;
-  background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%237A8592' stroke-width='2'%3E%3Ccircle cx='7' cy='7' r='5'/%3E%3Cpath d='M11 11l3.5 3.5'/%3E%3C/svg%3E") no-repeat 11px 50%;
+  border-radius: var(--radius);
+  background: var(--gray-0) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%237A8592' stroke-width='2'%3E%3Ccircle cx='7' cy='7' r='5'/%3E%3Cpath d='M11 11l3.5 3.5'/%3E%3C/svg%3E") no-repeat 11px 50%;
   outline: none;
   transition: border-color .15s;
 }
@@ -624,10 +586,10 @@ h1 {
 .btn-card-outline {
   height: 38px;
   padding: 0 14px;
-  border-radius: 8px;
+  border-radius: var(--radius);
   border: 1.5px solid var(--line);
-  background: #fff;
-  font-size: 13.5px;
+  background: var(--gray-0);
+  font-size: var(--fs-13);
   font-weight: 600;
   color: var(--ink);
   cursor: pointer;
@@ -651,11 +613,11 @@ h1 {
 .btn-submit-green {
   background: var(--ink);
   border-color: var(--ink);
-  color: #fff;
+  color: var(--gray-0);
   height: 38px;
   padding: 0 16px;
-  border-radius: 8px;
-  font-size: 13.5px;
+  border-radius: var(--radius);
+  font-size: var(--fs-13);
   font-weight: 600;
   cursor: pointer;
   display: inline-flex;
@@ -670,7 +632,7 @@ h1 {
 .btn.primary:hover,
 .btn-intake-evidence:hover,
 .btn-submit-green:hover {
-  background: #26323F;
+  background: var(--gray-800);
 }
 
 .btn.primary[disabled],
@@ -680,13 +642,13 @@ h1 {
 }
 
 .btn-danger {
-  background: #fff;
-  border: 1.5px solid #F0B8B2;
+  background: var(--gray-0);
+  border: 1.5px solid var(--fail-line);
   color: var(--fail);
   height: 38px;
   padding: 0 14px;
-  border-radius: 8px;
-  font-size: 13px;
+  border-radius: var(--radius);
+  font-size: var(--fs-13);
   font-weight: 600;
   cursor: pointer;
   display: inline-flex;
@@ -697,17 +659,17 @@ h1 {
 
 .btn-danger:hover {
   border-color: var(--fail);
-  background: #FBE9E7;
+  background: var(--fail-bg);
 }
 
 .btn-cancel {
-  background: #fff;
+  background: var(--gray-0);
   border: 1.5px solid var(--line);
   color: var(--ink-2);
   height: 38px;
   padding: 0 14px;
-  border-radius: 8px;
-  font-size: 13px;
+  border-radius: var(--radius);
+  font-size: var(--fs-13);
   font-weight: 600;
   cursor: pointer;
   display: inline-flex;
@@ -725,7 +687,7 @@ h1 {
   border: 0;
   color: var(--clinical);
   font-weight: 650;
-  font-size: 13px;
+  font-size: var(--fs-13);
   cursor: pointer;
   text-decoration: underline;
   text-underline-offset: 3px;
@@ -745,10 +707,10 @@ h1 {
   align-items: center;
   gap: 14px;
   padding: 14px 16px;
-  border-radius: 10px;
-  background: #FBE9E7;
-  border: 1.5px solid #F0B8B2;
-  color: #5C1610;
+  border-radius: var(--radius-lg);
+  background: var(--fail-bg);
+  border: 1.5px solid var(--fail-line);
+  color: var(--fail-fg);
 }
 
 .alert svg,
@@ -768,8 +730,8 @@ h1 {
 }
 
 .alert .btn {
-  border-color: #E59A92;
-  background: #fff;
+  border-color: var(--fail-line);
+  background: var(--gray-0);
 }
 
 .alert .btn:hover {
@@ -786,7 +748,7 @@ h1 {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 340px;
   background: var(--wall-deep);
-  border-radius: 14px;
+  border-radius: var(--radius-xl);
   overflow: hidden;
   box-shadow: 0 1px 3px rgba(22, 32, 43, .06);
 }
@@ -802,7 +764,7 @@ h1 {
 }
 
 .dept h3 {
-  font-size: 13px;
+  font-size: var(--fs-13);
   font-weight: 650;
   color: var(--ink-2);
   margin: 0 0 8px;
@@ -814,13 +776,13 @@ h1 {
 .dept h3 i {
   width: 12px;
   height: 12px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   background: var(--c);
 }
 
 .dept .rail {
   height: 9px;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   background: var(--rail);
   box-shadow: 0 3px 0 rgba(22, 32, 43, .08);
 }
@@ -876,13 +838,13 @@ h1 {
   width: 16px;
   height: 9px;
   border-radius: 2px 2px 5px 5px;
-  background: linear-gradient(90deg, #8D98A4, #E6EBF0 45%, #9CA7B3);
+  background: linear-gradient(90deg, var(--gray-400), var(--info-bg) 45%, var(--gray-400));
 }
 
 .wb {
   width: 118px;
-  background: #fff;
-  border-radius: 10px;
+  background: var(--gray-0);
+  border-radius: var(--radius-lg);
   overflow: hidden;
   cursor: pointer;
   border: 0;
@@ -906,21 +868,21 @@ h1 {
   width: 38px;
   height: 38px;
   margin: -14px 0 0 10px;
-  border-radius: 7px;
-  border: 3px solid #fff;
-  background: color-mix(in srgb, var(--c) 14%, #fff);
+  border-radius: var(--radius);
+  border: 3px solid var(--gray-0);
+  background: color-mix(in srgb, var(--c) 14%, var(--gray-0));
   color: var(--c);
   display: grid;
   place-items: center;
   font-weight: 800;
-  font-size: 13px;
+  font-size: var(--fs-13);
 }
 
 .wb .nm {
   display: block;
   padding: 6px 10px 0;
   font-weight: 700;
-  font-size: 13px;
+  font-size: var(--fs-13);
   line-height: 1.2;
   white-space: nowrap;
   overflow: hidden;
@@ -930,7 +892,7 @@ h1 {
 .wb .rl {
   display: block;
   padding: 1px 10px 0;
-  font-size: 11.5px;
+  font-size: var(--fs-11);
   color: var(--ink-2);
   white-space: nowrap;
   overflow: hidden;
@@ -942,14 +904,14 @@ h1 {
   align-items: center;
   gap: 6px;
   margin: 9px 10px 10px;
-  font-size: 11.5px;
+  font-size: var(--fs-11);
   font-weight: 600;
 }
 
 .wb .st i {
   width: 9px;
   height: 9px;
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
   flex: none;
 }
 
@@ -995,7 +957,7 @@ h1 {
   gap: 16px;
   flex-wrap: wrap;
   margin-top: 18px;
-  font-size: 12.5px;
+  font-size: var(--fs-12);
   color: var(--ink-2);
 }
 
@@ -1008,19 +970,19 @@ h1 {
 .legend i {
   width: 10px;
   height: 10px;
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
 }
 
 /* Next step onboarding panel */
 .next {
-  background: #fff;
+  background: var(--gray-0);
   padding: 24px 24px 22px;
   display: flex;
   flex-direction: column;
 }
 
 .big {
-  font-size: 46px;
+  font-size: var(--fs-48);
   font-weight: 850;
   font-stretch: 120%;
   letter-spacing: -0.04em;
@@ -1029,7 +991,7 @@ h1 {
 }
 
 .big small {
-  font-size: 18px;
+  font-size: var(--fs-18);
   font-weight: 600;
   font-stretch: 100%;
   letter-spacing: 0;
@@ -1057,7 +1019,7 @@ h1 {
   align-items: start;
   padding: 8px 0;
   border-top: 1px solid var(--line-soft);
-  font-size: 13.5px;
+  font-size: var(--fs-13);
 }
 
 .steps li:first-child {
@@ -1070,7 +1032,7 @@ h1 {
   border-radius: 50%;
   display: grid;
   place-items: center;
-  font-size: 11.5px;
+  font-size: var(--fs-11);
   font-weight: 700;
   border: 1.5px solid var(--line);
   color: var(--ink-2);
@@ -1079,13 +1041,13 @@ h1 {
 .steps li.done .m {
   background: var(--pass);
   border-color: var(--pass);
-  color: #fff;
+  color: var(--gray-0);
 }
 
 .steps li.failing .m {
   background: var(--fail);
   border-color: var(--fail);
-  color: #fff;
+  color: var(--gray-0);
 }
 
 .steps li.done .t {
@@ -1097,14 +1059,14 @@ h1 {
 .steps small {
   display: block;
   color: var(--fail);
-  font-size: 12.5px;
+  font-size: var(--fs-12);
   margin-top: 1px;
 }
 
 .next .btn.primary {
   margin-top: auto;
   height: 44px;
-  font-size: 14.5px;
+  font-size: var(--fs-14);
 }
 
 /* ==========================================================================
@@ -1115,8 +1077,8 @@ h1 {
   margin-top: 20px;
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  background: #fff;
-  border-radius: 14px;
+  background: var(--gray-0);
+  border-radius: var(--radius-xl);
   box-shadow: 0 1px 3px rgba(22, 32, 43, .04);
   border: 1px solid var(--line-soft);
 }
@@ -1131,14 +1093,14 @@ h1 {
 }
 
 .ms h2 {
-  font-size: 13.5px;
+  font-size: var(--fs-13);
   font-weight: 650;
   color: var(--ink-2);
 }
 
 .ms .v {
   margin-top: 8px;
-  font-size: 34px;
+  font-size: var(--fs-36);
   font-weight: 800;
   font-stretch: 115%;
   letter-spacing: -0.03em;
@@ -1147,7 +1109,7 @@ h1 {
 }
 
 .ms .v small {
-  font-size: 13.5px;
+  font-size: var(--fs-13);
   font-weight: 500;
   font-stretch: 100%;
   letter-spacing: 0;
@@ -1156,7 +1118,7 @@ h1 {
 }
 
 .ms .v.muted {
-  font-size: 20px;
+  font-size: var(--fs-20);
   color: var(--ink-3);
   font-weight: 700;
   padding: 7px 0 6px;
@@ -1165,7 +1127,7 @@ h1 {
 .bar3 {
   display: flex;
   height: 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   overflow: hidden;
   margin-top: 14px;
   background: repeating-linear-gradient(90deg, var(--line) 0 6px, transparent 6px 10px);
@@ -1185,7 +1147,7 @@ h1 {
   display: flex;
   justify-content: space-between;
   gap: 10px;
-  font-size: 13px;
+  font-size: var(--fs-13);
   color: var(--ink-2);
 }
 
@@ -1214,8 +1176,8 @@ h1 {
 .content-table-card,
 .plain-card,
 .split-card {
-  background: #fff;
-  border-radius: 14px;
+  background: var(--gray-0);
+  border-radius: var(--radius-xl);
   padding: 20px 22px;
   box-shadow: 0 1px 3px rgba(22, 32, 43, .04);
   border: 1px solid var(--line-soft);
@@ -1239,7 +1201,7 @@ h1 {
 .ph2 h2,
 .card-section-title,
 .split-title {
-  font-size: 18px;
+  font-size: var(--fs-18);
   font-weight: 750;
   font-stretch: 112%;
   letter-spacing: -0.01em;
@@ -1249,13 +1211,13 @@ h1 {
 .ph2 p,
 .card-section-subtitle {
   color: var(--ink-2);
-  font-size: 13px;
+  font-size: var(--fs-13);
   margin-top: 3px;
 }
 
 .ph2 a,
 .view-all-link {
-  font-size: 13.5px;
+  font-size: var(--fs-13);
   font-weight: 600;
   color: var(--clinical);
   text-decoration: underline;
@@ -1268,7 +1230,7 @@ table,
   width: 100%;
   border-collapse: collapse;
   margin-top: 8px;
-  font-size: 13px;
+  font-size: var(--fs-13);
 }
 
 th {
@@ -1297,7 +1259,7 @@ td {
   flex: none;
   width: 56px;
   height: 56px;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   background: var(--wall);
   display: grid;
   place-items: center;
@@ -1305,7 +1267,7 @@ td {
 
 .empty b {
   display: block;
-  font-size: 14.5px;
+  font-size: var(--fs-14);
   color: var(--ink);
 }
 
@@ -1339,14 +1301,14 @@ td {
 }
 
 .log time {
-  font-size: 12.5px;
+  font-size: var(--fs-12);
   color: var(--ink-3);
   padding-top: 1px;
 }
 
 .log b {
   font-weight: 650;
-  font-size: 13.5px;
+  font-size: var(--fs-13);
   display: flex;
   gap: 7px;
   align-items: center;
@@ -1362,14 +1324,14 @@ td {
 
 .log p {
   color: var(--ink-2);
-  font-size: 12.5px;
+  font-size: var(--fs-12);
   margin-top: 2px;
   line-height: 1.45;
 }
 
 .log code {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 11.5px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
   color: var(--ink-3);
 }
 
@@ -1378,74 +1340,74 @@ td {
   display: inline-flex;
   align-items: center;
   padding: 3px 8px;
-  border-radius: 6px;
-  font-size: 11.5px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-11);
   font-weight: 650;
   line-height: 1;
 }
 
 .pill-pass {
-  background: #dcfce7;
-  color: #166534;
+  background: var(--brand-100);
+  color: var(--pass-fg);
 }
 
 .pill-fail {
-  background: #fee2e2;
-  color: #991b1b;
+  background: var(--fail-bg);
+  color: var(--fail-fg);
 }
 
 .pill-unknown {
-  background: #ede9fe;
-  color: #5b21b6;
+  background: var(--info-bg);
+  color: var(--info-fg);
 }
 
 .pill-warn {
-  background: #fef3c7;
-  color: #92400e;
+  background: var(--warn-bg);
+  color: var(--fail-fg);
 }
 
 .pill-na {
-  background: #f1f5f9;
-  color: #64748b;
+  background: var(--gray-50);
+  color: var(--gray-500);
 }
 
 .pill-blue {
-  background: #e0f2fe;
-  color: #075985;
+  background: var(--info-bg);
+  color: var(--info-fg);
 }
 
 .priority-pill {
   display: inline-block;
   padding: 2px 7px;
-  border-radius: 4px;
-  font-size: 11px;
+  border-radius: var(--radius-xs);
+  font-size: var(--fs-11);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: .03em;
 }
 
 .pill-high {
-  background: #fee2e2;
-  color: #b91c1c;
+  background: var(--fail-bg);
+  color: var(--fail-fg);
 }
 
 .pill-med {
-  background: #fef3c7;
-  color: #b45309;
+  background: var(--warn-bg);
+  color: var(--fail-dot);
 }
 
 .pill-low {
-  background: #f1f5f9;
-  color: #475569;
+  background: var(--gray-50);
+  color: var(--gray-600);
 }
 
 .version-tag {
-  background: #f1f5f9;
+  background: var(--gray-50);
   color: var(--ink-2);
-  font-size: 11.5px;
+  font-size: var(--fs-11);
   font-weight: 600;
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
 }
 
 .text-green-bold {
@@ -1459,8 +1421,8 @@ td {
 }
 
 .mono {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
 }
 
 .text-muted {
@@ -1487,10 +1449,10 @@ td {
 
 .chip {
   padding: 5px 12px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   border: 1.5px solid var(--line);
-  background: #fff;
-  font-size: 12.5px;
+  background: var(--gray-0);
+  font-size: var(--fs-12);
   font-weight: 600;
   color: var(--ink-2);
   cursor: pointer;
@@ -1505,7 +1467,7 @@ td {
 .chip.on {
   background: var(--ink);
   border-color: var(--ink);
-  color: #fff;
+  color: var(--gray-0);
 }
 
 .stack {
@@ -1545,7 +1507,7 @@ td {
 }
 
 .form-label {
-  font-size: 12.5px;
+  font-size: var(--fs-12);
   font-weight: 650;
   color: var(--ink-2);
 }
@@ -1560,9 +1522,9 @@ select {
   height: 38px;
   padding: 0 12px;
   border: 1.5px solid var(--line);
-  border-radius: 8px;
-  background: #fff;
-  font-size: 13.5px;
+  border-radius: var(--radius);
+  background: var(--gray-0);
+  font-size: var(--fs-13);
   outline: none;
   transition: border-color .15s;
   width: 100%;
@@ -1596,7 +1558,7 @@ select:focus {
 }
 
 .small {
-  font-size: 12.5px;
+  font-size: var(--fs-12);
 }
 
 .muted {
@@ -1622,7 +1584,7 @@ select:focus {
   display: grid;
   place-items: center;
   font-weight: 700;
-  font-size: 13px;
+  font-size: var(--fs-13);
   color: var(--ink-2);
   flex: none;
 }
@@ -1630,7 +1592,7 @@ select:focus {
 .step.done .step-num {
   background: var(--pass);
   border-color: var(--pass);
-  color: #fff;
+  color: var(--gray-0);
 }
 
 .step-body {
@@ -1638,7 +1600,7 @@ select:focus {
 }
 
 .step-body h3 {
-  font-size: 15px;
+  font-size: var(--fs-14);
   font-weight: 700;
   margin-bottom: 4px;
   color: var(--ink);
@@ -1649,7 +1611,7 @@ select:focus {
   gap: 10px;
   padding: 6px 0;
   border-bottom: 1px solid var(--line-soft);
-  font-size: 12.5px;
+  font-size: var(--fs-12);
 }
 
 .timeline-item time {
@@ -1661,7 +1623,7 @@ select:focus {
   display: grid;
   grid-template-columns: 140px 1fr;
   gap: 8px 14px;
-  font-size: 13px;
+  font-size: var(--fs-13);
   margin-top: 8px;
 }
 
@@ -1677,13 +1639,13 @@ select:focus {
 .tile {
   background: var(--wall);
   padding: 12px 14px;
-  border-radius: 8px;
+  border-radius: var(--radius);
 }
 
 .lifecycle {
   display: flex;
   border: 1.5px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius);
   overflow: hidden;
   margin-bottom: 16px;
 }
@@ -1692,10 +1654,10 @@ select:focus {
   flex: 1;
   padding: 8px;
   text-align: center;
-  font-size: 11.5px;
+  font-size: var(--fs-11);
   font-weight: 600;
   color: var(--ink-3);
-  background: #fff;
+  background: var(--gray-0);
   border-right: 1px solid var(--line);
 }
 
@@ -1710,7 +1672,7 @@ select:focus {
 
 .lifecycle div.now {
   background: var(--ink);
-  color: #fff;
+  color: var(--gray-0);
 }
 
 /* ==========================================================================
@@ -1734,8 +1696,8 @@ select:focus {
 }
 
 .modal-card {
-  background: #fff;
-  border-radius: 16px;
+  background: var(--gray-0);
+  border-radius: var(--radius-xl);
   width: min(600px, 100%);
   max-height: 90vh;
   display: flex;
@@ -1757,13 +1719,13 @@ select:focus {
 }
 
 .modal-title {
-  font-size: 18px;
+  font-size: var(--fs-18);
   font-weight: 750;
   color: var(--ink);
 }
 
 .modal-subtitle {
-  font-size: 13px;
+  font-size: var(--fs-13);
   color: var(--ink-2);
   margin-top: 2px;
 }
@@ -1771,7 +1733,7 @@ select:focus {
 .modal-close-btn {
   background: none;
   border: 0;
-  font-size: 22px;
+  font-size: var(--fs-20);
   line-height: 1;
   color: var(--ink-3);
   cursor: pointer;
@@ -1792,7 +1754,7 @@ select:focus {
 
 .form-label {
   display: block;
-  font-size: 11.5px;
+  font-size: var(--fs-11);
   font-weight: 600;
   margin-bottom: 4px;
   color: var(--text-dark);
@@ -1802,8 +1764,8 @@ select:focus {
   width: 100%;
   padding: 6px 10px;
   border: 1px solid var(--border-light);
-  border-radius: 6px;
-  font-size: 12px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-12);
   outline: none;
   font-family: var(--font-family);
 }
@@ -1819,31 +1781,31 @@ select:focus {
   gap: 10px;
   padding: 8px;
   border: 1px solid var(--border-light);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 11.5px;
+  font-size: var(--fs-11);
 }
 
 .sample-option:has(input:checked) {
   border-color: var(--color-blue-accent);
-  background: #eff6ff;
+  background: var(--info-bg);
 }
 
 .subtext {
   display: block;
-  font-size: 10.5px;
+  font-size: var(--fs-11);
   color: var(--text-muted);
 }
 
 .drop-zone-box {
   border: 2px dashed var(--border-light);
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 24px;
   text-align: center;
 }
 
 .drop-zone-icon {
-  font-size: 24px;
+  font-size: var(--fs-24);
   margin-bottom: 6px;
 }
 
@@ -1853,7 +1815,7 @@ select:focus {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
-  background: #fafbfc;
+  background: var(--gray-25);
 }
 
 .toast-container {
@@ -1868,21 +1830,21 @@ select:focus {
 
 .toast {
   background: var(--ink);
-  color: #fff;
-  border-radius: 8px;
+  color: var(--gray-0);
+  border-radius: var(--radius);
   padding: 10px 16px;
-  font-size: 13.5px;
+  font-size: var(--fs-13);
   font-weight: 600;
   box-shadow: 0 10px 20px -8px rgba(22, 32, 43, .5);
   animation: toastSlide .25s var(--swing);
 }
 
 .toast.success {
-  background: #0B7A52;
+  background: var(--pass-fg);
 }
 
 .toast.warning {
-  background: #B3261E;
+  background: var(--fail-fg);
 }
 
 @keyframes toastSlide {
@@ -1898,12 +1860,12 @@ select:focus {
 }
 
 .btn-submit-green {
-  background: #059669;
+  background: var(--pass-dot);
   border: none;
-  color: #ffffff;
+  color: var(--gray-0);
   padding: 6px 14px;
-  border-radius: 6px;
-  font-size: 12px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-12);
   font-weight: 600;
   cursor: pointer;
 }
@@ -1916,7 +1878,7 @@ select:focus {
   width: 440px;
   max-width: 100vw;
   height: 100vh;
-  background: #fff;
+  background: var(--gray-0);
   border-left: 2px solid var(--rail);
   box-shadow: -20px 0 50px rgba(22, 32, 43, .25);
   z-index: 90;
@@ -1948,21 +1910,21 @@ select:focus {
 .bot-avatar-circle {
   width: 34px;
   height: 34px;
-  border-radius: 8px;
-  background: #fff;
+  border-radius: var(--radius);
+  background: var(--gray-0);
   display: grid;
   place-items: center;
-  font-size: 18px;
+  font-size: var(--fs-18);
 }
 
 .bot-name {
-  font-size: 15px;
+  font-size: var(--fs-14);
   font-weight: 750;
   color: var(--ink);
 }
 
 .bot-channel {
-  font-size: 11.5px;
+  font-size: var(--fs-11);
   color: var(--ink-2);
   display: block;
 }
@@ -1970,7 +1932,7 @@ select:focus {
 .btn-close-drawer {
   background: none;
   border: 0;
-  font-size: 24px;
+  font-size: var(--fs-24);
   cursor: pointer;
   color: var(--ink-2);
 }
@@ -1978,11 +1940,11 @@ select:focus {
 .chat-prompts-bar {
   padding: 10px 14px;
   border-bottom: 1px solid var(--line-soft);
-  background: #fafbfc;
+  background: var(--gray-25);
 }
 
 .prompts-label {
-  font-size: 11px;
+  font-size: var(--fs-11);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: .05em;
@@ -1998,10 +1960,10 @@ select:focus {
 
 .prompt-pill {
   padding: 4px 10px;
-  background: #fff;
+  background: var(--gray-0);
   border: 1px solid var(--line);
-  border-radius: 6px;
-  font-size: 11.5px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-11);
   font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
@@ -2025,8 +1987,8 @@ select:focus {
 .chat-bubble {
   max-width: 88%;
   padding: 10px 14px;
-  border-radius: 12px;
-  font-size: 13.5px;
+  border-radius: var(--radius-lg);
+  font-size: var(--fs-13);
   line-height: 1.45;
 }
 
@@ -2040,12 +2002,12 @@ select:focus {
 .chat-bubble.user {
   align-self: flex-end;
   background: var(--ink);
-  color: #fff;
+  color: var(--gray-0);
   border-bottom-right-radius: 2px;
 }
 
 .chat-bubble-author {
-  font-size: 10.5px;
+  font-size: var(--fs-11);
   font-weight: 700;
   text-transform: uppercase;
   margin-bottom: 3px;
@@ -2056,7 +2018,7 @@ select:focus {
 .chat-input-area {
   padding: 14px 16px;
   border-top: 1.5px solid var(--line-soft);
-  background: #fff;
+  background: var(--gray-0);
 }
 
 .chat-form {
@@ -2068,9 +2030,9 @@ select:focus {
   flex: 1;
   height: 42px;
   border: 1.5px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 0 14px;
-  font-size: 14px;
+  font-size: var(--fs-14);
   outline: none;
 }
 
@@ -2082,11 +2044,11 @@ select:focus {
   width: 42px;
   height: 42px;
   background: var(--ink);
-  color: #fff;
+  color: var(--gray-0);
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius);
   cursor: pointer;
-  font-size: 16px;
+  font-size: var(--fs-16);
 }
 
 /* ==========================================================================
@@ -2126,7 +2088,7 @@ select:focus {
   right: 0;
   top: 0;
   height: 14px;
-  background: #9AA6B3;
+  background: var(--gray-400);
   box-shadow: 0 3px 0 rgba(22, 32, 43, .08);
 }
 
@@ -2192,7 +2154,7 @@ select:focus {
   transform: translateX(-50%);
   writing-mode: vertical-rl;
   white-space: nowrap;
-  font-size: 11px;
+  font-size: var(--fs-11);
   font-weight: 700;
   font-stretch: 125%;
   letter-spacing: .4em;
@@ -2204,7 +2166,7 @@ select:focus {
   height: 30px;
   margin: -2px auto 0;
   border-radius: 6px 6px 12px 12px;
-  background: linear-gradient(90deg, #8D98A4, #E6EBF0 45%, #9CA7B3);
+  background: linear-gradient(90deg, var(--gray-400), var(--info-bg) 45%, var(--gray-400));
   box-shadow: 0 2px 3px rgba(0, 0, 0, .2);
 }
 
@@ -2214,7 +2176,7 @@ select:focus {
   width: 14px;
   height: 20px;
   margin: 16px auto 0;
-  border: 3px solid #A4AFBA;
+  border: 3px solid var(--gray-400);
   border-top: 0;
   border-radius: 0 0 10px 10px;
 }
@@ -2223,7 +2185,7 @@ select:focus {
   position: relative;
   margin-top: 2px;
   padding: 8px;
-  border-radius: 22px;
+  border-radius: var(--radius-xl);
   background: rgba(255, 255, 255, .42);
   border: 1px solid rgba(255, 255, 255, .9);
   box-shadow: 0 34px 50px -26px rgba(22, 32, 43, .55);
@@ -2237,7 +2199,7 @@ select:focus {
   width: 56px;
   height: 9px;
   margin-left: -28px;
-  border-radius: 9px;
+  border-radius: var(--radius);
   background: var(--wall-deep);
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, .25);
   z-index: 3;
@@ -2256,7 +2218,7 @@ select:focus {
 .badge {
   position: relative;
   background: var(--white);
-  border-radius: 15px;
+  border-radius: var(--radius-xl);
   overflow: hidden;
   padding-bottom: 16px;
 }
@@ -2265,7 +2227,7 @@ select:focus {
   height: 78px;
   background: var(--role, var(--aegis));
   transition: background .3s;
-  color: #fff;
+  color: var(--gray-0);
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -2277,12 +2239,12 @@ select:focus {
   align-items: center;
   gap: 7px;
   font-weight: 700;
-  font-size: 15px;
+  font-size: var(--fs-14);
   font-stretch: 115%;
 }
 
 .band small {
-  font-size: 12px;
+  font-size: var(--fs-12);
   opacity: .85;
 }
 
@@ -2290,15 +2252,15 @@ select:focus {
   width: 84px;
   height: 84px;
   margin: -30px 0 0 18px;
-  border-radius: 12px;
-  border: 4px solid #fff;
+  border-radius: var(--radius-lg);
+  border: 4px solid var(--gray-0);
   position: relative;
-  background: color-mix(in srgb, var(--role, var(--aegis)) 14%, #fff);
+  background: color-mix(in srgb, var(--role, var(--aegis)) 14%, var(--gray-0));
   color: var(--role, var(--aegis));
   display: grid;
   place-items: center;
   font-weight: 800;
-  font-size: 30px;
+  font-size: var(--fs-30);
   font-stretch: 110%;
   transition: color .3s, background .3s;
 }
@@ -2308,7 +2270,7 @@ select:focus {
 }
 
 .who .name {
-  font-size: 23px;
+  font-size: var(--fs-24);
   font-weight: 750;
   font-stretch: 112%;
   line-height: 1.1;
@@ -2318,13 +2280,13 @@ select:focus {
 }
 
 .who .role {
-  font-size: 13.5px;
+  font-size: var(--fs-13);
   color: var(--ink-2);
   margin-top: 4px;
 }
 
 .who .mail {
-  font-size: 12.5px;
+  font-size: var(--fs-12);
   color: var(--ink-2);
   margin-top: 2px;
   min-height: 1.2em;
@@ -2334,11 +2296,11 @@ select:focus {
 .zones {
   margin: 14px 18px 0;
   padding-top: 12px;
-  border-top: 1px solid #E4E8ED;
+  border-top: 1px solid var(--gray-200);
 }
 
 .zones p {
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--ink-2);
   margin-bottom: 8px;
 }
@@ -2353,14 +2315,14 @@ select:focus {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11.5px;
+  font-size: var(--fs-11);
   color: var(--ink);
 }
 
 .z i {
   width: 11px;
   height: 11px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   flex: none;
   border: 1.5px solid var(--role, var(--aegis));
   transition: background .3s, border-color .3s;
@@ -2375,11 +2337,11 @@ select:focus {
 }
 
 .z.none {
-  color: #A2ACB7;
+  color: var(--gray-400);
 }
 
 .z.none i {
-  border-color: #C9D0D7;
+  border-color: var(--gray-300);
   background: none;
 }
 
@@ -2388,7 +2350,7 @@ select:focus {
   height: 30px;
   margin: -2px auto 0;
   border-radius: 6px 6px 12px 12px;
-  background: linear-gradient(90deg, #8D98A4, #E6EBF0 45%, #9CA7B3);
+  background: linear-gradient(90deg, var(--gray-400), var(--info-bg) 45%, var(--gray-400));
   box-shadow: 0 2px 3px rgba(0, 0, 0, .2);
 }
 
@@ -2398,12 +2360,12 @@ select:focus {
   top: 118px;
   z-index: 5;
   padding: 3px 12px 4px;
-  border: 3.5px solid #0B7A52;
-  border-radius: 8px;
-  color: #0B7A52;
+  border: 3.5px solid var(--pass-fg);
+  border-radius: var(--radius);
+  color: var(--pass-fg);
   font-weight: 850;
   font-stretch: 72%;
-  font-size: 34px;
+  font-size: var(--fs-36);
   line-height: 1;
   letter-spacing: .02em;
   transform: translate(-50%, -50%) rotate(-13deg) scale(2.2);
@@ -2427,7 +2389,7 @@ select:focus {
   position: relative;
   margin-top: 2px;
   padding: 8px;
-  border-radius: 22px;
+  border-radius: var(--radius-xl);
   background: rgba(255, 255, 255, .42);
   border: 1px solid rgba(255, 255, 255, .9);
   box-shadow: 0 34px 50px -26px rgba(22, 32, 43, .55);
@@ -2442,7 +2404,7 @@ select:focus {
   width: 56px;
   height: 9px;
   margin-left: -28px;
-  border-radius: 9px;
+  border-radius: var(--radius);
   background: var(--wall-deep);
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, .25);
   z-index: 3;
@@ -2462,7 +2424,7 @@ select:focus {
 .badge {
   position: relative;
   background: var(--white);
-  border-radius: 15px;
+  border-radius: var(--radius-xl);
   overflow: hidden;
   padding-bottom: 16px;
 }
@@ -2471,7 +2433,7 @@ select:focus {
   height: 78px;
   background: var(--role);
   transition: background .3s;
-  color: #fff;
+  color: var(--gray-0);
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -2483,12 +2445,12 @@ select:focus {
   align-items: center;
   gap: 7px;
   font-weight: 700;
-  font-size: 15px;
+  font-size: var(--fs-14);
   font-stretch: 115%;
 }
 
 .band small {
-  font-size: 12px;
+  font-size: var(--fs-12);
   opacity: .85;
 }
 
@@ -2496,15 +2458,15 @@ select:focus {
   width: 84px;
   height: 84px;
   margin: -30px 0 0 18px;
-  border-radius: 12px;
-  border: 4px solid #fff;
+  border-radius: var(--radius-lg);
+  border: 4px solid var(--gray-0);
   position: relative;
-  background: color-mix(in srgb, var(--role) 14%, #fff);
+  background: color-mix(in srgb, var(--role) 14%, var(--gray-0));
   color: var(--role);
   display: grid;
   place-items: center;
   font-weight: 800;
-  font-size: 30px;
+  font-size: var(--fs-30);
   font-stretch: 110%;
   transition: color .3s, background .3s;
 }
@@ -2514,7 +2476,7 @@ select:focus {
 }
 
 .who .name {
-  font-size: 23px;
+  font-size: var(--fs-24);
   font-weight: 750;
   font-stretch: 112%;
   line-height: 1.1;
@@ -2524,13 +2486,13 @@ select:focus {
 }
 
 .who .role {
-  font-size: 13.5px;
+  font-size: var(--fs-13);
   color: var(--ink-2);
   margin-top: 4px;
 }
 
 .who .mail {
-  font-size: 12.5px;
+  font-size: var(--fs-12);
   color: var(--ink-2);
   margin-top: 2px;
   min-height: 1.2em;
@@ -2540,11 +2502,11 @@ select:focus {
 .zones {
   margin: 14px 18px 0;
   padding-top: 12px;
-  border-top: 1px solid #E4E8ED;
+  border-top: 1px solid var(--gray-200);
 }
 
 .zones p {
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--ink-2);
   margin-bottom: 8px;
 }
@@ -2559,14 +2521,14 @@ select:focus {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11.5px;
+  font-size: var(--fs-11);
   color: var(--ink);
 }
 
 .z i {
   width: 11px;
   height: 11px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   flex: none;
   border: 1.5px solid var(--role);
   transition: background .3s, border-color .3s;
@@ -2581,11 +2543,11 @@ select:focus {
 }
 
 .z.none {
-  color: #A2ACB7;
+  color: var(--gray-400);
 }
 
 .z.none i {
-  border-color: #C9D0D7;
+  border-color: var(--gray-300);
   background: none;
 }
 
@@ -2602,12 +2564,12 @@ select:focus {
   top: 118px;
   z-index: 5;
   padding: 3px 12px 4px;
-  border: 3.5px solid #0B7A52;
-  border-radius: 8px;
-  color: #0B7A52;
+  border: 3.5px solid var(--pass-fg);
+  border-radius: var(--radius);
+  color: var(--pass-fg);
   font-weight: 850;
   font-stretch: 72%;
-  font-size: 34px;
+  font-size: var(--fs-36);
   line-height: 1;
   letter-spacing: .02em;
   transform: translate(-50%, -50%) rotate(-13deg) scale(2.2);
@@ -2648,7 +2610,7 @@ select:focus {
   align-items: center;
   gap: 10px;
   font-weight: 800;
-  font-size: 20px;
+  font-size: var(--fs-20);
   font-stretch: 118%;
   letter-spacing: -.01em;
 }
@@ -2657,7 +2619,7 @@ select:focus {
 .desk-logo b {
   width: 34px;
   height: 34px;
-  border-radius: 9px;
+  border-radius: var(--radius);
   background: var(--aegis);
   display: grid;
   place-items: center;
@@ -2665,7 +2627,7 @@ select:focus {
 
 .top a,
 .top-desk a {
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--ink-2);
   text-decoration: underline;
   text-underline-offset: 3px;
@@ -2690,7 +2652,7 @@ select:focus {
 }
 
 .lead {
-  font-size: 17px;
+  font-size: var(--fs-16);
   line-height: 1.5;
   color: var(--ink-2);
   margin-top: 20px;
@@ -2707,7 +2669,7 @@ select:focus {
 .form-desk label,
 .desk .main form label {
   display: block;
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 600;
   margin-bottom: 7px;
   color: var(--ink);
@@ -2720,7 +2682,7 @@ select:focus {
 }
 
 .lab a {
-  font-size: 13.5px;
+  font-size: var(--fs-13);
   font-weight: 500;
   color: var(--ink-2);
   text-underline-offset: 3px;
@@ -2732,10 +2694,10 @@ select:focus {
   width: 100%;
   height: 52px;
   padding: 0 15px;
-  font-size: 16px;
+  font-size: var(--fs-16);
   background: var(--white);
   border: 1.5px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius);
   outline: none;
   transition: border-color .15s, box-shadow .15s;
 }
@@ -2753,7 +2715,7 @@ select:focus {
   align-items: center;
   gap: 10px;
   font-weight: 800;
-  font-size: 20px;
+  font-size: var(--fs-20);
   font-stretch: 118%;
   letter-spacing: -.01em;
 }
@@ -2762,7 +2724,7 @@ select:focus {
 .desk-logo b {
   width: 34px;
   height: 34px;
-  border-radius: 9px;
+  border-radius: var(--radius);
   background: var(--aegis);
   display: grid;
   place-items: center;
@@ -2770,7 +2732,7 @@ select:focus {
 
 .top a,
 .top-desk a {
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--ink-2);
   text-decoration: underline;
   text-underline-offset: 3px;
@@ -2795,7 +2757,7 @@ select:focus {
 }
 
 .lead {
-  font-size: 17px;
+  font-size: var(--fs-16);
   line-height: 1.5;
   color: var(--ink-2);
   margin-top: 20px;
@@ -2812,7 +2774,7 @@ select:focus {
 .form-desk label,
 .main form label {
   display: block;
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 600;
   margin-bottom: 7px;
   color: var(--ink);
@@ -2825,7 +2787,7 @@ select:focus {
 }
 
 .lab a {
-  font-size: 13.5px;
+  font-size: var(--fs-13);
   font-weight: 500;
   color: var(--ink-2);
   text-underline-offset: 3px;
@@ -2837,10 +2799,10 @@ select:focus {
   width: 100%;
   height: 52px;
   padding: 0 15px;
-  font-size: 16px;
+  font-size: var(--fs-16);
   background: var(--white);
   border: 1.5px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius);
   outline: none;
   transition: border-color .15s, box-shadow .15s;
 }
@@ -2863,25 +2825,25 @@ select:focus {
   padding: 0 10px;
   border: 0;
   background: none;
-  font-size: 13px;
+  font-size: var(--fs-13);
   font-weight: 600;
   color: var(--ink-2);
   cursor: pointer;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 
 .pw button:hover {
-  background: #EEF1F4;
+  background: var(--gray-100);
 }
 
 .primary,
 .primary-badge-btn {
   height: 54px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: var(--ink);
-  color: #fff;
-  font-size: 16px;
+  color: var(--gray-0);
+  font-size: var(--fs-16);
   font-weight: 650;
   cursor: pointer;
   transition: background .15s, transform .1s;
@@ -2892,7 +2854,7 @@ select:focus {
 
 .primary:hover,
 .primary-badge-btn:hover {
-  background: #26323F;
+  background: var(--gray-800);
 }
 
 .primary:active,
@@ -2903,7 +2865,7 @@ select:focus {
 .primary[disabled],
 .primary-badge-btn[disabled] {
   cursor: progress;
-  background: #3A4654;
+  background: var(--gray-700);
 }
 
 .primary.done,
@@ -2917,7 +2879,7 @@ select:focus {
   align-items: center;
   gap: 14px;
   margin: 22px 0 14px;
-  font-size: 13px;
+  font-size: var(--fs-13);
   color: var(--ink-2);
 }
 
@@ -2939,11 +2901,11 @@ select:focus {
   align-items: center;
   gap: 14px;
   padding: 0 16px;
-  border-radius: 8px;
+  border-radius: var(--radius);
   cursor: pointer;
   background: transparent;
   border: 1.5px solid var(--ink);
-  font-size: 15.5px;
+  font-size: var(--fs-16);
   font-weight: 650;
   text-align: left;
   transition: background .15s;
@@ -2964,7 +2926,7 @@ select:focus {
 .demo .swatch i,
 .demo-trigger .swatch i {
   width: 6px;
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
   transform-origin: top;
   transition: transform .25s var(--swing);
 }
@@ -2980,7 +2942,7 @@ select:focus {
 .demo .count,
 .demo-trigger .count {
   margin-left: auto;
-  font-size: 13.5px;
+  font-size: var(--fs-13);
   font-weight: 500;
   color: var(--ink-2);
 }
@@ -2989,24 +2951,24 @@ select:focus {
 .status-desk {
   min-height: 22px;
   margin-top: 14px;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--ink-2);
 }
 
 .status.ok,
 .status-desk.ok {
-  color: #0B7A52;
+  color: var(--pass-fg);
   font-weight: 600;
 }
 
 .status.err,
 .status-desk.err {
-  color: #B3261E;
+  color: var(--fail-fg);
   font-weight: 600;
 }
 
 .lead {
-  font-size: 17px;
+  font-size: var(--fs-16);
   line-height: 1.5;
   color: var(--ink-2);
   margin-top: 20px;
@@ -3021,7 +2983,7 @@ select:focus {
 
 .form-desk label {
   display: block;
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 600;
   margin-bottom: 7px;
   color: var(--ink);
@@ -3034,7 +2996,7 @@ select:focus {
 }
 
 .lab a {
-  font-size: 13.5px;
+  font-size: var(--fs-13);
   font-weight: 500;
   color: var(--ink-2);
   text-underline-offset: 3px;
@@ -3046,10 +3008,10 @@ select:focus {
   width: 100%;
   height: 52px;
   padding: 0 15px;
-  font-size: 16px;
+  font-size: var(--fs-16);
   background: var(--white);
   border: 1.5px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius);
   outline: none;
   transition: border-color .15s, box-shadow .15s;
 }
@@ -3072,24 +3034,24 @@ select:focus {
   padding: 0 10px;
   border: 0;
   background: none;
-  font-size: 13px;
+  font-size: var(--fs-13);
   font-weight: 600;
   color: var(--ink-2);
   cursor: pointer;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 
 .pw button:hover {
-  background: #EEF1F4;
+  background: var(--gray-100);
 }
 
 .primary-badge-btn {
   height: 54px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: var(--ink);
-  color: #fff;
-  font-size: 16px;
+  color: var(--gray-0);
+  font-size: var(--fs-16);
   font-weight: 650;
   cursor: pointer;
   transition: background .15s, transform .1s;
@@ -3099,7 +3061,7 @@ select:focus {
 }
 
 .primary-badge-btn:hover {
-  background: #26323F;
+  background: var(--gray-800);
 }
 
 .primary-badge-btn:active {
@@ -3108,7 +3070,7 @@ select:focus {
 
 .primary-badge-btn[disabled] {
   cursor: progress;
-  background: #3A4654;
+  background: var(--gray-700);
 }
 
 .primary-badge-btn.done {
@@ -3120,7 +3082,7 @@ select:focus {
   align-items: center;
   gap: 14px;
   margin: 22px 0 14px;
-  font-size: 13px;
+  font-size: var(--fs-13);
   color: var(--ink-2);
 }
 
@@ -3139,11 +3101,11 @@ select:focus {
   align-items: center;
   gap: 14px;
   padding: 0 16px;
-  border-radius: 8px;
+  border-radius: var(--radius);
   cursor: pointer;
   background: transparent;
   border: 1.5px solid var(--ink);
-  font-size: 15.5px;
+  font-size: var(--fs-16);
   font-weight: 650;
   text-align: left;
   transition: background .15s;
@@ -3161,7 +3123,7 @@ select:focus {
 
 .demo-trigger .swatch i {
   width: 6px;
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
   transform-origin: top;
   transition: transform .25s var(--swing);
 }
@@ -3176,7 +3138,7 @@ select:focus {
 
 .demo-trigger .count {
   margin-left: auto;
-  font-size: 13.5px;
+  font-size: var(--fs-13);
   font-weight: 500;
   color: var(--ink-2);
 }
@@ -3184,22 +3146,22 @@ select:focus {
 .status-desk {
   min-height: 22px;
   margin-top: 14px;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--ink-2);
 }
 
 .status-desk.ok {
-  color: #0B7A52;
+  color: var(--pass-fg);
   font-weight: 600;
 }
 
 .status-desk.err {
-  color: #B3261E;
+  color: var(--fail-fg);
   font-weight: 600;
 }
 
 .fine {
-  font-size: 13px;
+  font-size: var(--fs-13);
   line-height: 1.55;
   color: var(--ink-2);
   max-width: 52ch;
@@ -3231,8 +3193,8 @@ select:focus {
 
 .rackpanel {
   width: min(1040px, 100%);
-  background: #EEF2F5;
-  border-radius: 20px;
+  background: var(--gray-100);
+  border-radius: var(--radius-xl);
   padding: 28px 32px 32px;
   transform: translateY(-24px);
   transition: transform .45s var(--swing);
@@ -3261,7 +3223,7 @@ select:focus {
 }
 
 .rhead p {
-  font-size: 15px;
+  font-size: var(--fs-14);
   color: var(--ink-2);
   margin-top: 10px;
   max-width: 56ch;
@@ -3276,11 +3238,11 @@ select:focus {
   gap: 6px;
   height: 40px;
   padding: 0 14px;
-  border-radius: 8px;
+  border-radius: var(--radius);
   border: 1.5px solid var(--line);
-  background: #fff;
+  background: var(--gray-0);
   cursor: pointer;
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 600;
 }
 
@@ -3291,8 +3253,8 @@ select:focus {
 
 .rail {
   height: 10px;
-  border-radius: 5px;
-  background: #9AA6B3;
+  border-radius: var(--radius-sm);
+  background: var(--gray-400);
   margin-top: 26px;
   box-shadow: 0 3px 0 rgba(22, 32, 43, .08);
 }
@@ -3339,8 +3301,8 @@ select:focus {
   border: 0;
   cursor: pointer;
   text-align: left;
-  background: #fff;
-  border-radius: 14px;
+  background: var(--gray-0);
+  border-radius: var(--radius-xl);
   overflow: hidden;
   box-shadow: 0 18px 30px -22px rgba(22, 32, 43, .6), 0 0 0 1px rgba(22, 32, 43, .06);
   transition: transform .25s var(--swing), box-shadow .25s;
@@ -3355,11 +3317,11 @@ select:focus {
 .mini .mb {
   display: block;
   background: var(--c);
-  color: #fff;
+  color: var(--gray-0);
   padding: 14px 16px 12px;
   font-weight: 750;
   font-stretch: 112%;
-  font-size: 17px;
+  font-size: var(--fs-16);
   line-height: 1.15;
 }
 
@@ -3367,14 +3329,14 @@ select:focus {
   display: block;
   font-weight: 500;
   font-stretch: 100%;
-  font-size: 12.5px;
+  font-size: var(--fs-12);
   opacity: .85;
   margin-top: 3px;
 }
 
 .mini .md {
   padding: 12px 16px 0;
-  font-size: 13.5px;
+  font-size: var(--fs-13);
   line-height: 1.5;
   color: var(--ink-2);
   min-height: 72px;
@@ -3387,7 +3349,7 @@ select:focus {
 .mini .go {
   display: block;
   padding: 12px 16px 14px;
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 700;
   color: var(--c);
 }
@@ -3482,8 +3444,8 @@ select:focus {
   border: 0;
   cursor: pointer;
   text-align: left;
-  background: #fff;
-  border-radius: 14px;
+  background: var(--gray-0);
+  border-radius: var(--radius-xl);
   overflow: hidden;
   box-shadow: 0 18px 30px -22px rgba(22, 32, 43, .6), 0 0 0 1px rgba(22, 32, 43, .06);
   transition: transform .25s var(--swing), box-shadow .25s;
@@ -3498,11 +3460,11 @@ select:focus {
 .mini .mb {
   display: block;
   background: var(--c);
-  color: #fff;
+  color: var(--gray-0);
   padding: 14px 16px 12px;
   font-weight: 750;
   font-stretch: 112%;
-  font-size: 17px;
+  font-size: var(--fs-16);
   line-height: 1.15;
 }
 
@@ -3510,14 +3472,14 @@ select:focus {
   display: block;
   font-weight: 500;
   font-stretch: 100%;
-  font-size: 12.5px;
+  font-size: var(--fs-12);
   opacity: .85;
   margin-top: 3px;
 }
 
 .mini .md {
   padding: 12px 16px 0;
-  font-size: 13.5px;
+  font-size: var(--fs-13);
   line-height: 1.5;
   color: var(--ink-2);
   min-height: 72px;
@@ -3530,7 +3492,7 @@ select:focus {
 .mini .go {
   display: block;
   padding: 12px 16px 14px;
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 700;
   color: var(--c);
 }

@@ -2,10 +2,23 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "aegis-web",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "web", "run", "dev"],
-      "port": 5173
+      "name": "aegis-api-check",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "--no-warnings",
+        "server/index.js"
+      ],
+      "env": {
+        "PORT": "4101",
+        "AEGIS_DEMO": "1",
+        "AEGIS_DATA": "C:\\Users\\Ranjith\\AppData\\Local\\Temp\\aegis-ui-check",
+        "PGUSER": "",
+        "PGDATABASE": "",
+        "DATABASE_URL": "",
+        "SLACK_BOT_TOKEN": "",
+        "SLACK_APP_TOKEN": ""
+      },
+      "port": 4101
     }
   ]
 }

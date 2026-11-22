@@ -6,9 +6,33 @@ class Safe { constructor(s) { this.s = s; } }
 const render = (v) => v instanceof Safe ? v.s : Array.isArray(v) ? v.map(render).join('') : v === null || v === undefined || v === false ? '' : esc(v);
 const h = (st, ...v) => new Safe(st.reduce((a, s, i) => a + s + (i < v.length ? render(v[i]) : ''), ''));
 const raw = (s) => new Safe(s);
-const words = (s) => String(s ?? '').replace(/_/g, ' ');
-const date = (s) => s ? String(s).slice(0, 10) : '—';
-const dt = (s) => s ? String(s).slice(0, 16).replace('T', ' ') : '—';
+// Friendly names for the codes the backend sends. Anything not listed is shown in sentence case.
+const LABELS = {
+  // document types
+  professional_license: 'Professional license', bls_card: 'BLS card', acls_card: 'ACLS card', tb_screening: 'TB screening',
+  flu_vaccine: 'Flu vaccination', facility_orientation: 'Facility orientation', handbook_ack: 'Handbook acknowledgment',
+  security_training: 'Security training', i9_record: 'I-9 record', work_authorization: 'Work authorization', w4: 'W-4',
+  payroll_filing_receipt: 'Payroll filing receipt', unknown: 'Unknown',
+  // case stages and outcomes
+  identified: 'New', following_up: 'Following up', in_review: 'In review', reevaluating: 'Re-evaluating',
+  confirmed: 'Confirmed by owner', false_finding: 'Marked false by owner', verified: 'Verified with evidence', no_longer_applicable: 'No longer applicable',
+  // evidence, messages and approvals
+  needs_review: 'Needs review', pending_approval: 'Waiting for approval', demo_seed: 'Demo data', bulk_upload: 'Bulk upload',
+  action: 'Message to send', assignment_review: 'Assignment decision', readiness_decision: 'Readiness decision',
+  control_activation: 'Rule change', notice_response: 'Notice response',
+  // people and packs
+  hr: 'HR', admin: 'Administrator', immigration_owner: 'Immigration owner', healthcare_compliance: 'Healthcare compliance',
+  healthcare: 'Healthcare', onboarding: 'Onboarding', immigration: 'Immigration', payroll: 'Payroll & Tax',
+  facility_policy: 'Facility policy', hrms: 'HRMS',
+};
+const words = (s) => { const k = String(s ?? ''); if (Object.hasOwn(LABELS, k)) return LABELS[k]; const t = k.replace(/_/g, ' '); return t.charAt(0).toUpperCase() + t.slice(1); };
+// Dates read like "Oct 31, 2026"; times like "Oct 31, 2026, 2:05 PM". Shown in UTC, as the page labels say.
+const DAY = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+const DAYTIME = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'UTC' });
+const parse = (s) => { const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(String(s)) ? `${s}T00:00:00Z` : s); return Number.isNaN(d.getTime()) ? null : d; };
+// Non-breaking spaces keep a date on one line in narrow table columns.
+const date = (s) => { const d = s ? parse(s) : null; return d ? DAY.format(d).replace(/ /g, ' ') : (s ? String(s) : '—'); };
+const dt = (s) => { const d = s ? parse(s) : null; return d ? DAYTIME.format(d) : (s ? String(s) : '—'); };
 
 async function api(path, body) {
   const r = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'x-aegis-client': 'web' }, body: JSON.stringify(body) });
@@ -23,19 +47,36 @@ function toast(msg, type = 'info') {
   $('#toasts').append(el); setTimeout(() => el.remove(), 4200);
 }
 const fileData = (f) => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok({ name: f.name, mime: f.type || 'application/octet-stream', data: r.result.split(',')[1] }); r.onerror = no; r.readAsDataURL(f); });
+let modalOpener;
 function openModal(title, sub, body, foot, wide) {
   const c = $('#modalCard');
+  const overlay = $('#modal');
+  if (!overlay.classList.contains('open')) modalOpener = document.activeElement;
   c.className = `modal-card${wide ? ' wide' : ''}`;
-  c.innerHTML = render(h`<div class="modal-header"><div class="modal-title-wrap"><h3 class="modal-title">${title}</h3><p class="modal-subtitle">${sub}</p></div><button class="modal-close-btn" data-act="closeModal" aria-label="Close">&times;</button></div><div class="modal-body">${body}</div>${foot ? h`<div class="modal-footer">${foot}</div>` : ''}`);
-  $('#modal').classList.add('open');
+  c.innerHTML = render(h`<div class="modal-header"><div class="modal-title-wrap"><h3 class="modal-title" id="modalTitle">${title}</h3><p class="modal-subtitle" id="modalDescription">${sub}</p></div><button class="modal-close-btn" data-act="closeModal" aria-label="Close">&times;</button></div><div class="modal-body">${body}</div>${foot ? h`<div class="modal-footer">${foot}</div>` : ''}`);
+  overlay.classList.add('open');
+  $('#appShell').inert = true;
+  c.querySelector('.modal-close-btn').focus();
 }
-const closeModal = () => $('#modal').classList.remove('open');
+function closeModal() {
+  const overlay = $('#modal');
+  if (!overlay.classList.contains('open')) return;
+  overlay.classList.remove('open');
+  $('#appShell').inert = false;
+  (modalOpener?.isConnected ? modalOpener : $('#workspace-main')).focus();
+  modalOpener = null;
+}
+
+function setNavigationOpen(open) {
+  $('#sheet').classList.toggle('open', open);
+  $('#menu').setAttribute('aria-expanded', String(open));
+}
 
 const PILL = { pass: ['pill-pass', 'Pass'], fail: ['pill-fail', 'Fail'], unknown: ['pill-unknown', 'Unknown'], not_applicable: ['pill-na', 'N/A'], restricted: ['pill-na', 'Restricted'], not_assessed: ['pill-na', 'Not assessed'] };
 const statusPill = (s) => { const [c, l] = PILL[s] || ['pill-na', words(s)]; return h`<span class="pill ${c}">${l}</span>`; };
 const STATE_PILL = { needs_review: 'pill-warn', accepted: 'pill-pass', rejected: 'pill-fail', superseded: 'pill-na', sent: 'pill-pass', queued: 'pill-blue', pending_approval: 'pill-warn' };
 const statePill = (s) => h`<span class="pill ${STATE_PILL[s] || 'pill-blue'}">${words(s)}</span>`;
-const prio = (p) => h`<span class="priority-pill ${p === 'high' ? 'pill-high' : p === 'medium' ? 'pill-med' : 'pill-low'}">${p}</span>`;
+const prio = (p) => h`<span class="priority-pill ${p === 'high' ? 'pill-high' : p === 'medium' ? 'pill-med' : 'pill-low'}">${words(p)}</span>`;
 const hookSvg = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v11a4 4 0 1 1-4-4"/></svg>';
 const empty = (cols, t) => h`<tr><td colspan="${cols}"><div class="empty"><span class="hook">${raw(hookSvg)}</span><div><b>No items</b><span>${t}</span></div></div></td></tr>`;
 const table = (heads, rows, none) => h`<div class="table-scroll-container"><table><thead><tr>${heads.map((x) => h`<th>${x}</th>`)}</tr></thead><tbody>${rows.length ? rows : empty(heads.length, none)}</tbody></table></div>`;
@@ -43,53 +84,26 @@ const card = (title, sub, body, tools) => h`<div class="panel"><div class="ph2">
 
 const I = { overview: '<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>', setup: '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>', cases: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>', approvals: '<path d="M20 6 9 17l-5-5"/>', checks: '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>', workers: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>', evidence: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M12 18v-6m-3 3 3-3 3 3"/>', packs: '<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/>', controls: '<path d="M4 21h16M4 14h16M4 7h16"/><circle cx="8" cy="7" r="2"/><circle cx="16" cy="14" r="2"/>', integrations: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="m9 12 2 2 4-4"/>', dashboards: '<rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/>', audit: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>', reports: '<path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/>', metrics: '<path d="M12 20V10M18 20V4M6 20v-4"/>', settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>' };
 const NAV = [
-  { id: 'overview', label: 'Overview', direct: true },
-  { id: 'setup', label: 'Company setup', direct: true },
-  {
-    id: 'work',
-    label: 'Work',
-    items: [
-      { id: 'cases', label: 'Remediation inbox', sub: 'Open gaps moving toward verified closure' },
-      { id: 'approvals', label: 'Approvals', sub: 'Decisions waiting on an authorized person' },
-      { id: 'evidence', label: 'Evidence & AI intake', sub: 'Uncertain documents and extracted fields' }
-    ]
-  },
-  {
-    id: 'records',
-    label: 'Records',
-    items: [
-      { id: 'checks', label: 'Checks', sub: 'Every evaluation result, reason and evidence reference' },
-      { id: 'workers', label: 'Worker register', sub: 'Unified roster with per-pack status' }
-    ]
-  },
-  {
-    id: 'governance',
-    label: 'Governance',
-    items: [
-      { id: 'packs', label: 'Compliance packs', sub: 'Versioned packs and customer overrides' },
-      { id: 'controls', label: 'Custom controls', sub: 'Natural language rules with preview before approval' },
-      { id: 'integrations', label: 'Connections & health', sub: 'Connectors, outbox, schedules and visible failures' }
-    ]
-  },
-  {
-    id: 'reporting',
-    label: 'Reporting',
-    items: [
-      { id: 'dashboards', label: 'Dashboards', sub: 'Saved views with role-based access' },
-      { id: 'reports', label: 'Reports & notices', sub: 'Evidence-backed exports and tax notice intake' },
-      { id: 'metrics', label: 'Pilot metrics', sub: 'Hours saved, closure speed and false findings' },
-      { id: 'audit', label: 'Audit trail', sub: 'Append-only, hash-chained history' },
-      { id: 'settings', label: 'Settings', sub: 'Users, roles, reporting channel and schedules' }
-    ]
-  }
+  ['Workspace', [['overview', 'Overview'], ['cases', 'Cases'], ['evidence', 'Evidence'], ['approvals', 'Approvals']]],
+  ['Records', [['workers', 'Workers'], ['checks', 'Checks'], ['packs', 'Compliance packs'], ['controls', 'Control rules']]],
+  ['Reporting', [['dashboards', 'Dashboards'], ['reports', 'Reports & notices'], ['metrics', 'Pilot metrics'], ['audit', 'Audit history']]],
+  ['Organization', [['setup', 'Company setup'], ['integrations', 'Connections'], ['settings', 'Settings']]]
 ];
-const HEAD = { overview: ['Compliance', 'Compliance Overview', 'Current status across activated packs, accepted evidence and open remediation.'], setup: ['Onboarding', 'Company Setup', 'Connect records, confirm context, activate packs and run the first assessment.'], cases: ['Remediation', 'Remediation Inbox', 'Each gap moves from identified to closed. Only accepted evidence closes a case.'], approvals: ['Decisions', 'Approvals', 'Consequential actions wait here for an authorized person.'], evidence: ['Intake', 'Evidence & AI Intake', 'AI proposes matches and fields. Uncertain documents go to a person.'], checks: ['Records', 'Checks', 'Every result has a reason, evidence references and a control version.'], workers: ['Workforce', 'Worker Register', 'Per-pack status for each worker. One pack never hides another.'], packs: ['Governance', 'Compliance Packs', 'Versioned packs reviewed and activated by an authorized person.'], controls: ['Rules', 'Custom Controls', 'Draft, preview and approve changes before they take effect.'], integrations: ['Connections', 'Connections & Health', 'Connectors, messages, background jobs and visible failures.'], dashboards: ['Reporting', 'Dashboards', 'Saved views with role-based access.'], reports: ['Reporting', 'Reports & Notices', 'Evidence-backed exports and tax notice intake.'], metrics: ['Pilot', 'Pilot Metrics', 'Measured from records. Blank means not measured yet.'], audit: ['Security', 'Audit Trail', 'Append-only, hash-chained history of evaluations, requests and closures.'], settings: ['Workspace', 'Settings', 'Users, roles, reporting channel and schedules.'] };
+const HEAD = { overview: ['Workspace', 'Overview', 'Current status across activated packs, accepted evidence and open remediation.'], setup: ['Organization', 'Company setup', 'Connect records, confirm context, activate packs and run the first assessment.'], cases: ['Workspace', 'Cases', 'Each gap moves from identified to closed. Only accepted evidence closes a case.'], approvals: ['Workspace', 'Approvals', 'Consequential actions wait here for an authorized person.'], evidence: ['Workspace', 'Evidence', 'AI proposes matches and fields. Uncertain documents go to a person.'], checks: ['Records', 'Checks', 'Every result has a reason, evidence references and a control version.'], workers: ['Records', 'Workers', 'Per-pack status for each worker. One pack never hides another.'], packs: ['Records', 'Compliance packs', 'Versioned packs reviewed and activated by an authorized person.'], controls: ['Records', 'Control rules', 'Draft, preview and approve changes before they take effect.'], integrations: ['Organization', 'Connections', 'Connectors, messages, background jobs and visible failures.'], dashboards: ['Reporting', 'Dashboards', 'Saved views with role-based access.'], reports: ['Reporting', 'Reports & notices', 'Evidence-backed exports and tax notice intake.'], metrics: ['Reporting', 'Pilot metrics', 'Measured from records. Blank means not measured yet.'], audit: ['Reporting', 'Audit history', 'Append-only, hash-chained history of evaluations, requests and closures.'], settings: ['Organization', 'Settings', 'Users, roles, reporting channel and schedules.'] };
 
+// Ticked cases on the Cases page (ids). Cleared when the tab or page changes.
+const caseSel = new Set();
+let lastCaseCheck = null;
 let caseClosed = false, me = null, route = 'overview', routeArg = null, checkFilter = {}, evidenceSel = null, lastDraft = null, importPreview = null;
+let navigation = 0;
+const adminRoutes = new Set(['setup', 'settings', 'audit', 'integrations']);
+const canEdit = () => me.user.role !== 'viewer';
+const canAddWorker = () => me.user.is_admin || me.user.role === 'hr';
 const refresh = () => go(route, routeArg, true);
 
 async function boot() {
   try { me = await api('/api/me'); } catch { return; }
+  demoEnabled = me.demo;
   document.body.style.background = '';
   const ls = $('#loginScreen'); if (ls) { ls.hidden = true; ls.style.display = 'none'; ls.innerHTML = ''; }
   const as = $('#appShell'); if (as) { as.hidden = false; as.style.display = 'block'; }
@@ -99,11 +113,30 @@ async function boot() {
   readHash();
 }
 
+// Header buttons per page. The search box shows on pages that are mostly tables.
+const PAGE_TOOLS = { workers: ['importRoster', 'addWorker'], evidence: ['bulkUpload', 'uploadEvidence'] };
+const SEARCH_PAGES = new Set(['cases', 'evidence', 'approvals', 'workers', 'checks', 'controls', 'audit', 'settings']);
+const TOOL_ALLOWED = { addWorker: () => canAddWorker(), importRoster: () => canEdit(), bulkUpload: () => canEdit(), uploadEvidence: () => canEdit() };
+function syncTools() {
+  if (!me?.user) return;
+  const mine = PAGE_TOOLS[route] || [];
+  for (const [act, allowed] of Object.entries(TOOL_ALLOWED)) {
+    const b = $(`#topTools [data-act="${act}"]`);
+    if (b) b.hidden = !mine.includes(act) || !allowed();
+  }
+  const search = $('#globalSearch'); if (search) search.hidden = !SEARCH_PAGES.has(route);
+}
+
 function renderTop() {
   if (!me || !me.user) return;
   const tenantAvatar = $('#tenantAvatar'); if (tenantAvatar) tenantAvatar.textContent = (me.tenant?.name || 'BH').slice(0, 2).toUpperCase();
   const tenantName = $('#tenantName'); if (tenantName) tenantName.textContent = me.tenant?.name || 'Aegis';
-  const tenantStatus = $('#tenantStatus'); if (tenantStatus) tenantStatus.textContent = me.tenant?.kind === 'internal_pilot' ? 'Internal pilot' : 'External test';
+  const tenantStatus = $('#tenantStatus');
+  tenantStatus.hidden = !me.demo;
+  tenantStatus.textContent = me.sandbox ? 'Sandbox' : 'Demo data';
+  $('#meMenuDemoRole').hidden = !me.demo;
+  $('#meMenuDemoControls').hidden = !me.demo || !me.user.is_admin;
+  syncTools();
 
   const userEmail = (me.user.email || '').toLowerCase();
   const pMatch = PERSONAS.find((p) => p.email && userEmail && p.email.toLowerCase() === userEmail) ||
@@ -122,74 +155,35 @@ function renderTop() {
   const uAv = $('#userAvatar'); if (uAv) uAv.textContent = badgeInitials(me.user.name || '?');
   const uNm = $('#userName'); if (uNm) uNm.textContent = (me.user.name || 'User').split(' ')[0] || me.user.name;
   const uRl = $('#userRole'); if (uRl) uRl.textContent = me.user.role_label || words(me.user.role);
-  const asof = $('#asof'); if (asof) asof.textContent = `As of ${me.today || ''}`;
+  $('#meBtn').setAttribute('aria-label', `${me.user.name || 'User'} account`);
 
   const meMenuSettings = $('#meMenuSettings');
   if (meMenuSettings) meMenuSettings.hidden = !me.user.is_admin;
 }
 
-async function renderNav() {
-  const o = await api('/api/overview').catch(() => null);
-  const ev = await api('/api/evidence').catch(() => []);
-  const badge = {
-    cases: o?.kpi?.open_cases || 0,
-    approvals: o?.kpi?.pending_approvals || 0,
-    evidence: (ev || []).filter((e) => e.status === 'needs_review').length
-  };
-  const totalWork = badge.cases + badge.approvals + badge.evidence;
-
-  const tabsHtml = NAV.map((tab) => {
-    if (tab.direct) {
-      const on = route === tab.id;
-      return h`<button class="tab${on ? ' on' : ''}" type="button" data-act="navDirect" data-id="${tab.id}">${tab.label}</button>`;
-    }
-    const on = tab.items.some((it) => it.id === route);
-    const tabCnt = tab.id === 'work' && totalWork > 0 ? h`<span class="cnt">${totalWork}</span>` : '';
-    return h`
-      <div class="tabwrap">
-        <button class="tab${on ? ' on' : ''}" type="button" aria-expanded="false" data-act="toggleDir">
-          ${tab.label}
-          <svg class="chev" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M6 9l6 6 6-6"/></svg>
-          ${tabCnt}
-        </button>
-        <div class="dir">
-          ${tab.items.map((it) => {
-            let flag = '';
-            if (it.id === 'cases' && badge.cases > 0) flag = h`<span class="flag bad">${badge.cases} open</span>`;
-            else if (it.id === 'approvals' && badge.approvals > 0) flag = h`<span class="flag n">${badge.approvals}</span>`;
-            else if (it.id === 'evidence' && badge.evidence > 0) flag = h`<span class="flag n">${badge.evidence}</span>`;
-            return h`<a href="#${it.id}" class="dir-link" data-act="dirLink"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">${raw(I[it.id] || '')}</svg></span><b>${it.label}</b><small>${it.sub}</small>${flag}</a>`;
-          })}
-        </div>
-      </div>`;
+function renderNav() {
+  const links = NAV.map(([group, items]) => {
+    const visible = items.filter(([key]) => me.user.is_admin || !adminRoutes.has(key));
+    if (!visible.length) return '';
+    return h`<section class="rail-group"><h2>${group}</h2>${visible.map(([key, label]) => h`<a class="rail-link" href="#${key}" aria-current="${route === key ? 'page' : 'false'}"><svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round">${raw(I[key])}</svg><span>${label}</span></a>`)}</section>`;
   });
-
-  const tabsEl = $('#tabs');
-  if (tabsEl) tabsEl.innerHTML = render(h`${tabsHtml}`);
-
-  const sheetIn = $('#sheetIn');
-  if (sheetIn) {
-    sheetIn.innerHTML = render(h`
-      <div class="sheet-group">
-        <a href="#overview" class="dir-link" data-act="dirLink"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">${raw(I.overview)}</svg></span><b>Overview</b><small>Compliance overview and badge wall</small></a>
-        <a href="#setup" class="dir-link" data-act="dirLink"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">${raw(I.setup)}</svg></span><b>Company setup</b><small>Onboarding and configuration</small></a>
-      </div>
-      ${NAV.filter((n) => !n.direct).map((group) => h`
-        <div class="sheet-title" style="font-size:11px;font-weight:750;letter-spacing:0.05em;text-transform:uppercase;color:var(--ink-3);padding:10px 10px 4px">${group.label}</div>
-        ${group.items.map((it) => h`
-          <a href="#${it.id}" class="dir-link" data-act="dirLink"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">${raw(I[it.id] || '')}</svg></span><b>${it.label}</b><small>${it.sub}</small></a>
-        `)}
-      `)}
-    `);
-  }
+  const markup = render(links);
+  $('#tabs').innerHTML = markup;
+  $('#sheetIn').innerHTML = markup;
 }
 
-function readHash() { const [r, a] = location.hash.slice(1).split('/'); go(VIEWS[r] ? r : 'overview', a || null); }
+function readHash() {
+  if (!me) return;
+  const [page, argument] = location.hash.slice(1).split('/');
+  go(Object.hasOwn(VIEWS, page) ? page : 'overview', argument || null);
+}
 
 async function go(r, arg = null, keep) {
+  const version = ++navigation;
+  if (!keep && r !== route) { $('#globalSearch').value = ''; caseSel.clear(); }
   route = r; routeArg = arg;
   closeAllDirMenus();
-  $('#sheet')?.classList.remove('open');
+  setNavigationOpen(false);
   if (r !== 'overview') {
     const alertEl = $('#alert');
     if (alertEl) { alertEl.hidden = true; alertEl.innerHTML = ''; }
@@ -198,15 +192,24 @@ async function go(r, arg = null, keep) {
   const crumb = $('#crumb'); if (crumb) crumb.textContent = c;
   const heading = $('#heading'); if (heading) heading.textContent = t;
   const scopeEl = $('#scope'); if (scopeEl) scopeEl.textContent = d;
+  syncTools();
   try {
-    const out = await VIEWS[r](arg);
+    const out = adminRoutes.has(r) && !me.user.is_admin
+      ? card('Administrators only', 'Ask an administrator for access to this area.', '')
+      : await VIEWS[r](arg);
+    if (version !== navigation) return;
     $('#view').innerHTML = render(out);
     if (!keep) window.scrollTo(0, 0);
     const q = $('#globalSearch')?.value; if (q) filterRows(q);
+    syncCaseSelection();
   } catch (e) {
+    if (version !== navigation) return;
     $('#view').innerHTML = render(h`<div class="panel empty"><span class="hook">${raw(hookSvg)}</span><div><b>Error loading view</b><span>${e.message}</span></div></div>`);
   }
   renderNav();
+  if (r === 'cases' && arg && !keep) {
+    try { await ACT.caseDetail({ dataset: { id: arg } }); } catch (e) { toast(e.message, 'warning'); }
+  }
 }
 
 const scope = (c) => {
@@ -219,220 +222,123 @@ const scope = (c) => {
   }
   el.innerHTML = render(h`${c.all_pass ? h`<span class="pill pill-pass">All checks in scope pass</span> ` : h`<span class="pill pill-warn">Verified scope only</span> `}${c.scope_statement} Evidence as of ${dt(c.as_of)} UTC.`);
 };
-function filterRows(q) { q = q.toLowerCase(); document.querySelectorAll('#view tbody tr').forEach((r) => { r.hidden = !r.textContent.toLowerCase().includes(q); }); }
+function filterRows(q) { q = q.toLowerCase(); document.querySelectorAll('#view tbody tr').forEach((r) => { r.hidden = !r.textContent.toLowerCase().includes(q); }); syncCaseSelection(); }
+
+// ---- Ticking cases (Cases page)
+const SKIP_WHY = { validation: 'Validation mode, not sent', review: 'Waiting for review, not sent' };
+const caseChecks = () => [...document.querySelectorAll('#view .case-check')];
+const shownChecks = () => caseChecks().filter((c) => !c.closest('tr').hidden);
+const caseRow = (id) => $(`#view tr[data-id="${CSS.escape(id)}"]`);
+function syncCaseSelection() {
+  const bar = $('#selectionBar'); if (!bar) return;
+  const onCases = route === 'cases' && !caseClosed;
+  for (const box of caseChecks()) { box.checked = caseSel.has(box.dataset.id); box.closest('tr').classList.toggle('is-picked', box.checked); }
+  const all = $('#view .case-check-all');
+  if (all) {
+    const shown = shownChecks(), on = shown.filter((c) => c.checked).length;
+    all.checked = shown.length > 0 && on === shown.length;
+    all.indeterminate = on > 0 && on < shown.length;
+    all.disabled = !shown.length;
+  }
+  const n = onCases ? caseSel.size : 0;
+  const skipped = [...caseSel].filter((id) => caseRow(id)?.dataset.skip).length;
+  const hiddenBySearch = [...caseSel].filter((id) => caseRow(id)?.hidden).length;
+  const num = $('#selectionNum');
+  if (num.textContent !== String(n)) { num.textContent = n; num.classList.remove('tick'); void num.offsetWidth; num.classList.add('tick'); }
+  $('#selectionWord').textContent = n === 1 ? 'case selected' : 'cases selected';
+  $('#selectionHint').textContent = [skipped ? `${skipped} won't send` : '', hiddenBySearch ? `${hiddenBySearch} hidden by search` : ''].filter(Boolean).join(' · ');
+  if (n) { if (bar.hidden) { bar.hidden = false; void bar.offsetWidth; } bar.classList.add('show'); } // the reflow lets the slide-in start from the hidden position
+  else { bar.classList.remove('show'); bar.hidden = true; }
+  document.body.classList.toggle('has-selection', n > 0);
+  const chaseAllBtn = $('#chaseAllBtn'); if (chaseAllBtn) chaseAllBtn.hidden = n > 0;
+}
+function announceSelection() { const l = $('#selectionLive'); if (l) l.textContent = caseSel.size ? `${caseSel.size} ${caseSel.size === 1 ? 'case' : 'cases'} selected` : 'Selection cleared'; }
+function clearCaseSelection() { if (!caseSel.size) return; caseSel.clear(); lastCaseCheck = null; syncCaseSelection(); announceSelection(); }
+// A click on a tick box. Shift-click ticks or unticks every shown case between this one and the last one clicked.
+function onCaseCheck(box, shift) {
+  if (box.classList.contains('case-check-all')) {
+    const turnOn = box.checked;
+    for (const c of shownChecks()) turnOn ? caseSel.add(c.dataset.id) : caseSel.delete(c.dataset.id);
+    lastCaseCheck = null;
+  } else {
+    const list = shownChecks(), here = list.indexOf(box), before = list.indexOf(lastCaseCheck);
+    const range = shift && before !== -1 && here !== -1 ? list.slice(Math.min(here, before), Math.max(here, before) + 1) : [box];
+    for (const c of range) box.checked ? caseSel.add(c.dataset.id) : caseSel.delete(c.dataset.id);
+    lastCaseCheck = box;
+  }
+  syncCaseSelection(); announceSelection();
+}
+// The confirm step says exactly what will happen before anything is sent.
+function confirmFollowUps(ids, scopeText) {
+  const rows = ids.map(caseRow).filter(Boolean);
+  const willSend = rows.filter((r) => !r.dataset.skip), skipped = rows.filter((r) => r.dataset.skip);
+  const item = (r) => h`<li><span><b>${r.dataset.name}</b><small>${r.dataset.subject}</small></span>${r.dataset.skip ? h`<span class="pill pill-na">${SKIP_WHY[r.dataset.skip]}</span>` : h`<span class="pill pill-pass">Will send</span>`}</li>`;
+  const listed = [...willSend, ...skipped], extra = listed.length - 6;
+  openModal(`Follow up on ${ids.length} ${ids.length === 1 ? 'case' : 'cases'}?`, scopeText,
+    h`<div class="confirm-summary"><div><b>${willSend.length}</b><span>will be sent</span></div><div><b>${skipped.length}</b><span>skipped</span></div></div>
+      <ul class="confirm-list">${listed.slice(0, 6).map(item)}</ul>${extra > 0 ? h`<p class="muted small">And ${extra} more.</p>` : ''}
+      <p class="muted small confirm-note">A follow-up never closes a case; only accepted evidence does. Anyone already followed up today is skipped automatically.${me.sandbox ? ' Sandbox messages stay in the local outbox.' : ''}</p>`,
+    h`<button class="btn-cancel" data-act="closeModal">Cancel</button><button class="btn-submit-green" data-act="confirmChaseAll" data-ids="${JSON.stringify(ids)}" ${willSend.length ? '' : raw('disabled')}>${willSend.length ? `Send ${willSend.length} follow-up${willSend.length === 1 ? '' : 's'}` : 'Nothing to send'}</button>`);
+}
 
 function openCaseCell(c) { return h`<button class="btn-link-action" data-act="caseDetail" data-id="${c.id}">Open</button>`; }
 const VIEWS = {
   async overview() {
-    const [o, workers, setup, hl] = await Promise.all([
+    const [report, health] = await Promise.all([
       api('/api/overview'),
-      api('/api/workers'),
-      api('/api/setup'),
-      api('/api/health')
+      me.user.is_admin ? api('/api/health') : null
     ]);
-    const c = o.coverage, k = o.kpi, st = setup.steps;
-    scope(c);
-
-    const alertEl = $('#alert');
-    const badCon = hl.connectors?.find((con) => con.last_error);
-    if (badCon) {
-      alertEl.hidden = false;
-      alertEl.innerHTML = `
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v5M12 16h.01"/></svg>
-        <p><b>${esc(badCon.name)} connector stopped:</b> ${esc(badCon.last_error)}</p>
-        <a class="btn" href="#integrations">Check connector</a>
-      `;
-    } else if (alertEl) {
-      alertEl.hidden = true;
-      alertEl.innerHTML = '';
+    const { coverage, kpi, urgent, packs } = report;
+    const percent = (count) => coverage.total ? 100 * count / coverage.total : 0;
+    const counts = [
+      { label: 'Pass', value: coverage.pass, kind: 'pass' },
+      { label: 'Fail', value: coverage.fail, kind: 'fail' },
+      { label: 'Unknown', value: coverage.unknown, kind: 'unknown' }
+    ];
+    const failedConnector = health?.connectors?.find((connector) => connector.last_error);
+    const alert = $('#alert');
+    if (alert) {
+      alert.hidden = !failedConnector;
+      alert.innerHTML = failedConnector ? render(h`<p><b>${failedConnector.name}</b> needs attention. ${failedConnector.last_error}</p><a class="btn" href="#integrations">Review connection</a>`) : '';
     }
-
-    const pct = (n) => c.total ? (n / c.total * 100) : 0;
-    const clinicalWorkers = workers.filter((w) => w.category === 'clinical' || (w.role && /nurse|rn|np|md|physician|doctor|therapist|clinical/i.test(w.role)));
-    const corpWorkers = workers.filter((w) => !clinicalWorkers.includes(w));
-    const checkedWorkers = workers.filter((w) => w.overall && w.overall !== 'not_assessed').length;
-
-    let nextSubtext = 'All onboarding steps finished. Continuous monitoring and auto-chasing active.';
-    let nextBtnLabel = 'Review setup';
-    if (!st.connect) {
-      nextSubtext = 'Add workers or connect your HRMS to begin compliance monitoring.';
-      nextBtnLabel = 'Start company setup';
-    } else if (!st.context) {
-      nextSubtext = 'Confirm entities and facility requirements to avoid unknown check results.';
-      nextBtnLabel = 'Confirm company context';
-    } else if (!st.packs) {
-      nextSubtext = 'Select which compliance rules apply to your workforce.';
-      nextBtnLabel = 'Review and activate packs';
-    } else if (!st.channel) {
-      nextSubtext = 'Connect Slack or outbox for automated chase notifications.';
-      nextBtnLabel = 'Configure alerts';
-    } else if (!st.assessed) {
-      nextSubtext = 'Evaluate all worker documents against activated compliance rules.';
-      nextBtnLabel = 'Run assessment now';
-    }
-
-    function badgeStatusClass(s) {
-      if (s === 'pass') return 'pass';
-      if (s === 'fail') return 'fail';
-      if (s === 'unknown') return 'unknown';
-      return 'unchecked';
-    }
-
-    return h`
-      <!-- Worker Badge Wall & Next Steps -->
-      <div class="wallbox">
-        <div class="rackside">
-          <div class="ph2" style="margin-bottom:18px">
-            <div>
-              <h2>Worker badge wall</h2>
-              <p>${workers.length} active workers across 2 departments. Gray badges haven't been checked yet; red badges have an active compliance gap.</p>
-            </div>
-          </div>
-          <div class="depts">
-            <div class="dept" style="--c:var(--clinical)">
-              <h3><i></i>Clinical <small style="font-weight:400;color:var(--ink-3)">(${clinicalWorkers.length} workers)</small></h3>
-              <div class="rail"></div>
-              <div class="row">
-                ${clinicalWorkers.map((w, i) => h`
-                  <div class="peg" style="--c:var(--clinical);--i:${i}">
-                    <span class="s"></span>
-                    <span class="clip"></span>
-                    <button class="wb ${badgeStatusClass(w.overall)}" type="button" data-act="workerDetail" data-id="${w.id}" title="${w.name}: ${words(w.overall)}">
-                      <div class="band"></div>
-                      <div class="ph">${badgeInitials(w.name)}</div>
-                      <span class="nm">${w.name}</span>
-                      <span class="rl">${w.role}</span>
-                      <span class="st"><i></i>${words(w.overall || 'unchecked')}</span>
-                    </button>
-                  </div>
-                `)}
-              </div>
-            </div>
-            <div class="dept" style="--c:var(--corporate)">
-              <h3><i></i>Corporate &amp; operations <small style="font-weight:400;color:var(--ink-3)">(${corpWorkers.length} workers)</small></h3>
-              <div class="rail"></div>
-              <div class="row">
-                ${corpWorkers.map((w, i) => h`
-                  <div class="peg" style="--c:var(--corporate);--i:${i}">
-                    <span class="s"></span>
-                    <span class="clip"></span>
-                    <button class="wb ${badgeStatusClass(w.overall)}" type="button" data-act="workerDetail" data-id="${w.id}" title="${w.name}: ${words(w.overall)}">
-                      <div class="band"></div>
-                      <div class="ph">${badgeInitials(w.name)}</div>
-                      <span class="nm">${w.name}</span>
-                      <span class="rl">${w.role}</span>
-                      <span class="st"><i></i>${words(w.overall || 'unchecked')}</span>
-                    </button>
-                  </div>
-                `)}
-              </div>
-            </div>
-          </div>
-          <div class="legend">
-            <span><i style="background:var(--pass)"></i>Pass — verified</span>
-            <span><i style="background:var(--fail)"></i>Fail — active gap</span>
-            <span><i style="background:repeating-linear-gradient(135deg,var(--unknown) 0 2px,transparent 2px 4px);border:1px solid var(--unknown)"></i>Unknown — unproven</span>
-            <span><i style="border:1.5px dashed var(--unchecked)"></i>Unchecked</span>
-          </div>
+    const subtitle = $('#scope');
+    if (subtitle) subtitle.textContent = `Assessment as of ${dt(coverage.as_of)} UTC`;
+    const workload = [
+      { label: 'Open cases', count: kpi.open_cases, destination: 'cases' },
+      { label: 'Pending approvals', count: kpi.pending_approvals, destination: 'approvals' },
+      { label: 'Active workers', count: kpi.workers, destination: 'workers' }
+    ];
+    const fmtDate = (iso) => iso ? new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(new Date(iso)) : 'No deadline';
+    return h`<div class="ov-workspace">
+      <section class="ov-snapshot" aria-label="Assessment summary">
+        <div class="ov-coverage">
+          <div class="ov-heading"><h2>Verification coverage</h2><a href="#checks">View checks <span aria-hidden="true">↗</span></a></div>
+          <p class="ov-metric"><strong>${coverage.pass}</strong><span>of ${coverage.total} applicable checks pass</span></p>
+          <div class="ov-bar" aria-hidden="true">${counts.filter((s) => s.value).map((s) => h`<i class="ov-band-${s.kind}" style="width:${percent(s.value)}%"></i>`)}</div>
+          <div class="ov-legend">${counts.map((s) => h`<span><i class="ov-band-${s.kind}"></i>${s.label} <b>${s.value}</b></span>`)}</div>
         </div>
-
-        <aside class="next">
-          <div class="big">${checkedWorkers} <small>/ ${workers.length} workers checked</small></div>
-          <p>${nextSubtext}</p>
-          <ol class="steps">
-            <li class="${st.connect ? 'done' : ''}"><span class="m">${st.connect ? '✓' : '1'}</span><span class="t">Connect HRMS or import roster</span></li>
-            <li class="${st.context ? 'done' : ''}"><span class="m">${st.context ? '✓' : '2'}</span><span class="t">Confirm facility requirements</span></li>
-            <li class="${st.packs ? 'done' : ''}"><span class="m">${st.packs ? '✓' : '3'}</span><span class="t">Activate compliance packs</span></li>
-            <li class="${st.channel ? 'done' : ''}"><span class="m">${st.channel ? '✓' : '4'}</span><span class="t">Connect reporting channel</span></li>
-            <li class="${st.assessed ? 'done' : ''}"><span class="m">${st.assessed ? '✓' : '5'}</span><span class="t">Run initial assessment</span></li>
-          </ol>
-          <a class="btn primary" href="#setup">${nextBtnLabel}</a>
-        </aside>
-      </div>
-
-      <!-- 4 Key Measures -->
-      <div class="measures">
-        <a class="ms" href="#checks" style="text-decoration:none;color:inherit">
-          <h2>Applicable checks</h2>
-          <div class="v">${c.total} <small>in ${c.packs.length} active pack(s)</small></div>
-          <div class="bar3">
-            <i style="width:${pct(c.pass)}%;background:var(--pass)"></i>
-            <i style="width:${pct(c.fail)}%;background:var(--fail)"></i>
-            <i style="width:${pct(c.unknown)}%;background:#8b5cf6"></i>
-          </div>
-          <dl>
-            <div><dt>Pass</dt><dd class="num">${c.pass}</dd></div>
-            <div><dt>Fail</dt><dd class="num ${c.fail ? 'hot' : ''}">${c.fail}</dd></div>
-            <div><dt>Unknown</dt><dd class="num">${c.unknown}</dd></div>
-          </dl>
-        </a>
-        <a class="ms" href="#cases" style="text-decoration:none;color:inherit">
-          <h2>Open remediation cases</h2>
-          <div class="v">${k.open_cases} <small>${k.pending_approvals} awaiting approval</small></div>
-          <dl>
-            <div><dt>Expiring credentials</dt><dd class="num">${k.expiring}</dd></div>
-            <div><dt>Onboarding gaps</dt><dd class="num">${k.missing_onboarding}</dd></div>
-            <div><dt>Immigration / payroll reviews</dt><dd class="num">${k.specialist}</dd></div>
-          </dl>
-        </a>
-        <a class="ms" href="#workers" style="text-decoration:none;color:inherit">
-          <h2>Worker coverage</h2>
-          <div class="v">${k.workers} <small>active</small></div>
-          <dl>
-            <div><dt>Clinical</dt><dd class="num">${k.clinical}</dd></div>
-            <div><dt>Corporate &amp; operations</dt><dd class="num">${k.corporate}</dd></div>
-            <div><dt>With open checks</dt><dd class="num ${k.with_gaps ? 'hot' : ''}">${k.with_gaps}</dd></div>
-          </dl>
-        </a>
-        <a class="ms" href="#metrics" style="text-decoration:none;color:inherit">
-          <h2>Automation results</h2>
-          <div class="v ${k.hours_saved === null ? 'muted' : ''}">${k.hours_saved === null ? '—' : `${k.hours_saved} hrs`} <small>${k.hours_saved === null ? 'set a baseline' : 'estimated saved'}</small></div>
-          <dl>
-            <div><dt>Automated messages</dt><dd class="num">${k.automated_messages}</dd></div>
-            <div><dt>Verified closures</dt><dd class="num">${k.verified_closures}</dd></div>
-            <div><dt>Median closure</dt><dd class="num">${k.median_closure_hours === null ? '—' : `${k.median_closure_hours} h`}</dd></div>
-          </dl>
-        </a>
-      </div>
-
-      <!-- Lower Split Panels: Packs, Queue, Feed -->
-      <div class="lower">
-        <div>
-          <div class="panel">
-            <div class="ph2">
-              <div>
-                <h2>Active compliance packs</h2>
-                <p>Versioned packs with assigned owners and evidence requirements.</p>
-              </div>
-              <a class="btn" href="#packs">Manage packs</a>
-            </div>
-            ${table(['Pack', 'Version', 'Mode', 'Checks', 'Pass', 'Fail', 'Unknown', 'Open cases', 'Owner'], o.packs.map((p) => h`<tr><td><div class="pack-name-cell"><span class="pack-icon-box">${p.icon}</span><strong>${p.name}</strong></div></td><td><span class="version-tag">v${p.version}${p.pilot ? ' pilot' : ''}</span></td><td>${modePill(p.mode)}</td><td><strong>${p.total}</strong></td><td class="text-green-bold">${p.pass}</td><td class="text-red-bold">${p.fail}</td><td style="color:#6d28d9;font-weight:700">${p.unknown}</td><td>${p.open_cases}</td><td>${p.owner}</td></tr>`), 'No packs are active. Finish Company Setup to run the first assessment.')}
-          </div>
-          <div class="panel" style="margin-top:20px">
-            <div class="ph2">
-              <div>
-                <h2>Priority remediation queue</h2>
-                <p>Gaps needing immediate attention.</p>
-              </div>
-              <a class="btn" href="#cases">View all</a>
-            </div>
-            ${table(['Priority', 'Issue', 'Subject', 'Due', 'Stage', ''], o.urgent.map((c) => h`<tr><td>${prio(c.priority)}</td><td><strong>${c.control_name}</strong></td><td class="text-secondary">${c.subject_name}</td><td class="date-urgent">${date(c.due_date)}</td><td>${statePill(c.state)}</td><td style="text-align:right">${openCaseCell(c)}</td></tr>`), 'No open gaps in the activated packs.')}
-          </div>
+        <div class="ov-workload">
+          <h2>Workspace activity</h2>
+          <div class="ov-counter-list">${workload.map((item) => h`<a href="#${item.destination}"><strong>${item.count}</strong><span>${item.label}</span></a>`)}</div>
+          <p>${kpi.expiring} credential${kpi.expiring === 1 ? '' : 's'} approaching expiration</p>
         </div>
-        <div>
-          <div class="panel">
-            <div class="ph2">
-              <div>
-                <h2>Activity</h2>
-                <p>Recent automated evaluations, requests, and closures.</p>
-              </div>
-              ${me.user.is_admin ? h`<a class="btn" href="#audit">View all</a>` : ''}
-            </div>
-            ${o.feed && o.feed.length ? h`<ul class="log">${o.feed.map((f) => h`<li><time class="num">${f.ts ? f.ts.slice(11, 16) : '—'}</time><div><b><i style="background:var(--clinical)"></i>${f.action}</b><p>Logged by orchestrator</p></div></li>`)}</ul>` : h`<div class="empty"><span class="hook">${raw(hookSvg)}</span><div><b>No events recorded yet</b><span>Events appear here after the first sync or evaluation.</span></div></div>`}
-          </div>
-        </div>
+      </section>
+      <div class="ov-detail-grid">
+        <section class="ov-panel ov-queue" aria-labelledby="ov-queue-title">
+          <header class="ov-panel-head"><div><h2 id="ov-queue-title">Priority cases</h2><p>Ordered by priority and due date</p></div><a href="#cases">All cases <span aria-hidden="true">→</span></a></header>
+          ${urgent.length ? h`<div class="ov-table-scroll" tabindex="0" role="region" aria-label="Priority cases table"><table class="ov-table"><thead><tr><th scope="col">Case</th><th scope="col">Owner</th><th scope="col">Due</th></tr></thead><tbody>
+            ${urgent.map((c) => h`<tr><td><a class="ov-case-title" href="#cases/${encodeURIComponent(c.id)}">${c.control_name}</a><small>${c.subject_name} <span aria-hidden="true">·</span> ${words(c.state)}</small></td>
+            <td>${c.owner_name || c.owner_team || 'Unassigned'}</td>
+            <td><time datetime="${c.due_date || ''}">${fmtDate(c.due_date)}</time>${c.due_date && c.due_date < me.today ? h`<small class="ov-overdue">Overdue</small>` : c.priority === 'high' ? h`<small class="ov-urgent">High priority</small>` : ''}</td></tr>`)}
+          </tbody></table></div>` : h`<div class="ov-empty"><h3>No open cases in your queue</h3><p>${coverage.total ? 'See Checks for individual assessment results.' : 'Cases appear after the first assessment finds a gap.'}</p><a href="#checks">View checks →</a></div>`}
+        </section>
+        <section class="ov-panel ov-packs" aria-labelledby="ov-packs-title">
+          <header class="ov-panel-head"><div><h2 id="ov-packs-title">Active packs</h2><p>Assessment scope by workflow</p></div><a href="#packs">View packs <span aria-hidden="true">→</span></a></header>
+          ${packs.length ? h`<ul class="ov-pack-list">${packs.map((p) => h`<li><div class="ov-pack-heading"><h3>${p.name}</h3><span>${p.pass}/${p.total} pass</span></div><div class="ov-pack-bar" aria-hidden="true">${['pass','fail','unknown'].map((s) => p[s] && p.total ? h`<i class="ov-band-${s}" style="width:${100*p[s]/p.total}%"></i>` : '')}</div><p>${p.fail} fail <span>·</span> ${p.unknown} unknown <span>·</span> ${p.mode === 'auto' ? 'Automatic' : 'Validation only'}</p></li>`)}</ul>` : h`<div class="ov-empty"><h3>No active packs</h3><p>An administrator can review and activate packs in Company setup.</p></div>`}
+        </section>
       </div>
-    `;
+      <div class="ov-scope-note">${coverage.scope_statement}</div>
+    </div>`;
   },
   async setup() {
     scope(null);
@@ -446,42 +352,60 @@ const VIEWS = {
     ${step(5, st.assessed, 'Run the initial assessment', st.assessed ? s.coverage.scope_statement : 'Shows checked records, missing evidence and unknown results.', h`${st.assessed ? h`<div class="grid-3 mb" style="max-width:420px"><div class="tile"><b>${s.coverage.pass}</b><span>Pass</span></div><div class="tile"><b>${s.coverage.fail}</b><span>Fail</span></div><div class="tile"><b>${s.coverage.unknown}</b><span>Unknown</span></div></div>` : ''}<button class="btn-submit-green" data-act="assess" ${st.packs ? '' : raw('disabled')}>${st.assessed ? 'Run again' : 'Run assessment'}</button>`)}
     </div>`;
   },
-  async cases(arg) {
+  async cases() {
     scope(null);
-    const rows = await api(`/api/cases${caseClosed ? '?closed=1' : ''}`);
+    const [rows, packs] = await Promise.all([api(`/api/cases${caseClosed ? '?closed=1' : ''}`), caseClosed ? [] : api('/api/packs')]);
+    const autoPacks = new Set(packs.filter((p) => p.mode === 'auto').map((p) => p.key));
+    // Why a follow-up would not be sent, known before sending. "Already sent today" is only known by the server.
+    const skipOf = (c) => !autoPacks.has(c.pack_key) ? 'validation' : c.gap_kind === 'review' ? 'review' : '';
+    const selectable = !caseClosed && rows.some((c) => c.can_act);
+    for (const id of [...caseSel]) if (!rows.some((c) => c.id === id && c.can_act)) caseSel.delete(id);
+    const pickCell = (c) => !selectable ? '' : c.can_act
+      ? h`<td class="select-cell"><label><input type="checkbox" class="case-check" data-id="${c.id}" ${caseSel.has(c.id) ? raw('checked') : ''} aria-label="${`Select ${c.control_name} for ${c.subject_name}`}"></label></td>`
+      : h`<td class="select-cell"></td>`;
     const tabs = h`<div class="filters"><button class="chip${caseClosed ? '' : ' on'}" data-act="caseTab" data-v="">Open</button><button class="chip${caseClosed ? ' on' : ''}" data-act="caseTab" data-v="1">Closed</button></div>`;
-    if (arg) setTimeout(() => ACT.caseDetail({ dataset: { id: arg } }));
-    return card(caseClosed ? 'Closed Cases' : 'Open Cases', 'Identify → assign → request → follow up → review → re-evaluate → close.', h`${tabs}${table(['Case', 'Subject', 'Pack', caseClosed ? 'Gap found' : 'Gap', 'Stage', 'Owner', 'Due', 'Finding', ''], rows.map((c) => h`<tr class="click" data-act="caseDetail" data-id="${c.id}"><td class="mono">${c.id}</td><td><strong>${c.subject_name}</strong></td><td><span class="priority-pill pill-low">${c.pack_key}</span></td><td>${c.gap}</td><td>${statePill(c.state)}${c.escalated ? h` <span class="pill pill-fail">Escalated</span>` : ''}</td><td class="text-muted">${c.owner_name || c.owner_team}</td><td class="date-urgent">${date(c.due_date)}</td><td>${c.finding_verdict ? words(c.finding_verdict) : h`<span class="muted">Not validated</span>`}</td><td style="text-align:right">${caseClosed ? words(c.closure) : h`<button class="top-action-btn" data-act="followUp" data-id="${c.id}">Follow up</button>`}</td></tr>`), caseClosed ? 'No closed cases yet.' : 'No open cases.')}`, caseClosed ? null : h`<button class="btn-intake-evidence" data-act="chaseAll">Follow up on all</button>`);
+    const caseRows = rows.map((c) => h`<tr class="click${caseSel.has(c.id) ? ' is-picked' : ''}" data-act="caseDetail" data-id="${c.id}" data-can-follow-up="${!caseClosed && c.can_act}" data-skip="${skipOf(c)}" data-name="${c.control_name}" data-subject="${c.subject_name}">
+      ${pickCell(c)}
+      <td><button class="row-title" data-act="caseDetail" data-id="${c.id}">${c.control_name}</button><div class="mono muted small">${c.id}</div></td>
+      <td><strong>${c.subject_name}</strong></td><td><span class="priority-pill pill-low">${c.pack_key}</span></td><td>${c.gap}</td>
+      <td>${statePill(c.state)}${c.escalated ? h` <span class="pill pill-fail">Escalated</span>` : ''}</td><td>${c.owner_name || c.owner_team}</td>
+      <td>${date(c.due_date)}</td><td>${c.finding_verdict ? words(c.finding_verdict) : 'Not reviewed yet'}</td>
+      <td class="row-action">${caseClosed ? words(c.closure) : c.can_act ? h`<button class="top-action-btn btn-row" data-act="followUp" data-id="${c.id}">Follow up</button>` : ''}</td>
+    </tr>`);
+    const followUps = selectable ? h`<button class="btn-intake-evidence" id="chaseAllBtn" data-act="chaseAll">Follow up on all</button>` : '';
+    const allBox = h`<label class="select-all"><input type="checkbox" class="case-check-all" aria-label="Select all cases shown"></label>`;
+    return card(caseClosed ? 'Closed Cases' : 'Open Cases', 'Review the gap, owner and current outcome.',
+      h`${tabs}${table([...(selectable ? [allBox] : []), 'Case', 'Subject', 'Pack', 'Gap', 'Stage', 'Owner', 'Due', 'Finding', caseClosed ? 'How it closed' : ''], caseRows, caseClosed ? 'No closed cases yet.' : 'No open cases.')}`, followUps);
   },
   async approvals() {
     scope(null);
     const rows = await api('/api/approvals'), done = await api('/api/approvals?status=approved');
-    return h`<div class="stack">${card('Waiting for you', 'Only items your role can decide appear here.', table(['Type', 'Item', 'Detail', 'Requested by', ''], rows.map((a) => h`<tr><td><span class="priority-pill pill-low">${words(a.kind)}</span></td><td><strong>${a.title}</strong></td><td class="text-secondary">${a.detail}</td><td class="text-muted">${a.requested_by}</td><td style="text-align:right;white-space:nowrap"><button class="btn-link-action" data-act="decide" data-id="${a.id}" data-d="approved">Approve</button> <button class="btn-link-action" style="color:#b91c1c" data-act="decide" data-id="${a.id}" data-d="rejected">Reject</button></td></tr>`), 'Nothing needs your approval.'))}
+    return h`<div class="stack">${card('Waiting for you', 'Only items your role can decide appear here.', table(['Type', 'Item', 'Detail', 'Requested by', ''], rows.map((a) => h`<tr><td><span class="priority-pill pill-low">${words(a.kind)}</span></td><td><strong>${a.title}</strong></td><td class="text-secondary">${a.detail}</td><td class="text-muted">${a.requested_by}</td><td style="text-align:right;white-space:nowrap"><button class="btn-link-action" data-act="decide" data-id="${a.id}" data-d="approved">Approve</button> <button class="btn-link-action danger" data-act="decide" data-id="${a.id}" data-d="rejected">Reject</button></td></tr>`), 'Nothing needs your approval.'))}
     ${card('Recently approved', 'Decisions stay in the audit trail.', table(['Item', 'Decided by', 'When', 'Note'], done.slice(0, 10).map((a) => h`<tr><td>${a.title}</td><td>${a.decided_by}</td><td class="mono">${dt(a.decided_at)}</td><td class="text-muted">${a.note}</td></tr>`), 'No decisions yet.'))}</div>`;
   },
   async checks() {
     const qs = new URLSearchParams(Object.entries(checkFilter).filter(([, v]) => v)).toString();
     const d = await api(`/api/checks?${qs}`); scope(d.coverage);
     const chip = (k, v, l) => h`<button class="chip${(checkFilter[k] || '') === v ? ' on' : ''}" data-act="checkFilter" data-k="${k}" data-v="${v}">${l}</button>`;
-    return card('All Evaluations', `${d.rows.length} shown. Unknown means the record cannot prove the requirement yet.`, h`<div class="filters">${chip('status', '', 'All')}${chip('status', 'pass', 'Pass')}${chip('status', 'fail', 'Fail')}${chip('status', 'unknown', 'Unknown')}${chip('status', 'not_applicable', 'N/A')}<span style="width:12px"></span>${chip('pack', '', 'All packs')}${['healthcare', 'onboarding', 'immigration', 'payroll'].map((p) => chip('pack', p, p))}</div>${table(['Subject', 'Control', 'Requirement', 'Result', 'Reason', 'Evidence', 'Version'], d.rows.map((c) => h`<tr><td><strong>${c.subject_name}</strong><div class="muted small">${c.facility}</div></td><td>${c.control_name}</td><td class="muted">${words(c.requirement_type)}</td><td>${statusPill(c.status)}</td><td>${c.reason}</td><td class="mono">${c.evidence_ids.length ? c.evidence_ids.length : '—'}</td><td class="mono">${c.control_version}</td></tr>`), 'No checks match.')}`);
+    return card('All Evaluations', `${d.rows.length} shown. Unknown means the record cannot prove the requirement yet.`, h`<div class="filters">${chip('status', '', 'All')}${chip('status', 'pass', 'Pass')}${chip('status', 'fail', 'Fail')}${chip('status', 'unknown', 'Unknown')}${chip('status', 'not_applicable', 'N/A')}<span style="width:12px"></span>${chip('pack', '', 'All packs')}${['healthcare', 'onboarding', 'immigration', 'payroll'].map((p) => chip('pack', p, words(p)))}</div>${table(['Subject', 'Control', 'Requirement', 'Result', 'Reason', 'Evidence', 'Version'], d.rows.map((c) => h`<tr><td><strong>${c.subject_name}</strong><div class="muted small">${c.facility}</div></td><td>${c.control_name}</td><td class="muted">${words(c.requirement_type)}</td><td>${statusPill(c.status)}</td><td>${c.reason}</td><td class="mono">${c.evidence_ids.length ? c.evidence_ids.length : '—'}</td><td class="mono">${c.control_version}</td></tr>`), 'No checks match.')}`);
   },
   async workers() {
     scope(null);
     const rows = await api('/api/workers');
-    return card('Workforce Compliance Register', 'Unified roster with per-pack status.', table(['Worker', 'Role & facility', 'Onboarding', 'Healthcare', 'Immigration', 'Payroll', 'Overall', 'Readiness', ''], rows.map((w) => h`<tr class="click" data-act="workerDetail" data-id="${w.id}"><td><strong>${w.name}</strong>${w.status !== 'active' ? h` <span class="pill pill-na">${w.status}</span>` : ''}<div class="muted small">${words(w.source?.startsWith('con_') ? 'HRMS' : w.source)}</div></td><td>${w.role}<div class="muted small">${w.facility || 'No confirmed location'}</div></td><td>${statusPill(w.packs.onboarding)}</td><td>${statusPill(w.packs.healthcare)}</td><td>${statusPill(w.packs.immigration)}</td><td>${statusPill(w.packs.payroll)}</td><td>${statusPill(w.overall)}</td><td class="muted">${w.readiness}</td><td style="text-align:right"><button class="btn-link-action" data-act="workerDetail" data-id="${w.id}">Details</button></td></tr>`), 'No workers yet. Add one or import a roster.'), h`<button class="btn-card-outline" data-act="addWorker">+ Add Worker</button><button class="btn-card-outline" data-act="importRoster">Upload Roster</button>`);
+    return card('All workers', 'One result per compliance pack for each worker.', table(['Worker', 'Role & facility', 'Onboarding', 'Healthcare', 'Immigration', 'Payroll', 'Overall', 'Readiness'], rows.map((w) => h`<tr class="click" data-act="workerDetail" data-id="${w.id}"><td><button class="row-title" data-act="workerDetail" data-id="${w.id}">${w.name}</button>${w.status !== 'active' ? h` <span class="pill pill-na">${w.status}</span>` : ''}<div class="muted small">${words(w.source?.startsWith('con_') ? 'HRMS' : w.source)}</div></td><td>${w.role}<div class="muted small">${w.facility || 'No confirmed location'}</div></td><td>${statusPill(w.packs.onboarding)}</td><td>${statusPill(w.packs.healthcare)}</td><td>${statusPill(w.packs.immigration)}</td><td>${statusPill(w.packs.payroll)}</td><td>${statusPill(w.overall)}</td><td class="muted">${words(w.readiness)}</td></tr>`), 'No workers yet. Add one or import a roster.'));
   },
   async evidence() {
     scope(null);
     const rows = (await api('/api/evidence')).sort((a, b) => (b.status === 'needs_review') - (a.status === 'needs_review'));
     const ev = rows.find((e) => e.id === evidenceSel) || rows.find((e) => e.status === 'needs_review') || null;
-    return h`<div class="bottom-split-row"><div class="split-card"><div class="split-card-header"><h3 class="split-title">Evidence Inbox</h3><div class="row"><button class="btn-card-outline" data-act="bulkUpload">Bulk upload</button><button class="btn-intake-evidence" data-act="uploadEvidence">+ Upload</button></div></div>${table(['Document', 'Subject', 'Confidence', 'Status', ''], rows.map((e) => h`<tr class="click" data-act="selectEvidence" data-id="${e.id}"><td><strong>${words(e.doc_type)}</strong><div class="muted small">${e.filename}</div></td><td class="text-secondary">${e.subject_name}</td><td>${e.source === 'demo_seed' ? '—' : `${Math.round((e.confidence || 0) * 100)}%`}</td><td>${statePill(e.status)}</td><td style="text-align:right"><button class="btn-link-action" data-act="selectEvidence" data-id="${e.id}">Inspect</button></td></tr>`), 'No evidence yet.')}</div>
+    return h`<div class="bottom-split-row"><div class="split-card"><div class="split-card-header"><h3 class="split-title">Evidence inbox</h3></div>${table(['Document', 'Subject', 'Confidence', 'Status'], rows.map((e) => h`<tr class="click${e.id === ev?.id ? ' selected' : ''}" data-act="selectEvidence" data-id="${e.id}"><td><button class="row-title" data-act="selectEvidence" data-id="${e.id}">${words(e.doc_type)}</button><div class="muted small">${e.filename}</div></td><td class="text-secondary">${e.subject_name}</td><td>${e.source === 'demo_seed' ? '—' : `${Math.round((e.confidence || 0) * 100)}%`}</td><td>${statePill(e.status)}</td></tr>`), 'No evidence yet.')}</div>
     <div class="split-card" style="position:sticky;top:80px;align-self:start"><div class="split-card-header"><h3 class="split-title">Field Inspector</h3>${ev ? statePill(ev.status) : ''}</div>${ev ? evidencePanel(ev) : h`<div class="empty">Select a document to inspect it.</div>`}</div></div>`;
   },
   async packs() {
     scope(null);
     const rows = await api('/api/packs');
     return h`<div class="grid-2">${rows.map((p) => h`<div class="plain-card"><div class="between"><strong style="font-size:14px">${p.icon} ${p.name}</strong>${p.status === 'active' ? modePill(p.mode) : h`<span class="pill pill-na">Not active</span>`}</div><p class="muted small mt">${p.description}</p><p class="small mt"><span class="version-tag">v${p.version}${p.pilot ? ' pilot' : ''}</span> · ${p.controls.length} controls · Owner: ${p.owner || 'not assigned'}</p>
-    ${p.status === 'active' ? h`<p class="small mt">${p.pass} pass · ${p.fail} fail · ${p.unknown} unknown · ${p.unvalidated} finding(s) to validate</p>` : ''}<div class="row mt"><button class="btn-card-outline" data-act="reviewPack" data-id="${p.key}">${p.status === 'active' ? 'View controls' : 'Review & activate'}</button>${p.status === 'active' ? (p.mode === 'shadow' ? h`<button class="btn-submit-green" data-act="packMode" data-id="${p.key}" data-m="auto">Enable automatic requests</button>` : h`<button class="btn-card-outline" data-act="packMode" data-id="${p.key}" data-m="shadow">Return to validation mode</button>`) : ''}</div></div>`)}</div>`;
+    ${p.status === 'active' ? h`<p class="small mt">${p.pass} pass · ${p.fail} fail · ${p.unknown} unknown · ${p.unvalidated ? `${p.unvalidated} finding${p.unvalidated === 1 ? '' : 's'} to review` : 'No findings to review'}</p>` : ''}<div class="row mt"><button class="btn-card-outline" data-act="reviewPack" data-id="${p.key}">${p.status === 'active' ? 'View controls' : 'Review & activate'}</button>${p.status === 'active' ? (p.mode === 'shadow' ? h`<button class="btn-submit-green" data-act="packMode" data-id="${p.key}" data-m="auto">Enable automatic requests</button>` : h`<button class="btn-card-outline" data-act="packMode" data-id="${p.key}" data-m="shadow">Return to validation mode</button>`) : ''}</div></div>`)}</div>`;
   },
   async controls() {
     scope(null);
@@ -491,13 +415,19 @@ const VIEWS = {
     ${card('Change History', 'Drafts, approvals and superseded versions.', table(['Change', 'Control', 'Request', 'Status', 'By'], d.changes.map((c) => h`<tr><td>${c.kind}</td><td class="mono">${c.control_key}</td><td class="small">${c.source_text}</td><td>${statePill(c.status)}</td><td class="muted">${c.created_by}${c.approved_by ? ` → ${c.approved_by}` : ''}</td></tr>`), 'No changes yet.'))}</div>`;
   },
   async integrations() {
-    scope(null);
-    const hl = await api('/api/health'), msgs = me.user.is_admin ? await api('/api/messages') : [];
-    return h`<div class="stack"><div class="grid-3">${hl.connectors.map((c) => h`<div class="plain-card"><div class="between"><strong>${c.name}</strong><span class="pill ${c.status === 'connected' ? 'pill-pass' : 'pill-fail'}">${c.status}</span></div><p class="muted small mt">Last sync ${dt(c.last_sync_at)} · ${c.records} records · ${c.capabilities.map(words).join(', ')}</p>${c.last_error ? h`<p class="small mt" style="color:#b91c1c">${c.last_error}</p>` : ''}<button class="top-action-btn mt" data-act="syncConnector" data-id="${c.id}">Sync now</button></div>`)}
-      <div class="plain-card"><strong>Excel / CSV register</strong><p class="muted small mt">For companies without API access. Someone must keep this roster current.</p><button class="top-action-btn mt" data-act="importRoster">Upload roster</button></div>
-      ${me.user.is_admin ? h`<form class="plain-card" data-form="connector"><strong>Add HRMS connector</strong><input name="name" class="form-select mt" placeholder="Name" aria-label="Name"><input name="base_url" class="form-select mt" placeholder="https://hrms.example.com/api" required aria-label="Base URL"><input name="api_key" type="password" class="form-select mt" placeholder="API key" required aria-label="API key"><button class="top-action-btn mt">Save connector</button></form>` : ''}</div>
-    ${card('Failures', 'Problems stay visible here until they are fixed.', table(['Type', 'Item', 'Error'], [...(hl.ai_error ? [h`<tr><td>AI</td><td>AI engine</td><td style="color:#b91c1c">${hl.ai_error.message}</td></tr>`] : []), ...hl.jobs.dead.map((j) => h`<tr><td>Job</td><td>${j.type}</td><td style="color:#b91c1c">${j.last_error}</td></tr>`), ...hl.failed_actions.map((a) => h`<tr><td>Message</td><td>${a.recipient}</td><td style="color:#b91c1c">${a.error}</td></tr>`), ...hl.connectors.filter((c) => c.last_error).map((c) => h`<tr><td>Connector</td><td>${c.name}</td><td style="color:#b91c1c">${c.last_error}</td></tr>`)], 'No failures.'))}
-    ${me.user.is_admin ? card('Message Outbox', 'Everything Aegis sent. Secure links open the worker’s upload page.', table(['When', 'To', 'Subject', 'Channel', ''], msgs.map((m) => { const u = /https?:\/\/\S+\/submit\/\S+/.exec(m.body)?.[0]; return h`<tr><td class="mono">${dt(m.created_at)}</td><td><strong>${m.recipient}</strong></td><td>${m.subject}<div class="muted small">${m.body.replace(/https?:\/\/\S+/, '[secure link]').slice(0, 130)}</div></td><td>${m.channel === 'outbox' ? 'Outbox only (not sent)' : `Sent by ${m.channel}`}</td><td style="text-align:right">${u ? h`<a class="btn-link-action" href="/submit/${u.split('/submit/')[1]}" target="_blank" rel="noopener">Open link</a>` : ''}</td></tr>`; }), 'Nothing sent yet.')) : ''}</div>`;
+    const [health, messages, connections] = await Promise.all([api('/api/health'), api('/api/messages'), api('/api/integrations')]);
+    const failures = [
+      ...health.connectors.filter((c) => c.last_error).map((c) => ['HRMS', c.name, c.last_error]),
+      ...health.jobs.dead.map((job) => ['Job', words(job.type), job.last_error]),
+      ...health.failed_actions.map((action) => ['Message', action.recipient, action.error]),
+    ];
+    if (health.ai_error) failures.push(['AI', 'AI engine', health.ai_error.message]);
+    return h`<div class="stack">
+      ${me.sandbox ? h`<p class="alert-box">The sandbox uses the sample HRMS and records messages in the local outbox.</p>` : ''}
+      <div class="grid-2">${hrmsCard(health.connectors)}${slackCard(connections.slack)}</div>
+      ${card('Failures', 'Review failed jobs, deliveries and connections.', table(['Type', 'Item', 'Error'], failures.map(([kind, item, error]) => h`<tr><td>${kind}</td><td>${item}</td><td>${error}</td></tr>`), 'No failures.'))}
+      ${card('Message Outbox', 'Delivery status and secure worker links.', table(['When', 'To', 'Subject', 'Delivery', ''], messages.map(outboxRow), 'No messages yet.'))}
+    </div>`;
   },
   async dashboards(arg) {
     scope(null);
@@ -538,6 +468,77 @@ const VIEWS = {
     ${card('Schedules', 'Checks run daily. Reminders run on each control’s cadence.', table(['Job', 'Cadence', 'Next run'], hl.schedules.map((s) => h`<tr><td>${s.kind}</td><td>${s.cadence}</td><td class="mono">${dt(s.next_run_at)}</td></tr>`), 'No schedules.'))}</div>`;
   },
 };
+
+function hrmsCard(connectors) {
+  return card('Workforce records', 'Connect an HRMS or import your roster from Excel or CSV.', h`<div class="plain-card stack">
+    ${connectors.map((c) => h`<div class="tile">
+      <div class="between"><strong>${c.name}</strong>${statePill(c.status)}</div>
+      <p class="muted small mt">Last sync ${dt(c.last_sync_at)} · ${c.records} records processed</p>
+      <div class="row mt">
+        ${c.status !== 'disabled' ? h`<button class="btn-card-outline" data-act="syncConnector" data-id="${c.id}">Sync now</button>` : ''}
+        ${!me.sandbox ? h`<button class="btn-card-outline" data-act="testConnector" data-id="${c.id}">Test connection</button>
+          <button class="btn-card-outline" data-act="editConnector" data-id="${c.id}">Edit settings</button>
+          <button class="btn-card-outline" data-act="toggleConnector" data-id="${c.id}" data-next="${c.status === 'disabled' ? 'enable' : 'disable'}">${c.status === 'disabled' ? 'Enable' : 'Disable'}</button>` : ''}
+      </div>
+    </div>`)}
+    <div class="row"><button class="btn-card-outline" data-act="importRoster">Upload roster</button>
+      ${!me.sandbox ? h`<button class="btn-submit-green" data-act="addConnector">Add HRMS connection</button>` : ''}
+    </div>
+  </div>`);
+}
+
+function slackCard(slack) {
+  const receiving = slack.receiving;
+  const chat = receiving?.mode === 'socket' ? `Socket Mode · ${receiving.state}`
+    : receiving?.mode === 'events_url' ? 'Events URL' : 'Off';
+  return card('Slack', 'Send alerts and digests and ask the coworker questions in Slack.', h`<div class="plain-card stack">
+    ${slack.connected ? h`<dl class="kv"><dt>Workspace</dt><dd>${slack.workspace || 'Configured on server'}</dd>
+      <dt>Alerts channel</dt><dd>${slack.channel || 'Not selected'}</dd><dt>Incoming chat</dt><dd>${chat}</dd></dl>
+      ${receiving?.error ? h`<p class="alert-box">${receiving.error}</p>` : ''}` : h`<p>Slack is disconnected. Reporting messages stay in the outbox.</p>`}
+    ${!me.sandbox ? h`<div class="row">
+      <button class="btn-submit-green" data-act="slackConfig" data-channel="${slack.channel || '#compliance-alerts'}" data-replace="${slack.source === 'settings' ? 'yes' : ''}">${slack.connected ? 'Update Slack connection' : 'Connect Slack'}</button>
+      ${slack.connected ? h`<button class="btn-card-outline" data-act="slackTest">Send test message</button>` : ''}
+      ${slack.source === 'settings' ? h`<button class="btn-card-outline" data-act="slackDisconnect">Disconnect</button>` : ''}
+    </div>` : ''}
+  </div>`);
+}
+
+function outboxRow(message) {
+  const token = /\/submit\/([\w-]+)/.exec(message.body)?.[1];
+  const body = message.body.replace(/https?:\/\/\S+/g, '[link]').slice(0, 130);
+  return h`<tr><td class="mono">${dt(message.created_at)}</td><td><strong>${message.recipient}</strong></td>
+    <td>${message.subject}<div class="muted small">${body}</div></td>
+    <td>${message.channel === 'outbox' ? 'Outbox only' : `${words(message.status)} · ${message.channel}`}</td>
+    <td>${token ? h`<a class="btn-link-action" href="/submit/${token}" target="_blank" rel="noopener">Open link</a>` : ''}</td></tr>`;
+}
+
+function connectorDialog(connector) {
+  const { base_url = '', path = '/workers', has_api_key, has_password, username, ...advanced } = connector?.settings || {};
+  openModal(connector ? 'Edit HRMS connection' : 'Add HRMS connection', 'Test the mapping before synchronizing workforce records.',
+    h`<form class="stack" data-form="connector" data-id="${connector?.id}">
+      <label>Connection name<input class="form-select" name="name" value="${connector?.name || 'Bluebix HRMS'}" required></label>
+      <label>API base URL<input class="form-select" name="base_url" value="${base_url}" placeholder="https://hrms.example.com/api" required></label>
+      <label>Worker list path<input class="form-select" name="path" value="${path}" required></label>
+      <label>API key<input class="form-select" name="api_key" type="password" autocomplete="new-password" placeholder="${has_api_key ? 'Leave blank to keep the saved key' : 'Bearer token or header key'}"></label>
+      <details><summary>Authentication and mapping settings</summary>
+        <label class="mt">Basic authentication username<input class="form-select" name="username" value="${username}"></label>
+        <label class="mt">Basic authentication password<input class="form-select" name="password" type="password" autocomplete="new-password" placeholder="${has_password ? 'Leave blank to keep the saved password' : 'Optional'}"></label>
+        <label class="mt">Additional settings JSON<textarea class="form-select mono" name="options" rows="6" placeholder='{"auth_type":"header","auth_header":"X-API-Key","field_map":{"name":"displayName"}}'>${Object.keys(advanced).length ? JSON.stringify(advanced, null, 2) : ''}</textarea></label>
+        <p class="muted small">Use the fields above for credentials. Set authentication type, pagination and field mapping here.</p>
+      </details>
+      <div data-connector-result role="status"></div>
+      <div class="row"><button class="btn-card-outline" type="submit" value="test">Test mapping</button><button class="btn-submit-green" type="submit" value="save">Test and save</button></div>
+    </form>`);
+}
+
+function mappingPreview(result) {
+  if (!result.ok) throw new Error(result.error || 'The HRMS did not return worker records.');
+  return h`<div class="tile">
+    <p>${result.records_on_first_page} records read from the first page.</p>
+    ${result.fields_never_found?.length ? h`<p>Fields not found: ${result.fields_never_found.join(', ')}.</p>` : ''}
+    ${table(['Name', 'Role', 'Work location', 'Mapping issue'], (result.sample || []).map((w) => h`<tr><td>${w.name}</td><td>${w.role}</td><td>${w.facility}</td><td>${w.problem}</td></tr>`), 'No sample rows.')}
+  </div>`;
+}
 const modePill = (m) => m === 'auto' ? h`<span class="pill pill-pass">Automatic requests</span>` : h`<span class="pill pill-warn">Validation only</span>`;
 function draftCard(d) {
   const p = d.preview;
@@ -579,6 +580,7 @@ function renderDemoRack() {
 }
 
 async function selectPersonaInWorkspace(p) {
+  if (!demoEnabled) return;
   closeDemoRack();
   toast(`Switching to ${p.name} (${p.roleName})…`, 'info');
   try {
@@ -629,25 +631,47 @@ const ACT = {
   async logout() { await api('/api/logout', {}); location.hash = ''; location.reload(); },
   prompt: (el) => { $('#chatDrawer').classList.add('open'); sendChat(el.dataset.q); },
   async caseDetail(el) {
+    const version = navigation;
     const c = await api(`/api/cases/${el.dataset.id}`), e = c.evaluation, open = !c.closed_at;
+    if (version !== navigation) return;
     openModal(`${c.control_name}: ${c.subject_name}`, `${c.id} · ${c.owner_name || c.owner_team}`, h`${lifecycle(c.state)}
-    <dl class="kv mb"><dt>Current result</dt><dd>${e ? statusPill(e.status) : '—'} ${e?.reason}</dd><dt>Control version</dt><dd class="mono">${e?.control_version}</dd><dt>Evidence used</dt><dd class="mono">${e?.evidence_ids.join(', ') || 'None'}</dd><dt>Due</dt><dd>${date(c.due_date)}</dd><dt>Reminders</dt><dd>${c.reminders_sent}${c.escalated ? ' · Escalated' : ''}</dd>${c.closure ? h`<dt>Closure</dt><dd>${words(c.closure)}</dd>` : ''}<dt>Finding</dt><dd>${c.finding_verdict ? `${words(c.finding_verdict)} by ${c.verdict_by}` : 'Not validated by owner'}</dd></dl>
+    <dl class="kv mb"><dt>Current result</dt><dd>${e ? statusPill(e.status) : '—'} ${e?.reason}</dd><dt>Control version</dt><dd class="mono">${e?.control_version}</dd><dt>Evidence used</dt><dd class="mono">${e?.evidence_ids.join(', ') || 'None'}</dd><dt>Due</dt><dd>${date(c.due_date)}</dd><dt>Reminders</dt><dd>${c.reminders_sent}${c.escalated ? ' · Escalated' : ''}</dd>${c.closure ? h`<dt>Closure</dt><dd>${words(c.closure)}</dd>` : ''}<dt>Finding</dt><dd>${c.finding_verdict ? `${words(c.finding_verdict)} by ${c.verdict_by}` : 'Not reviewed yet'}</dd></dl>
     ${c.evidence.length ? h`<strong class="small">Evidence</strong>${c.evidence.map((x) => h`<div class="timeline-item"><span>${statePill(x.status)}</span><span>${x.filename}${x.review_reasons.length ? ` · ${x.review_reasons.join(' ')}` : ''}</span></div>`)}` : ''}
     <div class="mt"><strong class="small">History</strong>${c.timeline.map((t) => h`<div class="timeline-item"><time>${dt(t.ts)}</time><span>${t.action}</span></div>`)}${c.notes.map((n) => h`<div class="timeline-item"><time>${dt(n.created_at)}</time><span><strong>${n.author}:</strong> ${n.note}</span></div>`)}</div>
-    ${open ? h`<form class="row mt" data-form="note" data-id="${c.id}"><input name="note" class="form-select" style="flex:1" placeholder="Add a note. Notes do not change the result." required aria-label="Note"><button class="btn-card-outline">Add note</button></form>` : ''}`,
-      open ? h`${!c.finding_verdict ? h`<button class="btn-cancel" data-act="verdict" data-id="${c.id}" data-v="false_finding">False finding</button><button class="btn-cancel" data-act="verdict" data-id="${c.id}" data-v="confirmed">Confirm finding</button>` : ''}<button class="btn-cancel" data-act="humanDecision" data-id="${c.id}">Request decision</button><button class="btn-submit-green" data-act="followUp" data-id="${c.id}">Send follow-up</button>` : '', true);
+    ${open && canEdit() ? h`<form class="row mt" data-form="note" data-id="${c.id}"><input name="note" class="form-select" style="flex:1" placeholder="Add a note" required aria-label="Note"><button class="btn-card-outline">Add note</button></form>` : ''}`,
+      open && c.can_act ? h`${!c.finding_verdict ? h`<button class="btn-cancel" data-act="verdict" data-id="${c.id}" data-v="false_finding">False finding</button><button class="btn-cancel" data-act="verdict" data-id="${c.id}" data-v="confirmed">Confirm finding</button>` : ''}<button class="btn-cancel" data-act="humanDecision" data-id="${c.id}">Request decision</button><button class="btn-submit-green" data-act="followUp" data-id="${c.id}">Send follow-up</button>` : '', true);
   },
   async followUp(el, ev) { ev?.stopPropagation(); const r = await api(`/api/cases/${el.dataset.id}/follow-up`, {}); toast(r.message, r.sent ? 'success' : 'warning'); after(); },
   async verdict(el) { await api(`/api/cases/${el.dataset.id}/verdict`, { verdict: el.dataset.v }); toast('Finding recorded.', 'success'); closeModal(); refresh(); },
   async humanDecision(el) { await api(`/api/cases/${el.dataset.id}/decision`, { title: 'Assignment decision', detail: 'Requested from the case.' }); toast('Sent to Approvals.', 'success'); closeModal(); refresh(); },
-  async chaseAll() { const r = await api('/api/cases/chase-all', {}); toast(`${r.sent} follow-up(s) queued. ${r.skipped} skipped.`, 'success'); after(); },
+  chaseAll() {
+    const ids = [...document.querySelectorAll('#view tr[data-can-follow-up="true"]:not([hidden])')].map((row) => row.dataset.id);
+    if (!ids.length) { toast('No open cases match this view.', 'warning'); return; }
+    confirmFollowUps(ids, 'Every open case shown in this view.');
+  },
+  followUpSelected() {
+    if (!caseSel.size) return;
+    confirmFollowUps([...caseSel], 'Only the cases you ticked.');
+  },
+  clearCaseSelection() { clearCaseSelection(); },
+  async confirmChaseAll(el) {
+    el.disabled = true;
+    try {
+      const result = await api('/api/cases/chase-all', { case_ids: JSON.parse(el.dataset.ids) });
+      closeModal();
+      const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+      toast(`${plural(result.sent, 'follow-up')} queued${result.skipped ? ` · ${result.skipped} skipped` : ''}.`, result.sent ? 'success' : 'warning');
+      clearCaseSelection();
+      after();
+    } finally { el.disabled = false; }
+  },
   async decide(el) { await api(`/api/approvals/${el.dataset.id}/decide`, { decision: el.dataset.d }); toast(`Marked ${el.dataset.d}.`, 'success'); after(); },
-  caseTab(el) { caseClosed = !!el.dataset.v; refresh(); },
+  caseTab(el) { caseClosed = !!el.dataset.v; caseSel.clear(); refresh(); },
   checkFilter(el) { checkFilter[el.dataset.k] = el.dataset.v; refresh(); },
   async workerDetail(el, ev) {
     ev?.stopPropagation();
     const w = await api(`/api/workers/${el.dataset.id}`), rv = w.readiness_view;
-    openModal(w.name, `${w.role || ''} · ${w.facility || 'No confirmed location'}`, h`<div class="grid-3 mb" style="grid-template-columns:repeat(4,1fr)">${rv.summary.map((s) => h`<div class="tile"><span>${s.pack}</span><div class="mt">${statusPill(s.status)}</div></div>`)}</div><div class="alert-box">${rv.statement}</div>${table(['Control', 'Result', 'Reason'], w.checks_list.filter((c) => c.status !== 'not_applicable').map((c) => h`<tr><td>${c.control_name}</td><td>${statusPill(c.status)}</td><td class="small">${c.reason}</td></tr>`), 'No checks yet.')}`, h`<button class="btn-cancel" data-act="moveWorker" data-id="${w.id}">Change assignment</button><button class="btn-submit-green" data-act="readiness" data-id="${w.id}">Request readiness decision</button>`, true);
+    openModal(w.name, `${w.role || ''} · ${w.facility || 'No confirmed location'}`, h`<div class="grid-3 mb" style="grid-template-columns:repeat(4,1fr)">${rv.summary.map((s) => h`<div class="tile"><span>${words(s.pack)}</span><div class="mt">${statusPill(s.status)}</div></div>`)}</div><div class="alert-box">${rv.statement}</div>${table(['Control', 'Result', 'Reason'], w.checks_list.filter((c) => c.status !== 'not_applicable').map((c) => h`<tr><td>${c.control_name}</td><td>${statusPill(c.status)}</td><td class="small">${c.reason}</td></tr>`), 'No checks yet.')}`, h`<button class="btn-cancel" data-act="moveWorker" data-id="${w.id}">Change assignment</button><button class="btn-submit-green" data-act="readiness" data-id="${w.id}">Request readiness decision</button>`, true);
   },
   moveWorker(el) { openModal('Change assignment', 'Aegis re-runs the checks that apply to the new location.', h`<form data-form="move" data-id="${el.dataset.id}"><div class="form-group"><label class="form-label">Facility</label><input name="facility" class="form-select" required></div><div class="form-group"><label class="form-label">State</label><input name="facility_state" class="form-select" maxlength="2"></div><button class="btn-submit-green">Save</button></form>`); },
   async readiness(el) { await api(`/api/workers/${el.dataset.id}/readiness-review`, {}); toast('Sent to Approvals.', 'success'); closeModal(); refresh(); },
@@ -670,15 +694,82 @@ const ACT = {
   facility(el) { openModal(`Requirements: ${el.dataset.name}`, 'These come from the client contract or facility policy.', h`<form data-form="facility" data-id="${el.dataset.id}"><div class="form-group"><label class="form-label">State</label><input name="state" class="form-select" maxlength="2" value="${el.dataset.state}"></div>${[['acls', 'ACLS card'], ['flu_vaccine', 'Flu vaccination'], ['facility_orientation', 'Facility orientation']].map(([k, l]) => h`<label class="row small mb"><input type="checkbox" name="req" value="${k}" ${el.dataset.req.split(',').includes(k) ? raw('checked') : ''}> ${l}</label>`)}<button class="btn-submit-green">Confirm requirements</button></form>`); },
   async confirmContext() { await api('/api/setup/context', {}); toast('Company profile confirmed.', 'success'); refresh(); },
   async assess() { const c = await api('/api/setup/assess', {}); toast(`${c.pass} pass, ${c.fail} fail, ${c.unknown} unknown.`, 'success'); after(); },
-  async syncConnector(el) { const r = await api(`/api/connectors/${el.dataset.id}/sync`, {}); toast(`${r.records} record(s) synced.`, 'success'); after(); },
+  async syncConnector(el) {
+    const result = await api(`/api/connectors/${el.dataset.id}/sync`, {});
+    toast(`${result.records} records synced. ${result.skipped} skipped.`, result.skipped ? 'warning' : 'success');
+    refresh();
+  },
+  addConnector() { connectorDialog(null); },
+  async editConnector(el) {
+    const connector = (await api('/api/connectors')).find((c) => c.id === el.dataset.id);
+    if (!connector) throw new Error('This HRMS connection is no longer available.');
+    connectorDialog(connector);
+  },
+  async testConnector(el) {
+    const result = await api(`/api/connectors/${el.dataset.id}/test`, {});
+    openModal('HRMS mapping', 'Sample of the records the connector can read.', mappingPreview(result), null, true);
+  },
+  async toggleConnector(el) {
+    const next = el.dataset.next;
+    await api(`/api/connectors/${el.dataset.id}/${next}`, {});
+    toast(next === 'enable' ? 'Connection enabled.' : 'Connection disabled.', 'success');
+    refresh();
+  },
+  slackConfig(el) {
+    const replace = el.dataset.replace === 'yes';
+    openModal(replace ? 'Update Slack connection' : 'Connect Slack', 'Aegis verifies tokens with Slack before saving.',
+      h`<form class="stack" data-form="slackConnection">
+        <label>Alerts channel<input class="form-select" name="channel" value="${el.dataset.channel}" required></label>
+        <label>Bot token<input class="form-select" type="password" name="bot_token" autocomplete="new-password" placeholder="${replace ? 'Leave blank to keep the saved token' : 'xoxb-…'}" ${!replace ? raw('required') : ''}></label>
+        <label>App token for Socket Mode<input class="form-select" type="password" name="app_token" autocomplete="new-password" placeholder="xapp-…"></label>
+        <label>Signing secret for Events API<input class="form-select" type="password" name="signing_secret" autocomplete="new-password"></label>
+        <button class="btn-submit-green">Test and save</button>
+      </form>`);
+  },
+  async slackTest(el) {
+    el.disabled = true;
+    try {
+      const result = await api('/api/integrations/slack/test', {});
+      if (!result.ok) throw new Error(result.error || 'Slack test failed.');
+      toast(result.posted ? `Test message posted to ${result.channel}.` : 'Slack responded. Select an alerts channel to test delivery.', 'success');
+    } finally { el.disabled = false; }
+  },
+  slackDisconnect() {
+    openModal('Disconnect Slack?', 'New reporting messages will go to the Aegis outbox.', '',
+      h`<button class="btn-cancel" data-act="closeModal">Cancel</button><button class="btn-danger" data-act="confirmSlackDisconnect">Disconnect</button>`);
+  },
+  async confirmSlackDisconnect() {
+    await api('/api/integrations/slack/remove', {});
+    toast('Slack disconnected.', 'success');
+    closeModal();
+    refresh();
+  },
   async aiTest() { const r = await api('/api/ai/test', {}); toast(`${r.provider} is responding.`, 'success'); refresh(); },
   async aiRemove() { await api('/api/ai/remove', {}); toast('AI key removed.', 'success'); refresh(); },
-  async sendDigest() { await api('/api/digest/send', {}); toast('Digest posted to the outbox.', 'success'); },
+  async sendDigest() {
+    const { via } = await api('/api/digest/send', {});
+    toast(via === 'slack' ? 'Digest posted to Slack.' : 'Digest saved to the Aegis outbox.', 'success');
+  },
   viewNotice(el) { openModal('Draft response', 'For finance review. Aegis does not file or send this.', h`<div style="white-space:pre-wrap;font-size:12px">${el.dataset.text}</div>`); },
   copyLink() { navigator.clipboard?.writeText(location.href); toast('Link copied. Access still depends on role.', 'success'); },
-  demoPanel() { openModal('Demo controls', 'These call the same webhook and scheduler paths as production.', h`<div class="stack"><div><strong class="small">Signed HRMS events</strong><div class="row mt"><button class="top-action-btn" data-act="demoEvent" data-k="new_hire">New clinical hire</button><button class="top-action-btn" data-act="demoEvent" data-k="assignment_change">Assignment change</button><button class="top-action-btn" data-act="demoEvent" data-k="termination">Termination</button></div></div><div><strong class="small">Time</strong><div class="row mt"><button class="top-action-btn" data-act="demoAdvance" data-d="4">Advance 4 days</button><span class="muted small">Today in demo: ${me.today}</span></div></div><div><strong class="small">Data</strong><div class="row mt"><button class="btn-danger" data-act="demoReset">Reset all demo data</button></div></div></div>`); },
+  demoPanel() {
+    if (!me.demo || !me.user.is_admin) return;
+    openModal('Demo controls', 'Run the workflow with sample HRMS events.', h`<div class="stack">
+      <div><strong>Sample HRMS events</strong><div class="row mt">
+        <button class="top-action-btn" data-act="demoEvent" data-k="new_hire">New clinical hire</button>
+        <button class="top-action-btn" data-act="demoEvent" data-k="assignment_change">Assignment change</button>
+        <button class="top-action-btn" data-act="demoEvent" data-k="termination">Termination</button>
+      </div></div>
+      <div class="row"><button class="top-action-btn" data-act="demoAdvance" data-d="4">Advance 4 days</button><span class="muted small">Demo date ${me.today}</span></div>
+      ${me.sandbox ? h`<div><button class="btn-danger" data-act="confirmDemoReset">Reset sandbox data</button></div>` : ''}
+    </div>`);
+  },
   async demoEvent(el) { const r = await api('/api/demo/hrms-event', { kind: el.dataset.k }); toast(`${r.type}: ${r.worker}`, 'success'); closeModal(); after(); },
   async demoAdvance(el) { const r = await api('/api/demo/advance', { days: +el.dataset.d }); me.today = r.today; renderTop(); toast(`Demo date is now ${r.today}.`, 'success'); closeModal(); after(); },
+  confirmDemoReset() {
+    openModal('Reset sandbox data?', 'The sandbox will restore the original sample workers and cases.', '',
+      h`<button class="btn-cancel" data-act="closeModal">Cancel</button><button class="btn-danger" data-act="demoReset">Reset sandbox</button>`);
+  },
   async demoReset() { await api('/api/demo/reset', {}); location.hash = ''; location.reload(); },
 };
 const after = () => refresh();
@@ -706,7 +797,27 @@ const FORM = {
   async activate(d, f) { await api(`/api/packs/${f.dataset.id}/activate`, { owner_user_id: d.owner_user_id, reviewed: !!d.reviewed }); toast('Pack activated in validation mode.', 'success'); closeModal(); setTimeout(after, 1200); },
   async facility(d, f) { await api(`/api/setup/facility/${f.dataset.id}`, { state: d.state, requirements: [...f.querySelectorAll('[name=req]:checked')].map((x) => x.value) }); toast('Requirements confirmed.', 'success'); closeModal(); setTimeout(after, 1200); },
   async channel(d) { await api('/api/setup/channel', d); toast('Channel saved.', 'success'); refresh(); },
-  async connector(d) { await api('/api/connectors', d); toast('Connector saved.', 'success'); refresh(); },
+  async connector(d, form, submitter) {
+    const { options, ...fields } = d;
+    let advanced;
+    try { advanced = JSON.parse(options || '{}'); } catch { throw new Error('Enter a valid JSON object for additional settings.'); }
+    if (!advanced || typeof advanced !== 'object' || Array.isArray(advanced)) throw new Error('Additional settings must be a JSON object.');
+    const settings = { ...advanced, ...fields };
+    const endpoint = form.dataset.id ? `/api/connectors/${form.dataset.id}` : '/api/connectors';
+    const result = await api(`${endpoint}/test`, settings);
+    form.querySelector('[data-connector-result]').innerHTML = render(mappingPreview(result));
+    if (submitter?.value !== 'save') return;
+    await api(endpoint, settings);
+    toast('HRMS connection saved.', 'success');
+    closeModal();
+    refresh();
+  },
+  async slackConnection(d) {
+    await api('/api/integrations/slack', d);
+    toast('Slack connected.', 'success');
+    closeModal();
+    refresh();
+  },
   async dashboard(d) { const r = await api('/api/dashboards', { ...d, pack: d.pack || null }); location.hash = `dashboards/${r.id}`; },
   async notice(d) { await api('/api/notices', d); toast('Draft created and sent to Approvals.', 'success'); refresh(); },
   async baseline(d) { await api('/api/metrics/baseline', { key: 'minutes_per_chase', value: d.value }); toast('Baseline saved.', 'success'); refresh(); },
@@ -787,7 +898,8 @@ const PERSONAS = [
 
 const BLANK_BADGE = { name: "Your name here", role: "Not signed in", email: "", color: "#0E8A5F", z: [0, 0, 0, 0, 0, 0] };
 let currentPersona = null;
-let demoPassword = "demo1234";
+let demoEnabled = false;
+let demoPassword = 'demo1234';
 
 function badgeInitials(s) {
   const w = String(s || '').replace(/[^a-zA-Z ]/g, ' ').trim().split(/\s+/);
@@ -861,6 +973,7 @@ function setupTiltListener() {
 
 let rackLastFocus = null;
 function openDemoRack() {
+  if (!demoEnabled) return;
   const overlay = $('#overlay');
   if (!overlay) return;
   rackLastFocus = document.activeElement;
@@ -884,7 +997,7 @@ function closeDemoRack() {
 
 let selectingDemo = false;
 async function selectDemoBadge(p) {
-  if (selectingDemo) return;
+  if (!demoEnabled || selectingDemo) return;
   selectingDemo = true;
   try {
     closeDemoRack();
@@ -965,12 +1078,15 @@ async function submitBadgeLogin() {
 }
 
 async function showLogin() {
+  me = null;
+  closeModal();
   const as = $('#appShell'); if (as) { as.hidden = true; as.style.display = 'none'; }
   const ls = $('#loginScreen'); if (ls) { ls.hidden = false; ls.style.display = 'block'; }
   document.body.style.background = 'var(--wall)';
 
-  const info = await fetch('/api/public/info').then((r) => r.json()).catch(() => ({ demo: true, demo_password: 'demo1234' }));
-  demoPassword = info.demo_password || 'demo1234';
+  const info = await fetch('/api/public/info').then((r) => r.json()).catch(() => ({}));
+  demoEnabled = info.demo === true;
+  demoPassword = info.demo_password || '';
 
   $('#loginScreen').innerHTML = `
     <div class="page badge-page">
@@ -987,7 +1103,7 @@ async function showLogin() {
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6l7-3z"/></svg>
                     Aegis
                   </span>
-                  <small>Bluebix workspace</small>
+                  <small>Compliance workspace</small>
                 </div>
                 <div class="photo" id="bInit">?</div>
                 <div class="who">
@@ -1014,12 +1130,11 @@ async function showLogin() {
             <b><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6l7-3z"/><path d="M9 12l2 2 4-4"/></svg></b>
             Aegis
           </div>
-          <a href="#help" id="helpLink">Need help signing in?</a>
         </div>
 
         <section class="main main-desk">
-          <h1>Badge in.</h1>
-          <p class="lead">Sign in to see the employee records your role is cleared for. Nothing more, nothing less.</p>
+          <h1>Sign in to Aegis</h1>
+          <p class="lead">Use your work account to access your compliance workspace.</p>
 
           <form id="form" class="form-desk" novalidate>
             <div>
@@ -1027,7 +1142,7 @@ async function showLogin() {
               <input id="email" type="email" placeholder="name@company.com" autocomplete="username" />
             </div>
             <div>
-              <div class="lab"><label for="password">Password</label><a href="#forgot" id="forgotLink">Forgot password?</a></div>
+              <label for="password">Password</label>
               <div class="pw">
                 <input id="password" type="password" autocomplete="current-password" />
                 <button type="button" id="toggle" aria-pressed="false">Show</button>
@@ -1036,17 +1151,19 @@ async function showLogin() {
             <button class="primary primary-badge-btn" id="submit" type="submit">Sign in</button>
           </form>
 
-          <div class="or or-divider">or try it without an account</div>
-          <button class="demo demo-trigger" id="openRack" type="button" aria-haspopup="dialog">
+          ${demoEnabled ? `<div class="or or-divider">Sample workspaces</div>
+          <button class="demo demo-trigger" type="button" data-act="quickLogin" data-e="sathinath@bluebix.demo">Open Bluebix sandbox</button>
+          <button class="demo demo-trigger mt" id="openRack" type="button" aria-haspopup="dialog">
             <span class="swatch" id="swatch">${PERSONAS.map(p => `<i style="background:${p.color}"></i>`).join('')}</span>
             Use a demo badge
             <span class="count">6 roles</span>
           </button>
+          <button class="demo demo-trigger mt" type="button" data-act="quickLogin" data-e="admin@northstar.demo">Try empty company setup</button>` : ''}
 
           <p class="status status-desk" id="status" role="status" aria-live="polite"></p>
         </section>
 
-        <p class="fine">Immigration, health and tax records are kept apart by law. Each person only sees the files their job needs, and every action is logged.</p>
+        <p class="fine">Contact your workspace administrator for sign-in help.</p>
       </main>
     </div>
   `;
@@ -1062,13 +1179,11 @@ async function showLogin() {
   const openRackBtn = $('#openRack');
   const closeRackBtn = $('#closeRack');
   const overlayEl = $('#overlay');
-  const helpLink = $('#helpLink');
-  const forgotLink = $('#forgotLink');
 
   if (emailInput) {
     emailInput.addEventListener('input', () => {
       const val = emailInput.value.trim();
-      const found = PERSONAS.find((p) => p.email.toLowerCase() === val.toLowerCase());
+      const found = demoEnabled && PERSONAS.find((p) => p.email.toLowerCase() === val.toLowerCase());
       if (found) {
         currentPersona = found;
         updateHangingBadge({ name: found.name, role: found.roleName, email: found.email, color: found.color, z: found.z });
@@ -1108,30 +1223,19 @@ async function showLogin() {
     });
   }
 
-  if (helpLink) {
-    helpLink.onclick = (e) => {
-      e.preventDefault();
-      openDemoRack();
-    };
-  }
-
-  if (forgotLink) {
-    forgotLink.onclick = (e) => {
-      e.preventDefault();
-      alert(`Demo environment: all test accounts use ${demoPassword}`);
-    };
-  }
 }
 
 ACT.quickLogin = async (el) => {
+  if (!demoEnabled) return;
   const e = el.dataset.e;
-  const p = el.dataset.p || demoPassword || 'demo1234';
+  const p = demoPassword;
+  el.disabled = true;
   try {
     await api('/api/login', { email: e, password: p });
     location.reload();
   } catch (err) {
     toast(err.message || 'Login failed', 'warning');
-  }
+  } finally { el.disabled = false; }
 };
 
 document.addEventListener('click', async (ev) => {
@@ -1175,11 +1279,16 @@ document.addEventListener('click', async (ev) => {
 
   // Check mobile menu button or sheet backdrop
   if (ev.target.closest('#menu')) {
-    $('#sheet')?.classList.toggle('open');
+    setNavigationOpen(!$('#sheet').classList.contains('open'));
     return;
   }
   if (ev.target.id === 'sheet') {
-    $('#sheet')?.classList.remove('open');
+    setNavigationOpen(false);
+    return;
+  }
+  if (ev.target.closest('.skip-main')) {
+    ev.preventDefault();
+    $('#workspace-main').focus();
     return;
   }
 
@@ -1189,7 +1298,7 @@ document.addEventListener('click', async (ev) => {
     const act = dirLink.dataset.act;
     const href = dirLink.getAttribute('href');
     closeAllDirMenus();
-    $('#sheet')?.classList.remove('open');
+    setNavigationOpen(false);
     if (act && ACT[act] && act !== 'dirLink') {
       ev.preventDefault();
       try { await ACT[act](dirLink, ev); } catch (e) { toast(e.message, 'warning'); }
@@ -1197,9 +1306,7 @@ document.addEventListener('click', async (ev) => {
     }
     if (href && href.startsWith('#') && href.length > 1) {
       ev.preventDefault();
-      const [r, a] = href.slice(1).split('/');
-      location.hash = href;
-      go(VIEWS[r] ? r : 'overview', a || null);
+      if (location.hash !== href) location.hash = href;
       return;
     }
   }
@@ -1208,6 +1315,11 @@ document.addEventListener('click', async (ev) => {
   if (!ev.target.closest('.dir') && !ev.target.closest('.tab') && !ev.target.closest('#meBtn')) {
     closeAllDirMenus();
   }
+
+  // Tick boxes on Cases: handled here so the click does not also open the case.
+  const box = ev.target.closest('.case-check, .case-check-all');
+  if (box) { ev.stopPropagation(); onCaseCheck(box, ev.shiftKey); return; }
+  if (ev.target.closest('.select-cell, .select-all')) return; // the label passes the click on to its tick box
 
   const el = ev.target.closest('[data-act]');
   if (el && ACT[el.dataset.act]) {
@@ -1228,10 +1340,19 @@ document.addEventListener('submit', async (ev) => {
 });
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
+    if (!$('#modal').classList.contains('open') && !$('#chatDrawer')?.classList.contains('open') && caseSel.size) clearCaseSelection();
     closeModal();
     closeDemoRack();
     closeAllDirMenus();
-    $('#sheet')?.classList.remove('open');
+    setNavigationOpen(false);
+  }
+  if (e.key === 'Tab' && $('#modal').classList.contains('open')) {
+    const focusable = [...$('#modalCard').querySelectorAll('a[href], button, input, select, textarea, [tabindex]')]
+      .filter((el) => el.tabIndex >= 0 && !el.disabled && el.getClientRects().length);
+    const first = focusable[0], last = focusable.at(-1);
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    return;
   }
   const overlay = $('#overlay');
   if (overlay && overlay.classList.contains('open') && e.key === 'Tab') {

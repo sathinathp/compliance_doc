@@ -1,0 +1,167 @@
+/* ==========================================================================
+   AEGIS DESIGN TOKENS
+   The one place every color, text size, corner rounding, spacing and shadow
+   comes from. The other stylesheets use only these names.
+
+   Rules
+   - Brand teal is for main actions, the active menu item, links and focus.
+   - Status colors (pass, fail, warn, info) each have one meaning. Pass, fail and
+     unknown are check results; warn is also used for "waiting" and alerts.
+   - If a screen seems to need a new color or size, add it here first.
+   ========================================================================== */
+@font-face {
+  font-family: "Aegis Inter";
+  src: url("inter.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+:root {
+  /* Neutrals: a cool slate with a hint of teal */
+  --gray-0: #ffffff;
+  --gray-25: #fafbfb;
+  --gray-50: #f4f7f7;
+  --gray-100: #edf1f1;
+  --gray-200: #dfe6e7;
+  --gray-300: #c8d3d6;
+  --gray-400: #a2b1b6;
+  --gray-500: #6a7c83;
+  --gray-600: #4b5e66;
+  --gray-700: #36484f;
+  --gray-800: #23353d;
+  --gray-900: #172c35;
+
+  /* Brand teal */
+  --brand-50: #eaf5f1;
+  --brand-100: #d4ebe3;
+  --brand-200: #aad6c7;
+  --brand-300: #6cc4ab;
+  --brand-600: #0a6b5f;
+  --brand-700: #08564d;
+  --brand-800: #0b3f3b;
+
+  /* Side menu (dark) */
+  --rail-900: #112c37;
+  --rail-800: #1b3b47;
+  --rail-700: #204a4d;
+  --rail-600: #365960;
+  --rail-text: #dbe6e9;
+  --rail-muted: #9eb6c1;
+  --rail-accent: #69d2b8;
+
+  /* Status */
+  --pass-fg: #17663f;
+  --pass-bg: #e3f2ea;
+  --pass-line: #b9dcc9;
+  --pass-dot: #2e9e6b;
+  --fail-fg: #9e2a1f;
+  --fail-bg: #fbe9e6;
+  --fail-line: #f0c3bb;
+  --fail-dot: #d4553f;
+  --warn-fg: #7a4e00;
+  --warn-bg: #fff2d6;
+  --warn-line: #f1dca8;
+  --warn-dot: #c98a0b;
+  --info-fg: #1f5f8f;
+  --info-bg: #e7f0f8;
+  --na-fg: #4b5e66;
+  --na-bg: #edf1f1;
+
+  /* Roles: use these in components */
+  --bg-app: var(--gray-50);
+  --bg-surface: var(--gray-0);
+  --bg-subtle: var(--gray-25);
+  --bg-fill: var(--gray-100);
+  --bg-hover: var(--brand-50);
+  --border: var(--gray-200);
+  --border-strong: var(--gray-300);
+  --text: var(--gray-900);
+  --text-secondary: var(--gray-600);
+  --text-muted: var(--gray-500);
+  --primary: var(--brand-600);
+  --primary-hover: var(--brand-700);
+  --focus: #2b7f8a;
+
+  /* Type: one font, one scale */
+  --font-sans: "Aegis Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --fs-11: 11px;
+  --fs-12: 12px;
+  --fs-13: 13px;
+  --fs-14: 14px;
+  --fs-16: 16px;
+  --fs-18: 18px;
+  --fs-20: 20px;
+  --fs-24: 24px;
+  --fs-30: 30px;
+  --fs-36: 36px;
+  --fs-48: 48px;
+  --fs-64: 64px;
+
+  /* Corners */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 999px;
+
+  /* Spacing (4px steps) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgb(23 44 53 / 0.06);
+  --shadow: 0 2px 8px -2px rgb(23 44 53 / 0.08);
+  --shadow-lg: 0 24px 64px -32px rgb(17 42 52 / 0.45);
+
+  /* ---- Older names, kept so every existing rule follows the tokens above ---- */
+  --font: var(--font-sans);
+  --font-family: var(--font-sans);
+  --surface-font: var(--font-sans);
+  --wall: var(--bg-app);
+  --wall-deep: var(--gray-100);
+  --rail: var(--gray-400);
+  --ink: var(--text);
+  --ink-2: var(--text-secondary);
+  --ink-3: var(--text-muted);
+  --line: var(--border-strong);
+  --line-soft: var(--border);
+  --white: var(--gray-0);
+  --aegis: var(--primary);
+  --pass: var(--pass-dot);
+  --fail: var(--fail-fg);
+  --unknown: var(--text-secondary);
+  --unchecked: var(--gray-400);
+  --clinical: var(--info-fg);
+  --corporate: var(--warn-dot);
+  --card-bg: var(--bg-surface);
+  --canvas-bg: var(--bg-app);
+  --border-light: var(--border);
+  --border-subtle: var(--border);
+  --text-dark: var(--text);
+  --text-body: var(--text-secondary);
+  --text-subtle: var(--text-muted);
+  --color-primary-green: var(--primary);
+  --color-primary-green-hover: var(--primary-hover);
+  --status-pass: var(--pass-dot);
+  --status-fail: var(--fail-fg);
+  --status-warning: var(--warn-dot);
+  --status-unknown: var(--text-secondary);
+  --surface-ink: var(--text);
+  --surface-secondary: var(--text-secondary);
+  --surface-muted: var(--text-muted);
+  --surface-teal: var(--primary);
+  --surface-deep: var(--primary-hover);
+  --surface-tint: var(--brand-50);
+  --surface-paper: var(--bg-surface);
+  --surface-fill: var(--bg-fill);
+  --surface-border: var(--border);
+  --surface-outline: var(--focus);
+}

@@ -4,10 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Aegis | AI Compliance Coworker</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,300..900&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="tokens.css">
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="surfaces.css">
+  <link rel="stylesheet" href="shell.css">
+  <link rel="stylesheet" href="overview.css">
+  <link rel="stylesheet" href="system.css">
 </head>
 <body>
   <!-- Hanging Badge Login Screen -->
@@ -15,62 +17,36 @@
 
   <!-- Authenticated Workspace Shell -->
   <div id="appShell" class="app-shell" hidden>
-    <header class="hdr" id="hdr">
-      <div class="hin" id="hin">
-        <a class="brand" href="#overview" aria-label="Aegis home">
-          <b><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6l7-3z"/><path d="M9 12l2 2 4-4"/></svg></b>
-          <strong>Aegis</strong>
-        </a>
-        <button class="org" id="tenantPill" type="button" title="Current organization">
-          <i id="tenantAvatar">BH</i>
-          <span id="tenantName">Bluebix Healthcare</span>
-          <small id="tenantStatus">Internal pilot</small>
-        </button>
-        <nav class="tabs" id="tabs" aria-label="Main"></nav>
-        <span class="sp"></span>
-        <button class="menu" id="menu" type="button" aria-expanded="false">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>Menu
-        </button>
-        <!-- The badge you are wearing -->
-        <div class="worn" id="wornBadge">
-          <span class="s"></span>
-          <span class="clip"></span>
-          <button type="button" id="meBtn" aria-expanded="false" aria-controls="meMenu" title="Your badge">
-            <i id="userAvatar">SA</i>
-            <div>
-              <span id="userName">Sathinath</span>
-              <small id="userRole">Administrator</small>
-            </div>
-          </button>
-          <div class="dir" id="meMenu">
-            <a href="#settings" id="meMenuSettings"><span class="ic"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/></svg></span><b>Settings</b><small>Workspace, AI engine and roles</small></a>
-            <a href="#" data-act="openDemoRack"><span class="ic"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h13l-3-3M20 16H7l3 3"/></svg></span><b>Switch demo badge</b><small>Try another role</small></a>
-            <a href="#" data-act="openChat"><span class="ic"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 13l3-8h10l3 8v6H4z"/><path d="M4 13h5l1 2h4l1-2h5"/></svg></span><b>AI Coworker chat</b><small>Ask questions or chase documents</small></a>
-            <a href="#" data-act="logout"><span class="ic"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4h4v16h-4M10 8l-4 4 4 4M6 12h10"/></svg></span><b>Sign out</b><small>Hand your badge back</small></a>
-          </div>
+    <a class="skip-main" href="#workspace-main">Skip to workspace</a>
+    <aside class="workspace-rail" aria-label="Workspace navigation">
+      <a class="rail-brand" href="#overview"><span class="rail-mark"><svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M12 2.5 20 6v6c0 4-3 7.4-8 9.5-5-2.1-8-5.5-8-9.5V6z"/><path d="m8.4 11.9 2.5 2.5 4.8-5.1"/></svg></span>Aegis</a>
+      <nav id="tabs" aria-label="Main"></nav>
+      <button class="rail-assistant" data-act="openChat"><span aria-hidden="true"><svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M12 2.5 20 6v6c0 4-3 7.4-8 9.5-5-2.1-8-5.5-8-9.5V6z"/><path d="m8.4 11.9 2.5 2.5 4.8-5.1"/></svg></span>Ask coworker</button>
+    </aside>
+    <header class="workspace-bar">
+      <button id="menu" aria-controls="sheet" aria-expanded="false" aria-label="Open navigation">Menu</button>
+      <div class="org-context"><span class="org-initial" id="tenantAvatar"></span><strong id="tenantName"></strong><span class="org-mode" id="tenantStatus" hidden></span></div>
+      <div class="account" id="wornBadge">
+        <button type="button" id="meBtn" aria-expanded="false" aria-controls="meMenu"><span id="userAvatar"></span><span class="account-label"><strong id="userName"></strong><small id="userRole"></small></span><span aria-hidden="true">⌄</span></button>
+        <div class="dir" id="meMenu">
+          <a href="#settings" id="meMenuSettings"><b>Workspace settings</b></a>
+          <a href="#" id="meMenuDemoRole" data-act="openDemoRack" hidden><b>Switch demo role</b></a>
+          <a href="#" id="meMenuDemoControls" data-act="demoPanel" hidden><b>Demo controls</b></a>
+          <a href="#" data-act="logout"><b>Sign out</b></a>
         </div>
       </div>
     </header>
-
-    <!-- Mobile navigation sheet -->
-    <div class="sheet" id="sheet"><div class="in" id="sheetIn"></div></div>
-
-    <!-- Main Workspace Content -->
-    <main class="content">
+    <div class="sheet" id="sheet"><nav class="in" id="sheetIn" aria-label="Mobile navigation"></nav></div>
+    <main class="content" id="workspace-main" tabindex="-1">
       <div class="title" id="pageTitleArea">
-        <div>
-          <span class="crumb-text" id="crumb" style="display:block;font-size:12px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:var(--ink-3);margin-bottom:4px"></span>
-          <h1 id="heading">Compliance overview</h1>
-          <p id="scope"></p>
-        </div>
+        <div class="page-heading"><span id="crumb"></span><h1 id="heading">Compliance overview</h1><p id="scope"></p></div>
         <div class="tools" id="topTools">
-          <input class="search" id="globalSearch" placeholder="Filter this page" aria-label="Filter this page" />
-          <button class="btn" data-act="addWorker">+ Add worker</button>
+          <input class="search" id="globalSearch" placeholder="Filter this page" aria-label="Filter this page">
           <button class="btn" data-act="importRoster">Import roster</button>
-          <button class="btn" data-act="openDemoRack">Demo</button>
-          <button class="btn primary" data-act="uploadEvidence">Add evidence</button>
-          <button class="btn" data-act="openChat" aria-label="Open AI coworker">💬 Coworker</button>
-          <span class="asof" id="asof"></span>
+          <button class="btn primary" data-act="addWorker">Add worker</button>
+          <button class="btn" data-act="bulkUpload">Bulk upload</button>
+          <button class="btn primary" data-act="uploadEvidence">Upload evidence</button>
+          <button class="btn mobile-assistant" data-act="openChat">Ask coworker</button>
         </div>
       </div>
 
@@ -79,6 +55,16 @@
       <!-- Dynamic View Content Container -->
       <div id="view"></div>
     </main>
+    <!-- Shown when cases are ticked on the Cases page. -->
+    <div class="selection-bar" id="selectionBar" role="region" aria-label="Selected cases" hidden>
+      <span class="selection-count"><b id="selectionNum">0</b> <span id="selectionWord">selected</span></span>
+      <span class="selection-hint" id="selectionHint"></span>
+      <span class="selection-actions">
+        <button type="button" class="selection-clear" data-act="clearCaseSelection">Clear <kbd>Esc</kbd></button>
+        <button type="button" class="selection-go" data-act="followUpSelected">Follow up</button>
+      </span>
+    </div>
+    <p class="visually-hidden" id="selectionLive" aria-live="polite"></p>
 
     <!-- AI Coworker Chat Drawer -->
     <aside id="chatDrawer" class="chat-drawer" aria-label="Aegis coworker chat">
@@ -114,7 +100,7 @@
     </div>
   </div>
 
-  <div id="modal" class="modal-overlay"><div class="modal-card" id="modalCard" role="dialog" aria-modal="true"></div></div>
+  <div id="modal" class="modal-overlay"><div class="modal-card" id="modalCard" role="dialog" aria-modal="true" aria-labelledby="modalTitle" aria-describedby="modalDescription"></div></div>
   <div id="toasts" class="toast-container" role="status"></div>
   <script src="app.js"></script>
 </body>
