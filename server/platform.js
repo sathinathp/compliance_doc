@@ -58,6 +58,8 @@ async function loop(force = false) {
   try { await busy; } finally { busy = null; }
 }
 const drain = () => loop(true);
+// Resolves when the job loop is not running a job (used on shutdown).
+const idle = () => busy || Promise.resolve();
 const recoverStale = () => db.run(`UPDATE jobs SET status='queued' WHERE status='running'`);
 
 // ---- permissions
@@ -69,4 +71,4 @@ const isAdmin = (u) => u.role === 'admin';
 class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
 const assertPack = (u, pack) => { if (!canPack(u, pack)) throw new HttpError(403, `Your role cannot act on the ${pack} pack.`); };
 const assertAdmin = (u) => { if (!isAdmin(u)) throw new HttpError(403, 'Administrator role required.'); };
-module.exports = { SYSTEM, audit, verifyAudit, bump, counter, on, enqueue, loop, drain, recoverStale, ROLE_PACKS, ROLE_LABEL, canPack, canSeeRestricted, isAdmin, assertPack, assertAdmin, HttpError };
+module.exports = { SYSTEM, audit, verifyAudit, bump, counter, on, enqueue, loop, drain, idle, recoverStale, ROLE_PACKS, ROLE_LABEL, canPack, canSeeRestricted, isAdmin, assertPack, assertAdmin, HttpError };

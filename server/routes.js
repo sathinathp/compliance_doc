@@ -1,7 +1,8 @@
 'use strict';
 const crypto = require('crypto');
+const sandbox = require('./lib/sandbox');
 const db = require('./lib/db'), { clock, id, sha256, token, j, hashPassword, checkPassword } = require('./lib/util');
-const P = require('./platform'), R = require('./registry'), E = require('./engine'), Ev = require('./evidence'), C = require('./connectors'), V = require('./views'), Chat = require('./chat'), llm = require('./llm'), mock = require('./mock-hrms'), channels = require('./channels');
+const P = require('./platform'), R = require('./registry'), E = require('./engine'), Ev = require('./evidence'), C = require('./connectors'), V = require('./views'), Chat = require('./chat'), llm = require('./llm'), mock = require('./mock-hrms'), channels = require('./channels'), Slack = require('./slack');
 const { HttpError } = P;
 const routes = [];
 const add = (m, p, fn, o = {}) => { const keys = []; const re = new RegExp('^' + p.replace(/:([a-z_]+)/g, (_, k) => { keys.push(k); return '([^/]+)'; }) + '$'); routes.push({ m, re, keys, fn, o }); };
@@ -23,12 +24,16 @@ add('POST', '/api/login', ({ body, res }) => {
   if (!u || !checkPassword(String(body.password || ''), u.password_hash)) throw new HttpError(401, 'Incorrect email or password.');
   const raw = token();
   db.insert('sessions', { token_hash: sha256(raw), user_id: u.id, expires_at: new Date(Date.now() + 12 * 36e5).toISOString() });
-  res.setHeader('set-cookie', `aegis_sid=${raw}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${/^https:/.test(process.env.AEGIS_BASE_URL || '') ? '; Secure' : ''}`);
+  res.setHeader('set-cookie', sessionCookie(raw, 43200));
   attempts.delete(key);
   return { ok: true };
 }, { public: true });
-add('POST', '/api/logout', ({ sid, res }) => { db.run('DELETE FROM sessions WHERE token_hash=?', sha256(sid || '')); res.setHeader('set-cookie', 'aegis_sid=; Path=/; Max-Age=0'); return { ok: true }; });
-add('GET', '/api/me', ({ t, user }) => { const tn = db.get('SELECT name,slug,kind FROM tenants WHERE id=?', t); return { user: { id: user.id, name: user.name, email: user.email, role: user.role, role_label: P.ROLE_LABEL[user.role], can_restricted: P.canSeeRestricted(user), is_admin: P.isAdmin(user) }, tenant: tn, demo: demo(), today: clock.today() }; });
+function sessionCookie(value, maxAge) {
+  const secure = /^https:/.test(process.env.AEGIS_BASE_URL || '') ? '; Secure' : '';
+  return `${sandbox.sessionCookie()}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${secure}`;
+}
+add('POST', '/api/logout', ({ sid, res }) => { db.run('DELETE FROM sessions WHERE token_hash=?', sha256(sid || '')); res.setHeader('set-cookie', sessionCookie('', 0)); return { ok: true }; });
+add('GET', '/api/me', ({ t, user }) => { const tn = db.get('SELECT name,slug,kind FROM tenants WHERE id=?', t); return { user: { id: user.id, name: user.name, email: user.email, role: user.role, role_label: P.ROLE_LABEL[user.role], can_restricted: P.canSeeRestricted(user), is_admin: P.isAdmin(user) }, tenant: tn, demo: demo(), sandbox: sandbox.isActive(), today: clock.today() }; });
 const tokenCase = (raw) => {
   const s = db.get('SELECT * FROM submission_tokens WHERE token_hash=?', sha256(raw));
   if (!s || s.expires_at < clock.iso()) throw new HttpError(410, 'This link has expired or is not valid.');
@@ -49,34 +54,60 @@ add('POST', '/api/submit/:token', async ({ p, body }) => {
 // ---- webhooks: authenticated by signature, not by session
 add('POST', '/api/webhooks/hrms/:slug', ({ p, raw, req }) => {
   const tn = db.get('SELECT * FROM tenants WHERE slug=?', p.slug);
-  if (!tn) throw new HttpError(404, 'Unknown tenant.');
-  const want = 'sha256=' + crypto.createHmac('sha256', tn.webhook_secret).update(raw).digest('hex'), got = String(req.headers['x-aegis-signature'] || '');
+  if (!tn || !tn.webhook_secret) throw new HttpError(404, 'Unknown tenant.');
+  const con = db.get("SELECT * FROM connectors WHERE tenant_id=? AND type='hrms' AND status!='disabled'", tn.id);
+  const header = String((con && C.configOf(con).webhook_signature_header) || 'x-aegis-signature').toLowerCase();
+  const want = 'sha256=' + crypto.createHmac('sha256', tn.webhook_secret).update(raw).digest('hex'), got = String(req.headers[header] || '');
   if (want.length !== got.length || !crypto.timingSafeEqual(Buffer.from(want), Buffer.from(got))) throw new HttpError(401, 'Invalid signature.');
-  const b = JSON.parse(raw), con = db.get("SELECT * FROM connectors WHERE tenant_id=? AND type='hrms'", tn.id);
-  if (!con) throw new HttpError(409, 'No HRMS connector.');
+  if (!con) throw new HttpError(409, 'No active HRMS connector.');
+  let b;
+  try { b = JSON.parse(raw); } catch { throw new HttpError(400, 'Invalid JSON.'); }
+  // The event id stops duplicates. Without one, the body's hash is used, so different events never collide.
+  const extId = b.id != null && b.id !== '' ? String(b.id) : `sha256:${sha256(raw)}`;
   const evId = id('evt');
-  const r = db.run("INSERT OR IGNORE INTO events(id,tenant_id,source,external_id,type,payload_json,status,received_at) VALUES(?,?,?,?,?,?,'received',?)", evId, tn.id, con.id, String(b.id), b.type, raw.toString(), clock.iso());
+  const r = db.run("INSERT OR IGNORE INTO events(id,tenant_id,source,external_id,type,payload_json,status,received_at) VALUES(?,?,?,?,?,?,'received',?)", evId, tn.id, con.id, extId, String(b.type || 'unknown'), raw.toString(), clock.iso());
   if (!r.changes) return { accepted: true, duplicate: true };
   P.enqueue(tn.id, 'process_event', { event_id: evId });
   return { accepted: true };
 }, { public: true });
-add('POST', '/api/webhooks/slack', async ({ raw, req, body }) => {
-  if (!channels.verifySlack(process.env.SLACK_SIGNING_SECRET, req.headers['x-slack-request-timestamp'], raw.toString(), req.headers['x-slack-signature'])) throw new HttpError(401, 'Invalid signature.');
+// Slack Events URL. /api/webhooks/slack/<company> uses that company's signing secret from the
+// Integrations page; /api/webhooks/slack uses SLACK_SIGNING_SECRET from .env.
+// Slack must get an answer within 3 seconds and retries otherwise, so the reply is sent afterwards.
+const slackEvents = ({ raw, req, body }, tenantId, secret) => {
+  if (!Slack.verify(secret, req.headers['x-slack-request-timestamp'], raw.toString(), req.headers['x-slack-signature'])) throw new HttpError(401, 'Invalid signature.');
   if (body.type === 'url_verification') return { challenge: body.challenge };
-  const e = body.event;
-  if (e?.type === 'message' && !e.bot_id && e.text) {
-    const u = db.get('SELECT * FROM users WHERE slack_id=?', e.user);
-    if (u) { const reply = await Chat.handle(u.tenant_id, { ...u, type: 'user' }, e.text); await fetch('https://slack.com/api/chat.postMessage', { method: 'POST', headers: { authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`, 'content-type': 'application/json; charset=utf-8' }, body: JSON.stringify({ channel: e.channel, text: reply }) }); }
-  }
+  Slack.handleEvent(tenantId, body, Chat.handle).catch((e) => console.error('[slack]', e));
   return { ok: true };
+};
+add('POST', '/api/webhooks/slack', (ctx) => slackEvents(ctx, null, process.env.SLACK_SIGNING_SECRET), { public: true });
+add('POST', '/api/webhooks/slack/:slug', (ctx) => {
+  const tn = db.get('SELECT id FROM tenants WHERE slug=?', ctx.p.slug);
+  const cfg = tn && Slack.config(tn.id);
+  if (!cfg || cfg.source !== 'settings') throw new HttpError(404, 'Unknown company.');
+  return slackEvents(ctx, tn.id, cfg.signing_secret);
 }, { public: true });
 
 // ---- read models
 add('GET', '/api/overview', ({ t, user }) => V.overview(t, user));
 add('GET', '/api/checks', ({ t, user, q }) => ({ rows: V.checks(t, user, { status: q.get('status'), pack: q.get('pack'), subject: q.get('subject') }), coverage: V.coverage(t) }));
-add('GET', '/api/cases', ({ t, user, q }) => V.listCases(t, user, { closed: q.get('closed') === '1', pack: q.get('pack') }));
+add('GET', '/api/cases', ({ t, user, q }) => V.listCases(t, user, { closed: q.get('closed') === '1', pack: q.get('pack') })
+  .map((c) => ({ ...c, can_act: user.role !== 'viewer' && P.canPack(user, c.pack_key) })));
 add('GET', '/api/cases/:id', ({ t, user, p }) => V.caseDetail(t, user, p.id));
-add('POST', '/api/cases/chase-all', ({ t, user }) => { edit(user); let sent = 0, skipped = 0; for (const c of V.listCases(t, user).filter((x) => P.canPack(user, x.pack_key))) { const r = E.followUp(t, user, c); if (r.sent) sent++; else skipped++; } return { sent, skipped }; });
+add('POST', '/api/cases/chase-all', ({ t, user, body }) => {
+  edit(user);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw new HttpError(400, 'Choose cases to follow up on.');
+  const { case_ids } = body;
+  if (case_ids !== undefined && (!Array.isArray(case_ids) || case_ids.some((id) => typeof id !== 'string' || !id))) {
+    throw new HttpError(400, 'Choose valid cases before sending follow-ups.');
+  }
+  const selected = case_ids === undefined ? null : new Set(case_ids);
+  const eligible = V.listCases(t, user).filter((c) => P.canPack(user, c.pack_key) && (!selected || selected.has(c.id)));
+  let sent = 0;
+  for (const c of eligible) {
+    if (E.followUp(t, user, c).sent) sent++;
+  }
+  return { sent, skipped: (selected?.size ?? eligible.length) - sent };
+});
 add('POST', '/api/cases/:id/follow-up', ({ t, user, p }) => { edit(user); const c = getCase(t, p.id); seen(user, c); return E.followUp(t, user, c); });
 add('POST', '/api/cases/:id/note', ({ t, user, p, body }) => { edit(user); const c = getCase(t, p.id); seen(user, c); if (!body.note) throw new HttpError(400, 'Note is required.'); db.insert('case_notes', { id: id('note'), tenant_id: t, case_id: c.id, note: String(body.note).slice(0, 2000), author: user.name, created_at: clock.iso() }); P.audit(t, 'CASE_NOTE', c.subject_name, `Note added. A note does not change the check result: ${String(body.note).slice(0, 200)}`, user, { case_id: c.id }); return { ok: true }; });
 add('POST', '/api/cases/:id/verdict', ({ t, user, p, body }) => { edit(user); const c = getCase(t, p.id); seen(user, c); E.recordVerdict(t, user, c, body.verdict, body.note); return { ok: true }; });
@@ -100,7 +131,13 @@ add('GET', '/api/evidence', ({ t, user }) => V.listEvidence(t, user));
 add('POST', '/api/evidence', async ({ t, user, body }) => { edit(user); const ev = await Ev.intake(t, { subject_type: body.subject_type || 'worker', subject_id: body.subject_id, control_key: body.control_key || null, ...file(body), claimed: body.claimed || {}, source: body.bulk ? 'bulk_upload' : 'upload' }, user); return { id: ev.id, status: ev.status, duplicate: !!ev.duplicate, reasons: j(ev.review_reasons_json, []) }; });
 const getEv = (t, u, eid) => { const e = db.get('SELECT * FROM evidence WHERE id=? AND tenant_id=?', eid, t); if (!e) throw new HttpError(404, 'Evidence not found.'); if (e.restricted && !P.canSeeRestricted(u)) throw new HttpError(403, 'This evidence is restricted.'); return e; };
 add('POST', '/api/evidence/:id/review', ({ t, user, p, body }) => { edit(user); Ev.review(t, user, getEv(t, user, p.id), body); return { ok: true }; });
-add('GET', '/api/evidence/:id/file', ({ t, user, p, res }) => { const e = getEv(t, user, p.id); if (!e.stored_path) throw new HttpError(404, 'Demo evidence has no file.'); P.audit(t, 'EVIDENCE_VIEWED', e.filename, 'Document opened.', user); res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-disposition': `attachment; filename="${e.filename.replace(/[^\w.\-]/g, '_')}"` }); res.end(Ev.readFile(e)); return res; });
+add('GET', '/api/evidence/:id/file', async ({ t, user, p, res }) => {
+  const e = getEv(t, user, p.id); if (!e.stored_path) throw new HttpError(404, 'Demo evidence has no file.');
+  let data;
+  try { data = await Ev.readFile(e); } catch (err) { console.error('[storage]', err.message); throw new HttpError(503, 'The document could not be read from storage.'); }
+  P.audit(t, 'EVIDENCE_VIEWED', e.filename, 'Document opened.', user);
+  res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-disposition': `attachment; filename="${e.filename.replace(/[^\w.\-]/g, '_')}"` }); res.end(data); return res;
+});
 
 // ---- governance
 add('GET', '/api/packs', ({ t }) => V.packRows(t));
@@ -117,15 +154,54 @@ add('GET', '/api/setup', ({ t }) => V.setupState(t));
 const setS = (t, patch) => { const tn = db.get('SELECT setup_json s FROM tenants WHERE id=?', t); db.update('tenants', t, { setup_json: JSON.stringify({ ...j(tn.s, {}), ...patch }) }); };
 add('POST', '/api/setup/facility/:id', ({ t, user, p, body }) => { P.assertAdmin(user); const f = db.get('SELECT * FROM facilities WHERE id=? AND tenant_id=?', p.id, t); if (!f) throw new HttpError(404, 'Facility not found.'); db.update('facilities', f.id, { requirements_json: JSON.stringify(body.requirements || []), requirements_confirmed: 1, requirement_source: body.source || 'Confirmed by administrator', state: body.state || f.state }); P.audit(t, 'CONTEXT_CONFIRMED', f.name, `Facility requirements confirmed: ${(body.requirements || []).join(', ') || 'none'}.`, user); P.enqueue(t, 'evaluate_tenant', { trigger: 'context_confirmed' }, { dedupe: `eval_tenant:${t}` }); return { ok: true }; });
 add('POST', '/api/setup/context', ({ t, user }) => { P.assertAdmin(user); db.run('UPDATE entities SET confirmed=1 WHERE tenant_id=?', t); setS(t, { context_confirmed: true }); P.audit(t, 'CONTEXT_CONFIRMED', 'Company profile', 'Administrator confirmed employing entities and work locations.', user); return { ok: true }; });
-add('POST', '/api/setup/channel', ({ t, user, body }) => { P.assertAdmin(user); db.update('tenants', t, { channel_json: JSON.stringify({ type: body.type === 'slack' ? 'slack' : 'outbox', channel: body.channel || '#compliance-alerts' }) }); setS(t, { channel_confirmed: true }); P.audit(t, 'CHANNEL_SET', 'Reporting channel', `Reporting channel set to ${body.type || 'outbox'}.`, user); return { ok: true }; });
+add('POST', '/api/setup/channel', ({ t, user, body }) => { P.assertAdmin(user); if (body.type === 'slack' && !Slack.configured(t)) throw new HttpError(409, 'Connect Slack on the Integrations page first.'); db.update('tenants', t, { channel_json: JSON.stringify({ type: body.type === 'slack' ? 'slack' : 'outbox', channel: body.channel || '#compliance-alerts' }) }); setS(t, { channel_confirmed: true }); P.audit(t, 'CHANNEL_SET', 'Reporting channel', `Reporting channel set to ${body.type || 'outbox'}.`, user); return { ok: true }; });
 add('POST', '/api/setup/assess', async ({ t, user }) => { P.assertAdmin(user); E.evaluateTenant(t, 'initial_assessment'); await P.drain(); return V.coverage(t); });
 
 // ---- connectors
-add('POST', '/api/connectors', ({ t, user, body }) => { P.assertAdmin(user); if (!body.base_url || !body.api_key) throw new HttpError(400, 'Base URL and API key are required.'); const c = C.createConnector(t, { type: 'hrms', name: body.name || 'HRMS', config: { base_url: body.base_url, api_key: body.api_key }, capabilities: ['workers', 'scheduled_import'] }); return { id: c.id }; });
+// HRMS settings are described at the top of the HRMS section in connectors.js. Keys are write-only:
+// they are stored encrypted and never returned.
+const getCon = (t, cid) => { const c = db.get('SELECT * FROM connectors WHERE id=? AND tenant_id=?', cid, t); if (!c) throw new HttpError(404, 'Connector not found.'); return c; };
+const webhookUrl = (t) => `${(process.env.AEGIS_BASE_URL || '').replace(/\/+$/, '')}/api/webhooks/hrms/${db.get('SELECT slug FROM tenants WHERE id=?', t).slug}`;
+const conRow = (t, c) => ({ id: c.id, type: c.type, name: c.name, status: c.status, last_sync_at: c.last_sync_at, last_error: c.last_error, records: c.records, has_cursor: !!c.cursor, capabilities: j(c.capabilities_json, []), settings: C.publicConfig(C.configOf(c)), webhook_url: webhookUrl(t) });
+const settingsOf = (body) => { const { name, ...s } = body; return s; };
+add('GET', '/api/connectors', ({ t, user }) => { P.assertAdmin(user); return db.all('SELECT * FROM connectors WHERE tenant_id=? ORDER BY name', t).map((c) => conRow(t, c)); });
+add('POST', '/api/connectors', ({ t, user, body }) => {
+  P.assertAdmin(user);
+  const cfg = C.validateConfig(settingsOf(body));
+  const c = C.createConnector(t, { type: 'hrms', name: String(body.name || 'HRMS').slice(0, 120), config: cfg, capabilities: ['workers', 'scheduled_import', 'incremental_sync', 'webhooks'] });
+  P.audit(t, 'CONNECTOR_ADDED', c.name, `HRMS connector added for ${cfg.base_url}.`, user);
+  return { id: c.id };
+});
+// Tests settings before saving them. Nothing is stored.
+add('POST', '/api/connectors/test', async ({ user, body }) => { P.assertAdmin(user); return C.testConnection(C.validateConfig(settingsOf(body))); });
+add('POST', '/api/connectors/webhook-secret', ({ t, user }) => {
+  P.assertAdmin(user);
+  const secret = crypto.randomBytes(32).toString('hex');
+  db.update('tenants', t, { webhook_secret: secret });
+  P.audit(t, 'WEBHOOK_SECRET_ROTATED', 'HRMS webhooks', 'A new webhook signing secret was created. The old one stopped working.', user);
+  return { secret, webhook_url: webhookUrl(t), signature: 'HMAC-SHA256 of the raw body, sent as "sha256=<hex>" in the X-Aegis-Signature header' };
+});
+add('POST', '/api/connectors/:id', ({ t, user, p, body }) => {
+  P.assertAdmin(user);
+  const c = getCon(t, p.id), cfg = C.validateConfig(settingsOf(body), C.configOf(c));
+  C.saveConfig(c, cfg);
+  db.update('connectors', c.id, { name: body.name ? String(body.name).slice(0, 120) : c.name, last_error: null, ...(c.status === 'error' ? { status: 'connected' } : {}) });
+  P.audit(t, 'CONNECTOR_UPDATED', c.name, `Settings changed: ${Object.keys(settingsOf(body)).map((k) => (/key|password/.test(k) ? `${k} (hidden)` : k)).join(', ') || 'name'}.`, user);
+  return conRow(t, getCon(t, c.id));
+});
+add('POST', '/api/connectors/:id/test', async ({ t, user, p, body }) => {
+  P.assertAdmin(user);
+  const saved = C.configOf(getCon(t, p.id));
+  return C.testConnection(C.validateConfig(settingsOf(body), saved));
+});
+add('POST', '/api/connectors/:id/enable', ({ t, user, p }) => { P.assertAdmin(user); const c = getCon(t, p.id); db.update('connectors', c.id, { status: 'connected', last_error: null }); P.audit(t, 'CONNECTOR_ENABLED', c.name, 'Connector turned on.', user); return { ok: true }; });
+add('POST', '/api/connectors/:id/disable', ({ t, user, p }) => { P.assertAdmin(user); const c = getCon(t, p.id); db.update('connectors', c.id, { status: 'disabled' }); P.audit(t, 'CONNECTOR_DISABLED', c.name, 'Connector turned off. Scheduled syncs and webhooks stop.', user); return { ok: true }; });
+// Forgets the saved position, so the next sync reads every worker again. Safe: records are matched, not duplicated.
+add('POST', '/api/connectors/:id/full-resync', async ({ t, user, p }) => { P.assertAdmin(user); const c = getCon(t, p.id); db.update('connectors', c.id, { cursor: null, last_sync_at: null }); P.audit(t, 'CONNECTOR_RESET', c.name, 'Full resync requested.', user); const r = await C.syncConnector(t, c.id, user); P.drain(); return r; });
 add('POST', '/api/connectors/:id/sync', async ({ t, user, p }) => { edit(user); const r = await C.syncConnector(t, p.id, user); P.drain(); return r; });
 add('POST', '/api/import/preview', ({ t, user, body }) => { edit(user); return C.previewImport(t, user, file(body)); });
 add('POST', '/api/import/:id/commit', ({ t, user, p }) => { edit(user); const r = C.commitImport(t, user, p.id); return r; });
-add('GET', '/api/health', ({ t }) => V.health(t));
+add('GET', '/api/health', ({ t, user }) => { P.assertAdmin(user); return V.health(t); });
 add('GET', '/api/messages', ({ t, user }) => { P.assertAdmin(user); return db.all('SELECT * FROM messages WHERE tenant_id=? ORDER BY created_at DESC LIMIT 100', t); });
 
 // ---- reporting
@@ -153,7 +229,19 @@ add('POST', '/api/chat', async ({ t, user, body }) => { if (!body.text) throw ne
 add('GET', '/api/users', ({ t, user }) => { P.assertAdmin(user); return db.all('SELECT id,name,email,role,slack_id FROM users WHERE tenant_id=? ORDER BY name', t); });
 add('POST', '/api/users', ({ t, user, body }) => { P.assertAdmin(user); if (!P.ROLE_PACKS[body.role]) throw new HttpError(400, 'Invalid role.'); if (!body.email || String(body.password || '').length < 8) throw new HttpError(400, 'Email and an 8+ character password are required.'); const uid = id('usr'); try { db.insert('users', { id: uid, tenant_id: t, email: body.email, name: body.name || body.email, role: body.role, password_hash: hashPassword(body.password), slack_id: body.slack_id || null, created_at: clock.iso() }); } catch { throw new HttpError(409, 'That email is already in use.'); } P.audit(t, 'USER_ADDED', body.email, `Added with role ${body.role}.`, user); return { id: uid }; });
 add('GET', '/api/owners', ({ t }) => db.all('SELECT id,name,role FROM users WHERE tenant_id=? ORDER BY name', t));
-add('POST', '/api/digest/send', ({ t, user }) => { P.assertAdmin(user); const tn = db.get('SELECT * FROM tenants WHERE id=?', t), body = V.digestText(t); channels.post(tn, j(tn.channel_json, {}).channel || '#compliance-alerts', 'Compliance digest', body); P.audit(t, 'DIGEST_SENT', 'Digest', 'Digest posted to the reporting channel.', user); return { body }; });
+add('POST', '/api/digest/send', async ({ t, user }) => {
+  P.assertAdmin(user);
+  const tn = db.get('SELECT * FROM tenants WHERE id=?', t), body = V.digestText(t);
+  let via;
+  try { via = await channels.post(tn, j(tn.channel_json, {}).channel || '#compliance-alerts', 'Compliance digest', body); }
+  catch (e) {
+    P.audit(t, 'DIGEST_FAILED', 'Digest', 'Digest delivery failed.', user);
+    throw new HttpError(502, e.message);
+  }
+  if (via === 'slack') P.audit(t, 'DIGEST_SENT', 'Digest', 'Digest posted to Slack.', user);
+  else P.audit(t, 'DIGEST_OUTBOX', 'Digest', 'Digest saved to the Aegis outbox.', user);
+  return { body, via };
+});
 
 // ---- AI engine: keys are write-only and stored encrypted
 add('GET', '/api/ai', ({ t, user }) => { P.assertAdmin(user); return llm.status(t); });
@@ -172,8 +260,42 @@ add('POST', '/api/ai', async ({ t, user, body }) => {
 add('POST', '/api/ai/test', async ({ t, user }) => { P.assertAdmin(user); const s = llm.status(t); if (!s.configured) throw new HttpError(400, 'No AI key is set.'); const r = await llm.callTool(t, 'Connection test. Call the tool with ok set to true.', [{ type: 'text', text: 'Connection test.' }], 'record_ping', { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] }); if (!r) throw new HttpError(502, llm.lastError(t)?.message || 'The AI provider did not return a result.'); return { ok: true, provider: s.provider_label }; });
 add('POST', '/api/ai/remove', ({ t, user }) => { P.assertAdmin(user); llm.remove(t); P.audit(t, 'AI_CONFIGURED', 'AI engine', 'AI key removed.', user); return llm.status(t); });
 
+// ---- Integrations page: chat connections. Keys are write-only, tested before saving and stored encrypted.
+const alertsChannel = (t) => j(db.get('SELECT channel_json FROM tenants WHERE id=?', t).channel_json, {});
+const TEAMS = { available: false, needs: ['App ID', 'Client secret', 'Tenant ID'], note: 'Teams is being built. Your Microsoft 365 administrator registers the Aegis bot in the Teams Developer Portal and gives you these three values.' };
+const integrations = (t) => { const ch = alertsChannel(t); return { slack: Slack.status(t, ch.type === 'slack' ? ch.channel : null), teams: TEAMS, events_url: `${(process.env.AEGIS_BASE_URL || '').replace(/\/+$/, '')}/api/webhooks/slack/${db.get('SELECT slug FROM tenants WHERE id=?', t).slug}` }; };
+add('GET', '/api/integrations', ({ t, user }) => { P.assertAdmin(user); return integrations(t); });
+add('POST', '/api/integrations/slack', async ({ t, user, body }) => {
+  P.assertAdmin(user);
+  const channel = String(body.channel || '#compliance-alerts').trim();
+  if (!/^#?[a-z0-9][a-z0-9._-]{0,79}$/.test(channel) && !/^[CG][A-Z0-9]{6,}$/.test(channel)) throw new HttpError(400, 'Enter a Slack channel name like #compliance-alerts.');
+  let r;
+  try { r = await Slack.save(t, user, body); } catch (e) { throw new HttpError(422, e.message); }
+  db.update('tenants', t, { channel_json: JSON.stringify({ type: 'slack', channel: channel.startsWith('#') || /^[CG][A-Z0-9]{6,}$/.test(channel) ? channel : `#${channel}` }) });
+  setS(t, { channel_confirmed: true });
+  Slack.startSocket(t);
+  P.audit(t, r.replaced ? 'SLACK_UPDATED' : 'SLACK_CONNECTED', 'Slack', `Slack workspace ${r.team} ${r.replaced ? 'keys updated' : 'connected'}. Alerts go to ${alertsChannel(t).channel}.${r.app_token ? ' Chat uses Socket Mode.' : ''}`, user);
+  return integrations(t);
+});
+add('POST', '/api/integrations/slack/test', async ({ t, user }) => {
+  P.assertAdmin(user);
+  const ch = alertsChannel(t);
+  let r;
+  try { r = await Slack.test(t, ch.type === 'slack' ? ch.channel : null); } catch (e) { throw new HttpError(422, e.message); }
+  P.audit(t, 'SLACK_TEST', 'Slack', r.ok ? `Test message posted to ${r.channel}.` : `Test failed: ${r.error}`, user);
+  return r;
+});
+add('POST', '/api/integrations/slack/remove', ({ t, user }) => {
+  P.assertAdmin(user);
+  if (Slack.config(t)?.source !== 'settings') throw new HttpError(409, 'These Slack keys are set on the server (.env), so they can only be removed there.');
+  Slack.remove(t);
+  db.update('tenants', t, { channel_json: JSON.stringify({ type: 'outbox', channel: alertsChannel(t).channel || '#compliance-alerts' }) });
+  P.audit(t, 'SLACK_REMOVED', 'Slack', 'Slack disconnected. Messages stay in the Aegis outbox until a chat tool is connected.', user);
+  return integrations(t);
+});
+
 // ---- demo controls
 add('POST', '/api/demo/hrms-event', async ({ t, user, body }) => { P.assertAdmin(user); if (!demo()) throw new HttpError(404, 'Not found.'); const tn = db.get('SELECT * FROM tenants WHERE id=?', t); if (tn.slug !== 'bluebix') throw new HttpError(400, 'The mock HRMS is connected to Bluebix only.'); const r = await mock.emit(tn.slug, tn.webhook_secret, body.kind); await P.drain(); return { type: r.type, worker: r.worker, status: r.status }; });
 add('POST', '/api/demo/advance', async ({ t, user, body }) => { P.assertAdmin(user); if (!demo()) throw new HttpError(404, 'Not found.'); clock.advanceDays(Math.min(+body.days || 1, 60)); E.runReminders(t); E.evaluateTenant(t, 'scheduled_check'); await P.drain(); E.runReminders(t); await P.drain(); return { today: clock.today() }; });
-add('POST', '/api/demo/reset', async ({ user }) => { P.assertAdmin(user); if (!demo()) throw new HttpError(404, 'Not found.'); clock.reset(); db.resetAll(); R.loadPacks(); await require('./seed').seed(); return { ok: true }; });
+add('POST', '/api/demo/reset', async ({ user }) => { P.assertAdmin(user); if (!sandbox.isActive()) throw new HttpError(404, 'Not found.'); clock.reset(); db.resetAll(); R.loadPacks(); await require('./seed').seed(); return { ok: true }; });
 module.exports = { routes };

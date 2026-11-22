@@ -1,20 +1,47 @@
 'use strict';
+// Runs PostgreSQL queries in a worker thread so db.js can stay synchronous.
+// The main thread writes a request into the shared buffer and waits; this
+// worker runs it and writes the answer back. Every path must answer, or the
+// main thread waits until its timeout.
 const { parentPort, workerData } = require('node:worker_threads');
 const { Client } = require('pg');
 
-const { sab, connectionString } = workerData;
+const { sab, connectionString, statementTimeoutMs } = workerData;
 const int32 = new Int32Array(sab, 0, 4); // [state, length, status, reserved]
 const uint8 = new Uint8Array(sab, 16);
 
-let client;
+let client = null, inTx = false, txBroken = false;
+
+async function connect() {
+  const c = new Client({ connectionString, statement_timeout: statementTimeoutMs, connectionTimeoutMillis: 10000 });
+  // Without this handler a dropped connection (for example a database restart) crashes the worker.
+  c.on('error', (err) => {
+    console.error('[db] PostgreSQL connection lost:', err.message);
+    if (client === c) { client = null; if (inTx) txBroken = true; }
+  });
+  await c.connect();
+  client = c;
+}
+
+function answer(status, obj) {
+  let encoded = Buffer.from(JSON.stringify(obj), 'utf8');
+  if (encoded.length > uint8.length) {
+    status = 1;
+    encoded = Buffer.from(JSON.stringify({ error: `Query result is too large (${encoded.length} bytes). Add a LIMIT or page through the rows.` }), 'utf8');
+  }
+  int32[1] = encoded.length;
+  int32[2] = status;
+  uint8.set(encoded);
+  Atomics.store(int32, 0, 2); // state 2 = response ready
+  Atomics.notify(int32, 0, 1);
+}
 
 async function init() {
   try {
-    client = new Client({ connectionString });
-    await client.connect();
+    await connect();
     int32[2] = 0; // ready
   } catch (err) {
-    console.error('PostgreSQL worker connection error:', err.message);
+    console.error('[db] PostgreSQL worker connection error:', err.message);
     int32[2] = 1; // error
   }
   Atomics.store(int32, 0, 1);
@@ -26,46 +53,36 @@ parentPort.on('message', async (cmd) => {
     if (client) await client.end().catch(() => {});
     process.exit(0);
   }
-
-  const len = int32[1];
-  const reqBuf = Buffer.from(uint8.buffer, 16, len);
-  const { type, sql, params } = JSON.parse(reqBuf.toString('utf8'));
-
   try {
-    let result;
+    const { type, sql, params } = JSON.parse(Buffer.from(uint8.buffer, 16, int32[1]).toString('utf8'));
+    const word = /^\s*(BEGIN|COMMIT|ROLLBACK)\b/i.exec(sql)?.[1]?.toUpperCase();
+    // If the connection dropped inside a transaction, the database already rolled that work back.
+    // Refuse everything until db.tx sends ROLLBACK, so later statements are not saved as half a change.
+    if (txBroken) {
+      if (word === 'ROLLBACK') { txBroken = false; inTx = false; return answer(0, { data: { ok: true } }); }
+      throw new Error('The database connection was lost during a transaction, so the change was not saved.');
+    }
+    // Reconnect if the connection dropped since the last query.
+    if (!client) await connect();
+    if (word === 'BEGIN') inTx = true;
+    else if (word === 'COMMIT' || word === 'ROLLBACK') inTx = false;
     if (type === 'exec') {
       await client.query(sql);
-      result = { ok: true };
-    } else {
-      const res = await client.query(sql, params);
-      // Ensure numeric counts like count(*) are returned consistently
-      const rows = res.rows.map((row) => {
-        const out = { ...row };
-        for (const [k, v] of Object.entries(out)) {
-          // If count(*) or sum, pg returns string for bigints
-          if ((k === 'n' || k === 's' || k === 'm') && typeof v === 'string' && /^-?\d+$/.test(v)) {
-            out[k] = Number(v);
-          }
-        }
-        return out;
-      });
-      result = { rows, rowCount: res.rowCount };
+      return answer(0, { data: { ok: true } });
     }
-
-    const encoded = Buffer.from(JSON.stringify({ data: result }), 'utf8');
-    int32[1] = encoded.length;
-    int32[2] = 0; // success
-    uint8.set(encoded);
+    const res = await client.query(sql, params);
+    // pg returns bigint counts and sums as strings; the app expects numbers for these aliases.
+    const rows = res.rows.map((row) => {
+      const out = { ...row };
+      for (const [k, v] of Object.entries(out)) {
+        if ((k === 'n' || k === 's' || k === 'm') && typeof v === 'string' && /^-?\d+$/.test(v)) out[k] = Number(v);
+      }
+      return out;
+    });
+    answer(0, { data: { rows, rowCount: res.rowCount } });
   } catch (err) {
-    const encoded = Buffer.from(JSON.stringify({ error: err.message }), 'utf8');
-    int32[1] = encoded.length;
-    int32[2] = 1; // error
-    uint8.set(encoded);
+    answer(1, { error: err.message });
   }
-
-  Atomics.store(int32, 0, 2); // state 2 = response ready
-  Atomics.notify(int32, 0, 1);
 });
 
 init();
-

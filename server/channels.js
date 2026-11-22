@@ -1,6 +1,6 @@
 'use strict';
 // Channels: Slack, Email (SMTP / Resend), and In-App Outbox.
-const db = require('./lib/db'), { clock, id, j, sha256 } = require('./lib/util');
+const db = require('./lib/db'), { clock, id, j, sha256 } = require('./lib/util'), slack = require('./slack');
 const hooks = { failNext: 0 };
 
 let nodemailer = null;
@@ -83,18 +83,14 @@ async function deliver(tenant, action) {
   if (hooks.failNext > 0) { hooks.failNext--; throw new Error('Simulated channel failure'); }
   const ch = j(tenant.channel_json, { type: 'outbox' });
   let channel = 'outbox', ref = null;
-  const token = process.env.SLACK_BOT_TOKEN;
 
-  // Try Slack
-  if (ch.type === 'slack' && token && action.recipient_slack) {
-    const res = await fetch('https://slack.com/api/chat.postMessage', {
-      method: 'POST',
-      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json; charset=utf-8' },
-      body: JSON.stringify({ channel: action.recipient_slack, text: action.body })
-    });
-    const out = await res.json();
-    if (!out.ok) throw new Error(`Slack error: ${out.error}`);
-    channel = 'slack'; ref = out.ts;
+  // Try Slack: by the person's saved Slack ID, or else by their work email.
+  const slackOn = ch.type === 'slack' && slack.configured(tenant.id);
+  // A failed lookup (for example a missing Slack permission) falls back to email instead of blocking the message.
+  const slackId = slackOn ? action.recipient_slack || await slack.findUserByEmail(tenant.id, action.recipient_email).catch((e) => { console.error('[slack] email lookup failed:', e.message); return null; }) : null;
+  if (slackId) {
+    ref = await slack.postMessage(tenant.id, slackId, action.body);
+    channel = 'slack';
   }
   // Try Email (if recipient has an email address)
   else if (action.recipient_email || (action.recipient && action.recipient.includes('@'))) {
@@ -123,24 +119,28 @@ async function deliver(tenant, action) {
   return channel;
 }
 
-function post(tenant, recipient, subject, body) {
+// Posts to the company's reporting channel (digests and alerts). With Slack connected it goes to
+// the Slack channel; otherwise it stays in the outbox. A Slack failure throws, so it is not hidden.
+async function post(tenant, recipient, subject, body) {
+  const ch = j(tenant.channel_json, { type: 'outbox' });
+  let channel = 'outbox', ref = null;
+  if (ch.type === 'slack' && slack.configured(tenant.id)) {
+    ref = await slack.postMessage(tenant.id, recipient, `**${subject}**\n${body}`);
+    channel = 'slack';
+  }
   db.insert('messages', {
     id: id('msg'),
     tenant_id: tenant.id,
     action_id: null,
-    channel: 'outbox',
+    channel,
     recipient,
     subject,
     body,
-    status: 'outbox',
+    status: channel === 'outbox' ? 'outbox' : 'sent',
+    provider_ref: ref,
     created_at: clock.iso()
   });
+  return channel;
 }
 
-function verifySlack(secret, ts, raw, sig) {
-  if (!secret || !ts || !sig || Math.abs(Date.now() / 1000 - +ts) > 300) return false;
-  const c = require('crypto'), h = 'v0=' + c.createHmac('sha256', secret).update(`v0:${ts}:${raw}`).digest('hex');
-  return h.length === sig.length && c.timingSafeEqual(Buffer.from(h), Buffer.from(sig));
-}
-
-module.exports = { deliver, post, verifySlack, hooks, sha256 };
+module.exports = { deliver, post, verifySlack: slack.verify, hooks, sha256 };

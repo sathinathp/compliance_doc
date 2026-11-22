@@ -1,13 +1,12 @@
 'use strict';
 // Evidence intake: store privately, extract, match, then accept or send to review.
 // "Document uploaded" never means "requirement satisfied": the evaluator decides that.
-const fs = require('fs'), path = require('path'), zlib = require('zlib');
-const db = require('./lib/db'), { clock, id, sha256, encrypt, decrypt, normDate, j } = require('./lib/util');
+const zlib = require('zlib');
+const db = require('./lib/db'), storage = require('./lib/storage'), { clock, id, sha256, normDate, j } = require('./lib/util');
 const P = require('./platform'), R = require('./registry'), { latestDuePeriod } = require('./evaluator'), llm = require('./llm');
 const { HttpError, SYSTEM } = P;
 const DOC_KEYWORDS = [['professional_license', /(registered nurse|nursing|medical|physical therapy|professional)\s+licen[sc]e|licen[sc]e (type|class)/i], ['acls_card', /\bACLS\b|advanced cardiovascular/i], ['bls_card', /\bBLS\b|basic life support/i], ['tb_screening', /\bTB\b|tuberculosis|quantiferon/i], ['flu_vaccine', /influenza|flu (vaccine|shot)/i], ['facility_orientation', /facility orientation/i], ['handbook_ack', /handbook|policy acknowledg/i], ['security_training', /security (awareness )?training/i], ['i9_record', /\bI-9\b|employment eligibility/i], ['work_authorization', /employment authorization|\bEAD\b/i], ['w4', /\bW-?4\b|withholding certificate/i], ['payroll_filing_receipt', /form 941|payroll filing|filing receipt|acknowledg(e)?ment of filing/i]];
 const INJECTION = [/ignore (all |any |the )?(previous|prior|above) (instructions|prompts)/i, /(system|assistant)\s*:/i, /(mark|set|treat)\s+(this|the|all)?\s*(document|case|check|control|evidence)?\s*(as)?\s*(approved|passed|verified|compliant|closed)/i, /you are (now )?(an?|the) /i, /do not (flag|review|escalate)/i];
-const DIR = () => path.join(process.env.AEGIS_DATA, 'documents');
 
 function pdfText(buf) {
   let s = buf.toString('latin1');
@@ -89,10 +88,10 @@ async function intake(t, { subject_type, subject_id, control_key, filename, mime
     if (!ctrl.evidence.auto_accept) reasons.push('This control requires owner review.');
   }
   const status = reasons.length ? 'needs_review' : 'accepted';
-  const fid = id('ev'), dir = path.join(DIR(), t);
-  fs.mkdirSync(dir, { recursive: true });
-  const stored = path.join(dir, `${fid}.bin`);
-  fs.writeFileSync(stored, encrypt(data));
+  const fid = id('ev');
+  let stored;
+  try { stored = await storage.put(t, fid, data); }
+  catch (e) { console.error('[storage]', e.message); throw new HttpError(503, 'The document could not be stored. Please try again in a few minutes.'); }
   const confs = Object.values(conf);
   db.insert('evidence', { id: fid, tenant_id: t, subject_type, subject_id, doc_type: f.doc_type || 'unknown', status, source, filename, mime, size: data.length, sha256: hash, stored_path: stored, doc_number: f.doc_number, holder_name: f.holder_name, state: f.state, entity_name: f.entity_name, period: f.period, issued_on: f.issued_on, expires_on: f.expires_on, fields_json: JSON.stringify(conf), confidence: confs.length ? Math.min(...confs) : 0, review_reasons_json: JSON.stringify(reasons), flags_json: JSON.stringify(x.flags), case_id: case_id || null, control_key: ctrl?.key || null, restricted: ctrl?.restricted ? 1 : 0, created_at: clock.iso() });
   P.audit(t, status === 'accepted' ? 'EVIDENCE_MATCHED' : 'EVIDENCE_REVIEW', subject.name, `${filename}: ${status === 'accepted' ? `matched to ${ctrl.name}.` : `sent to review. ${reasons.join(' ')}`}`, actor, { case_id, detail: { sha256: hash } });
@@ -118,7 +117,7 @@ function review(t, user, ev, { decision, fields = {}, reason }) {
   } else throw new HttpError(400, 'Invalid decision.');
   P.enqueue(t, 'evaluate_subject', { type: ev.subject_type, id: ev.subject_id, trigger: 'evidence_reviewed' }, { dedupe: `eval:${ev.subject_type}:${ev.subject_id}` });
 }
-const readFile = (ev) => decrypt(fs.readFileSync(ev.stored_path));
+const readFile = (ev) => storage.get(ev.stored_path);
 function seedAccepted(t, type, sid, f) {
   db.insert('evidence', { id: id('ev'), tenant_id: t, subject_type: type, subject_id: sid, status: 'accepted', source: 'demo_seed', filename: `${f.doc_type}.txt`, mime: 'text/plain', size: 0, sha256: sha256(id('x')), stored_path: '', confidence: 1, fields_json: '{}', created_at: clock.iso(), reviewed_by: 'Demo seed', reviewed_at: clock.iso(), ...f });
 }

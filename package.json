@@ -8,7 +8,9 @@
   },
   "scripts": {
     "start": "node --no-warnings server/index.js",
-    "test": "node --no-warnings --test test/workflow.test.js test/ai.test.js"
+    "sandbox": "node --no-warnings server/index.js --sandbox",
+    "provision:bluebix": "node --no-warnings server/index.js --provision-bluebix",
+    "test": "node --no-warnings --test test/workflow.test.js test/ai.test.js test/production.test.js test/slack.test.js test/pilot.test.js"
   },
   "dependencies": {
     "nodemailer": "^10.4.0",

@@ -32,6 +32,48 @@ test('pack validation suites pass and missing evidence never passes', async () =
   for (const p of packs) for (const v of p.validation) assert.ok(v.ok, `${p.key}: ${v.name}`);
 });
 
+test('the upgraded workspace and secure upload serve their styles and client scripts', async () => {
+  const workspace = await (await fetch(`${base}/`)).text();
+  assert.match(workspace, /workspace-rail/);
+  assert.match(workspace, /overview\.css/);
+  // The link shell loads first. The public API verifies the token separately.
+  const uploadPage = await (await fetch(`${base}/submit/example`)).text();
+  assert.match(uploadPage, /id="upload-form"/);
+  for (const asset of ['styles.css', 'surfaces.css', 'inter.woff2', 'submit.js']) {
+    const response = await fetch(`${base}/worker-assets/${asset}`);
+    assert.equal(response.status, 200);
+    assert.doesNotMatch(response.headers.get('content-type'), /^text\/html/);
+    await response.arrayBuffer();
+  }
+  assert.equal((await fetch(`${base}/api/submit/example`)).status, 410);
+});
+
+test('scoped bulk follow-ups queue only eligible selected cases', async () => {
+  const cases = (await health.get('/api/cases')).data;
+  const chosen = cases.find((c) => c.subject_name.startsWith('Sarah Jenkins') && c.control_key === 'CTRL-HC-LICENSE');
+  const outsidePack = cases.find((c) => c.pack_key === 'onboarding');
+  assert.equal(chosen.can_act, true);
+  assert.equal(outsidePack.can_act, false);
+  assert.ok(cases.some((c) => c.can_act && c.id !== chosen.id));
+  const viewer = await login('viewer@bluebix.demo');
+  assert.equal((await viewer.post('/api/cases/chase-all', { case_ids: [chosen.id] })).status, 403);
+  assert.equal((await admin.post('/api/cases/chase-all', { case_ids: 'invalid' })).status, 400);
+  assert.deepEqual((await health.post('/api/cases/chase-all', { case_ids: [] })).data, { sent: 0, skipped: 0 });
+  const before = new Set(db.all("SELECT id FROM actions WHERE type='follow_up'").map((a) => a.id));
+  const result = await health.post('/api/cases/chase-all', { case_ids: [chosen.id, chosen.id, outsidePack.id] });
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.data, { sent: 1, skipped: 1 });
+  const created = db.all("SELECT id,case_id FROM actions WHERE type='follow_up'").filter((a) => !before.has(a.id));
+  assert.deepEqual(created.map((a) => a.case_id), [chosen.id]);
+});
+
+test('connection health and audit activity are visible to administrators only', async () => {
+  assert.equal((await hr.get('/api/health')).status, 403);
+  assert.deepEqual((await hr.get('/api/overview')).data.feed, []);
+  assert.ok((await admin.get('/api/overview')).data.feed.length);
+  assert.equal((await admin.post('/api/demo/reset')).status, 404);
+});
+
 let hire, blsCase;
 test('MILESTONE: HRMS event to request, accepted submission, verified closure, matching dashboard and chat', async () => {
   const before = (await admin.get('/api/overview')).data.coverage.total;

@@ -89,6 +89,27 @@ function toPgSql(sql) {
   return s.replace(/\?/g, () => `$${++i}`);
 }
 
+// Postgres cancels a statement after this long; the main thread waits a little longer before
+// giving up on the worker, so a stuck worker can never freeze the server.
+const STATEMENT_TIMEOUT_MS = +(process.env.AEGIS_DB_STATEMENT_TIMEOUT_MS || 30000);
+const WAIT_TIMEOUT_MS = STATEMENT_TIMEOUT_MS + 15000;
+const BUFFER_BYTES = 64 * 1024 * 1024;
+let pgUrlInUse = null;
+
+// Starts the query worker and waits for it to connect. Returns true when connected.
+function startPgWorker(url) {
+  const sab = new SharedArrayBuffer(BUFFER_BYTES);
+  pgInt32 = new Int32Array(sab, 0, 4);
+  pgUint8 = new Uint8Array(sab, 16);
+  pgWorker = new Worker(path.join(__dirname, 'pg-worker.js'), { workerData: { sab, connectionString: url, statementTimeoutMs: STATEMENT_TIMEOUT_MS } });
+  // Time limit, so a crashed worker (for example, the pg package is not installed) cannot freeze startup.
+  if (Atomics.wait(pgInt32, 0, 0, 15000) === 'timed-out') { pgWorker.terminate(); throw new Error('no answer from the database worker. Run "npm install" and check that PostgreSQL is running.'); }
+  if (pgInt32[2] !== 0) { pgWorker.terminate(); return false; }
+  Atomics.store(pgInt32, 0, 0);
+  pgUrlInUse = url;
+  return true;
+}
+
 function pgExecSync(type, sql, params = []) {
   const payload = JSON.stringify({ type, sql, params });
   const encoded = Buffer.from(payload, 'utf8');
@@ -100,7 +121,15 @@ function pgExecSync(type, sql, params = []) {
   Atomics.store(pgInt32, 0, 1);
   pgWorker.postMessage('run');
 
-  Atomics.wait(pgInt32, 0, 1);
+  if (Atomics.wait(pgInt32, 0, 1, WAIT_TIMEOUT_MS) === 'timed-out') {
+    // The worker is stuck. Replace it so the next query works, and fail this one loudly.
+    console.error(`[db] PostgreSQL did not answer within ${WAIT_TIMEOUT_MS / 1000}s. Restarting the database worker.`);
+    pgWorker.terminate();
+    let ok = false;
+    try { ok = startPgWorker(pgUrlInUse); } catch (e) { console.error('[db]', e.message); }
+    if (!ok) console.error('[db] Could not reconnect to PostgreSQL. Every query will fail until it is back.');
+    throw new Error('The database did not answer in time.');
+  }
   const len = pgInt32[1];
   const status = pgInt32[2];
   const resBuf = Buffer.from(pgUint8.buffer, 16, len);
@@ -119,26 +148,20 @@ function pgConnectionString() {
     const auth = encodeURIComponent(PGUSER) + (PGPASSWORD ? ':' + encodeURIComponent(PGPASSWORD) : '');
     return `postgresql://${auth}@${PGHOST || 'localhost'}:${PGPORT || 5432}/${encodeURIComponent(PGDATABASE)}`;
   }
-  return process.env.DATABASE_URL || 'postgresql://AI_compliance:Work%40123@localhost:5432/ai_compliance';
+  return process.env.DATABASE_URL || null;
 }
 
 function open(file) {
   const isTest = process.env.NODE_ENV === 'test' || /aegis-(ai-)?[a-zA-Z0-9]+/.test(process.env.AEGIS_DATA || '');
+  const isProd = process.env.NODE_ENV === 'production';
   // Tests use SQLite unless AEGIS_TEST_DATABASE_URL points them at a Postgres database.
   const pgUrl = isTest ? (process.env.AEGIS_TEST_DATABASE_URL || null) : pgConnectionString();
+  // Production must run on PostgreSQL. Falling back to a local SQLite file there would
+  // silently split the data, so stop and say what is wrong instead.
+  if (isProd && !pgUrl) throw new Error('[db] NODE_ENV=production needs PostgreSQL. Set PGHOST, PGUSER, PGPASSWORD and PGDATABASE (or DATABASE_URL).');
   if (pgUrl) {
     try {
-      const sab = new SharedArrayBuffer(8 * 1024 * 1024); // 8MB
-      pgInt32 = new Int32Array(sab, 0, 4);
-      pgUint8 = new Uint8Array(sab, 16);
-
-      pgWorker = new Worker(path.join(__dirname, 'pg-worker.js'), {
-        workerData: { sab, connectionString: pgUrl }
-      });
-
-      // Time limit, so a crashed worker (for example, the pg package is not installed) cannot freeze startup.
-      if (Atomics.wait(pgInt32, 0, 0, 15000) === 'timed-out') throw new Error('no answer from the database worker. Run "npm install" and check that PostgreSQL is running.');
-      if (pgInt32[2] === 0) {
+      if (startPgWorker(pgUrl)) {
         mode = 'pg';
         console.log(`[db] Connected to PostgreSQL at ${pgUrl.replace(/:[^:]*@/, ':****@')}`);
         // Every schema statement is safe to re-run, so it runs on each start. That way new tables
@@ -148,11 +171,15 @@ function open(file) {
         if (fresh) console.log('[db] Created the Aegis tables in PostgreSQL.');
         return;
       }
-      pgWorker.terminate();
+      if (isProd) throw new Error('could not connect. Check the PG* settings and that PostgreSQL is running.');
+      console.warn('[db] PostgreSQL connection failed, falling back to SQLite (development only).');
     } catch (err) {
       if (pgWorker) pgWorker.terminate();
-      console.warn('[db] PostgreSQL connection failed, falling back to SQLite:', err.message);
+      if (isProd) throw new Error(`[db] PostgreSQL ${err.message}`);
+      console.warn('[db] PostgreSQL connection failed, falling back to SQLite (development only):', err.message);
     }
+  } else if (!isTest) {
+    console.warn('[db] No PostgreSQL settings found, so using a local SQLite file. This is for development only.');
   }
 
   // Fallback to SQLite (used in tests or when Postgres is unavailable)
@@ -270,6 +297,9 @@ function close() {
   if (mode === 'pg' && pgWorker) {
     try { pgWorker.postMessage('close'); } catch {}
   }
+  if (mode === 'sqlite' && sqliteDb) {
+    try { sqliteDb.close(); } catch {}
+  }
 }
 
-module.exports = { open, all, get, run, exec, tx, insert, update, resetAll, close };
+module.exports = { open, all, get, run, exec, tx, insert, update, resetAll, close, mode: () => mode };
