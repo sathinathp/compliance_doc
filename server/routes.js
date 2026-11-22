@@ -220,8 +220,28 @@ add('GET', '/api/audit', ({ t, user }) => { P.assertAdmin(user); return db.all('
 add('GET', '/api/audit/verify', ({ t, user }) => { P.assertAdmin(user); return P.verifyAudit(t); });
 add('GET', '/api/audit/export', ({ t, user, res }) => { P.assertAdmin(user); res.writeHead(200, { 'content-type': 'application/json', 'content-disposition': 'attachment; filename="aegis-audit.json"' }); res.end(JSON.stringify({ verification: P.verifyAudit(t), entries: db.all('SELECT * FROM audit_log WHERE tenant_id=? ORDER BY seq', t) }, null, 1)); return res; });
 add('GET', '/api/reports/:pack', ({ t, user, p, res }) => { res.writeHead(200, { 'content-type': 'text/csv', 'content-disposition': `attachment; filename="aegis-${p.pack.replace(/\W/g, '')}.csv"` }); res.end(V.reportCsv(t, user, p.pack)); return res; });
-add('GET', '/api/dashboards', ({ t, user }) => V.dashboardsFor(t, user).map((d) => ({ ...d, definition: j(d.definition_json), roles: j(d.roles_json) })));
-add('POST', '/api/dashboards', ({ t, user, body }) => { edit(user); const did = id('dash'); db.insert('dashboards', { id: did, tenant_id: t, name: String(body.name || 'Dashboard').slice(0, 120), definition_json: JSON.stringify({ pack: body.pack || null, metric: body.metric || 'open_gaps', group_by: body.group_by || 'facility' }), roles_json: JSON.stringify(body.roles?.length ? body.roles : [user.role]), created_by: user.name, created_at: clock.iso() }); return { id: did }; });
+// Only known values are saved, so a view can never ask for something the data cannot answer.
+const dashDef = (b) => {
+  const metric = ['open_gaps', 'missing_evidence', 'expirations', 'coverage'].includes(b.metric) ? b.metric : 'open_gaps';
+  const group_by = ['facility', 'team', 'pack', 'status', 'control', 'window'].includes(b.group_by) && (b.group_by !== 'window' || metric === 'expirations') ? b.group_by : 'facility';
+  const pack = ['healthcare', 'onboarding', 'immigration', 'payroll'].includes(b.pack) ? b.pack : null;
+  return { pack, metric, group_by, ...(metric === 'expirations' && b.within_days ? { within_days: Math.min(Math.max(Number(b.within_days) || 90, 1), 365) } : {}) };
+};
+// Each dashboard comes with its headline numbers so the list can show them without opening it.
+add('GET', '/api/dashboards', ({ t, user }) => V.dashboardsFor(t, user).map((d) => {
+  const definition = j(d.definition_json), data = V.dashboardData(t, user, definition);
+  return { ...d, definition, roles: j(d.roles_json), summary: { total: data.total, split: data.split, groups: data.groups.map((g) => ({ name: g.name, count: g.count })) } };
+}));
+add('POST', '/api/dashboards', ({ t, user, body }) => { edit(user); const did = id('dash'); db.insert('dashboards', { id: did, tenant_id: t, name: String(body.name || 'Dashboard').slice(0, 120), definition_json: JSON.stringify(dashDef(body)), roles_json: JSON.stringify(body.roles?.length ? body.roles : [user.role]), created_by: user.name, created_at: clock.iso() }); P.audit(t, 'DASHBOARD_CREATED', String(body.name || 'Dashboard').slice(0, 120), 'Saved from the Dashboards page.', user); return { id: did }; });
+add('POST', '/api/dashboards/:id/delete', ({ t, user, p }) => {
+  edit(user);
+  const d = db.get('SELECT * FROM dashboards WHERE id=? AND tenant_id=?', p.id, t);
+  if (!d) throw new HttpError(404, 'Saved view not found. Built-in dashboards cannot be deleted.');
+  if (!P.isAdmin(user) && d.created_by !== user.name) throw new HttpError(403, 'Only the person who saved this view or an administrator can delete it.');
+  db.run('DELETE FROM dashboards WHERE id=? AND tenant_id=?', p.id, t);
+  P.audit(t, 'DASHBOARD_DELETED', d.name, 'Saved view deleted.', user);
+  return { ok: true };
+});
 add('GET', '/api/dashboards/:id', ({ t, user, p }) => { const d = V.dashboardsFor(t, user).find((x) => x.id === p.id); if (!d) throw new HttpError(403, 'You do not have access to this dashboard.'); const def = j(d.definition_json); return { ...d, definition: def, data: V.dashboardData(t, user, def) }; });
 add('GET', '/api/metrics', ({ t }) => V.metrics(t));
 add('POST', '/api/metrics/baseline', ({ t, user, body }) => { P.assertAdmin(user); db.run('INSERT INTO baselines(tenant_id,key,value,note,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(tenant_id,key) DO UPDATE SET value=excluded.value,note=excluded.note,updated_at=excluded.updated_at', t, String(body.key), +body.value, body.note || null, clock.iso()); return { ok: true }; });
@@ -235,7 +255,7 @@ add('POST', '/api/notices', ({ t, user, body }) => {
   E.requestDecision(t, user, 'notice_response', null, `Notice response: ${n.agency} ${n.notice_type}`, `Respond by ${n.response_due || 'date not given'}. ${n.summary}`, 'payroll', n.id);
   return n;
 });
-add('GET', '/api/chat', ({ t, user }) => db.all('SELECT * FROM chat_messages WHERE tenant_id=? AND user_id=? ORDER BY created_at, rowid LIMIT 200', t, user.id));
+add('GET', '/api/chat', ({ t, user }) => db.all('SELECT id,sender,author,text,created_at FROM (SELECT id,sender,author,text,created_at,rowid AS chat_order FROM chat_messages WHERE tenant_id=? AND user_id=? ORDER BY created_at DESC,rowid DESC LIMIT 200) recent ORDER BY created_at,chat_order', t, user.id));
 add('POST', '/api/chat', async ({ t, user, body }) => { if (!body.text) throw new HttpError(400, 'Message is required.'); const reply = await Chat.handle(t, user, String(body.text).slice(0, 1000)); await P.drain(); return { reply }; });
 add('GET', '/api/users', ({ t, user }) => { P.assertAdmin(user); return db.all('SELECT id,name,email,role,slack_id FROM users WHERE tenant_id=? ORDER BY name', t); });
 add('POST', '/api/users', ({ t, user, body }) => { P.assertAdmin(user); if (!P.ROLE_PACKS[body.role]) throw new HttpError(400, 'Invalid role.'); if (!body.email || String(body.password || '').length < 8) throw new HttpError(400, 'Email and an 8+ character password are required.'); const uid = id('usr'); try { db.insert('users', { id: uid, tenant_id: t, email: body.email, name: body.name || body.email, role: body.role, password_hash: hashPassword(body.password), slack_id: body.slack_id || null, created_at: clock.iso() }); } catch { throw new HttpError(409, 'That email is already in use.'); } P.audit(t, 'USER_ADDED', body.email, `Added with role ${body.role}.`, user); return { id: uid }; });

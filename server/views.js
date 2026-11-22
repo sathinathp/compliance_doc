@@ -3,7 +3,7 @@
 const db = require('./lib/db'), { clock, j, daysBetween, addDays, csvCell } = require('./lib/util');
 const P = require('./platform'), R = require('./registry'), E = require('./engine');
 const { canSeeRestricted } = P;
-const llm = require('./llm');
+const llm = require('./llm'), Ev = require('./evidence');
 const isoDay = 864e5;
 
 function controlMap(t) {
@@ -58,11 +58,15 @@ function caseDetail(t, user, cid) {
   if (c.restricted && !canSeeRestricted(user)) throw new P.HttpError(403, 'This case is restricted.');
   const ev = db.get('SELECT * FROM evaluations WHERE tenant_id=? AND subject_type=? AND subject_id=? AND control_key=? AND is_current=1', t, c.subject_type, c.subject_id, c.control_key);
   // can_act tells the screen whether to offer follow-up, verdict and decision buttons. The routes check again.
-  return { ...c, can_act: user.role !== 'viewer' && P.canPack(user, c.pack_key), evaluation: ev ? { ...ev, evidence_ids: j(ev.evidence_ids_json, []) } : null, timeline: db.all('SELECT ts,type,action,actor FROM audit_log WHERE tenant_id=? AND case_id=? ORDER BY seq', t, cid), actions: db.all('SELECT id,type,status,recipient,subject,sent_at,created_at,error FROM actions WHERE case_id=? AND tenant_id=? ORDER BY created_at', cid, t), notes: db.all('SELECT * FROM case_notes WHERE case_id=? AND tenant_id=? ORDER BY created_at', cid, t), evidence: db.all('SELECT id,filename,status,doc_type,expires_on,confidence,review_reasons_json,created_at FROM evidence WHERE tenant_id=? AND subject_type=? AND subject_id=? AND (control_key=? OR case_id=?) ORDER BY created_at DESC', t, c.subject_type, c.subject_id, c.control_key, cid).map((x) => ({ ...x, review_reasons: j(x.review_reasons_json, []) })) };
+  const related = db.all('SELECT id,filename,status,doc_type,expires_on,confidence,review_reasons_json,created_at,restricted FROM evidence WHERE tenant_id=? AND subject_type=? AND subject_id=? AND (control_key=? OR case_id=?) ORDER BY created_at DESC', t, c.subject_type, c.subject_id, c.control_key, cid);
+  const hidden = new Set(related.filter((x) => !Ev.canView(user, x)).map((x) => x.id));
+  const evidence = related.filter((x) => !hidden.has(x.id)).map((x) => ({ ...x, review_reasons: j(x.review_reasons_json, []) }));
+  const evidenceIds = ev ? j(ev.evidence_ids_json, []).filter((id) => !hidden.has(id)) : [];
+  return { ...c, can_act: user.role !== 'viewer' && P.canPack(user, c.pack_key), closure_evidence_id: hidden.has(c.closure_evidence_id) ? null : c.closure_evidence_id, evaluation: ev ? { ...ev, evidence_ids_json: JSON.stringify(evidenceIds), evidence_ids: evidenceIds } : null, timeline: db.all('SELECT ts,type,action,actor FROM audit_log WHERE tenant_id=? AND case_id=? ORDER BY seq', t, cid), actions: db.all('SELECT id,type,status,recipient,subject,sent_at,created_at,error FROM actions WHERE case_id=? AND tenant_id=? ORDER BY created_at', cid, t), notes: db.all('SELECT * FROM case_notes WHERE case_id=? AND tenant_id=? ORDER BY created_at', cid, t), evidence };
 }
 const ROLL = (rows) => !rows.length ? 'not_applicable' : rows.some((r) => r.status === 'fail') ? 'fail' : rows.some((r) => r.status === 'unknown') ? 'unknown' : rows.every((r) => r.status === 'not_applicable') ? 'not_applicable' : 'pass';
 function listWorkers(t, user) {
-  const all = allChecks(t), facs = {};
+  const all = checks(t, user), facs = {};
   for (const r of db.all(`SELECT a.worker_id, f.name, f.state FROM assignments a JOIN facilities f ON f.id=a.facility_id WHERE a.tenant_id=? AND a.status='active'`, t)) facs[r.worker_id] = r;
   return db.all('SELECT * FROM workers WHERE tenant_id=? ORDER BY name', t).map((w) => {
     const mine = all.filter((c) => c.subject_type === 'worker' && c.subject_id === w.id), packs = {};
@@ -81,14 +85,16 @@ function workerDetail(t, user, wid) {
 // Plain words for the worker window and for the approver. Open checks are named.
 function readinessStatement(w, blockers) {
   if (!w.checks.total) return 'No checks have been run yet.';
+  if (!blockers.length && w.packs.immigration === 'restricted') return 'Visible checks pass. An authorized owner can review the full record.';
   if (!blockers.length) return w.readiness === 'approved' ? 'All checks in activated packs pass. Approved for assignment by an owner.' : w.readiness === 'blocked' ? 'All checks in activated packs pass. An owner blocked the assignment; ask again for a new decision.' : 'All checks in activated packs pass. An authorized owner makes the readiness decision.';
   const n = blockers.length, open = `${n} check${n === 1 ? '' : 's'} unresolved (${blockers.map((b) => b.control_name).join(', ')})`;
   return w.readiness === 'approved' ? `Approved by an owner with ${open}.` : w.readiness === 'blocked' ? `Blocked by an owner. ${open[0].toUpperCase()}${open.slice(1)}.` : `Readiness pending: ${open}.`;
 }
 function listEvidence(t, user) {
   const names = {};
+  const controls = controlMap(t);
   for (const r of db.all('SELECT id,name FROM workers WHERE tenant_id=? UNION SELECT id,name FROM entities WHERE tenant_id=?', t, t)) names[r.id] = r.name;
-  return db.all('SELECT * FROM evidence WHERE tenant_id=? ORDER BY created_at DESC', t).filter((e) => !e.restricted || canSeeRestricted(user)).map((e) => ({ id: e.id, subject_name: names[e.subject_id], subject_type: e.subject_type, subject_id: e.subject_id, doc_type: e.doc_type, status: e.status, source: e.source, filename: e.filename, doc_number: e.doc_number, holder_name: e.holder_name, state: e.state, entity_name: e.entity_name, period: e.period, issued_on: e.issued_on, expires_on: e.expires_on, confidence: e.confidence, field_confidence: j(e.fields_json, {}), review_reasons: j(e.review_reasons_json, []), flags: j(e.flags_json, []), control_key: e.control_key, reviewed_by: e.reviewed_by, reject_reason: e.reject_reason, created_at: e.created_at, has_file: !!e.stored_path }));
+  return db.all('SELECT * FROM evidence WHERE tenant_id=? ORDER BY created_at DESC', t).filter((e) => Ev.canView(user, e)).map((e) => ({ id: e.id, subject_name: names[e.subject_id], subject_type: e.subject_type, subject_id: e.subject_id, doc_type: e.doc_type, status: e.status, source: e.source, filename: e.filename, doc_number: e.doc_number, holder_name: e.holder_name, state: e.state, entity_name: e.entity_name, period: e.period, issued_on: e.issued_on, expires_on: e.expires_on, confidence: e.confidence, field_confidence: j(e.fields_json, {}), review_reasons: j(e.review_reasons_json, []), flags: j(e.flags_json, []), control_key: e.control_key, reviewed_by: e.reviewed_by, reject_reason: e.reject_reason, created_at: e.created_at, has_file: !!e.stored_path, can_review: e.status === 'needs_review' && Ev.canReview(user, e, controls[e.control_key]) }));
 }
 function listApprovals(t, user, status = 'pending') {
   return db.all('SELECT * FROM approvals WHERE tenant_id=? AND status=? ORDER BY created_at DESC', t, status).filter((a) => (a.pack_key ? P.canPack(user, a.pack_key) : P.isAdmin(user)));
@@ -110,17 +116,55 @@ function metrics(t) {
   const manual = db.get('SELECT COALESCE(SUM(minutes),0) m FROM manual_support WHERE tenant_id=?', t).m;
   return { automated_messages: auto, minutes_per_chase: mins, baseline_hours_per_month: base('hours_per_month'), hours_saved: mins === null ? null : Math.round(auto * mins / 6) / 10, cases_closed: closed.length, verified_closures: verified.length, closures_with_evidence: verified.filter((c) => c.closure_evidence_id).length, median_closure_hours: hrs.length ? Math.round(hrs[Math.floor(hrs.length / 2)] * 10) / 10 : null, findings_reviewed: reviewed.length, false_findings: reviewed.filter((r) => r.v === 'false_finding').length, unknown_results: cov.unknown, duplicates_blocked: P.counter(t, 'duplicates_blocked'), duplicate_messages_sent: dupSent, onboarding_minutes: tn.first_assessment_at ? Math.round((new Date(tn.first_assessment_at) - new Date(tn.created_at)) / 6e4) : null, manual_support_minutes: manual, llm_calls: P.counter(t, 'llm_calls'), llm_tokens: P.counter(t, 'llm_input_tokens') + P.counter(t, 'llm_output_tokens') };
 }
+// Dashboards. Built-in ones are the same for every customer and cannot be deleted;
+// saved ones come from the form or from chat. Both read the same records as Checks and chat.
+const BUILT_IN = [
+  { id: 'builtin-readiness', name: 'Assignment readiness', description: 'Every worker by readiness decision. Open checks are counted, not hidden.', definition: { metric: 'readiness', group_by: 'readiness' } },
+  { id: 'builtin-expiring', name: 'Expiring in the next 90 days', description: 'Credentials that expired or expire within 90 days, soonest first.', definition: { metric: 'expirations', group_by: 'window', within_days: 90 } },
+  { id: 'builtin-gaps', name: 'Open gaps by facility', description: 'Checks that fail or cannot be proven yet, by work location.', definition: { metric: 'open_gaps', group_by: 'facility' } },
+  { id: 'builtin-missing', name: 'Missing documents by team', description: 'Requirements with no accepted document on file, by owning team.', definition: { metric: 'missing_evidence', group_by: 'team' } },
+  { id: 'builtin-coverage', name: 'Coverage by pack', description: 'Every applicable check by pack: pass, fail and unknown.', definition: { metric: 'coverage', group_by: 'pack' } },
+].map((d) => ({ ...d, built_in: true, created_by: 'Aegis', created_at: null, definition_json: JSON.stringify(d.definition), roles_json: '[]' }));
+const GROUP_KEY = { facility: 'facility', team: 'team', pack: 'pack_name', status: 'status', control: 'control_name' };
+const WINDOWS = ['Expired', 'Next 30 days', '31 to 60 days', '61 to 90 days', 'Later'];
+const READINESS_ORDER = ['blocked', 'pending', 'approved'];
+// The expiry date a credential check is based on. The evaluator writes it into the reason.
+const expiryOf = (c) => (['expired', 'expiring', 'current'].includes(c.code) ? /(?:until|on) (\d{4}-\d{2}-\d{2})/.exec(c.reason)?.[1] || null : null);
+const windowOf = (days) => (days < 0 ? WINDOWS[0] : days <= 30 ? WINDOWS[1] : days <= 60 ? WINDOWS[2] : days <= 90 ? WINDOWS[3] : WINDOWS[4]);
 function dashboardData(t, user, def) {
-  let rows = checks(t, user, { pack: def.pack });
-  if (def.metric === 'missing_evidence') rows = rows.filter((c) => ['missing_evidence', 'not_yet_received', 'missing_filing_evidence', 'overdue'].includes(c.code));
-  else if (def.metric === 'expirations') rows = rows.filter((c) => ['expiring', 'expired'].includes(c.code));
-  else if (def.metric === 'open_gaps') rows = rows.filter((c) => ['fail', 'unknown'].includes(c.status));
-  else rows = rows.filter((c) => c.status !== 'not_applicable');
-  const key = { facility: 'facility', team: 'team', pack: 'pack_name', status: 'status', control: 'control_name' }[def.group_by] || 'facility', g = {};
-  for (const r of rows) (g[r[key]] ||= []).push(r);
-  return { total: rows.length, groups: Object.entries(g).map(([name, items]) => ({ name, count: items.length, items: items.map((i) => ({ subject: i.subject_name, control: i.control_name, status: i.status, reason: i.reason })) })).sort((a, b) => b.count - a.count) };
+  const today = clock.today(), groups = {};
+  const put = (name, item) => (groups[name] ||= []).push(item);
+  if (def.metric === 'readiness') {
+    for (const w of listWorkers(t, user).filter((x) => x.status === 'active')) {
+      put(w.readiness || 'pending', { subject_id: w.id, subject_type: 'worker', subject: w.name, facility: w.facility || 'No confirmed location', status: w.overall, readiness: w.readiness || 'pending', open: w.checks.fail + w.checks.unknown });
+    }
+  } else {
+    let rows = checks(t, user, { pack: def.pack }).filter((c) => c.status !== 'not_applicable');
+    if (def.metric === 'missing_evidence') rows = rows.filter((c) => ['missing_evidence', 'not_yet_received', 'missing_filing_evidence', 'overdue'].includes(c.code));
+    else if (def.metric === 'open_gaps') rows = rows.filter((c) => ['fail', 'unknown'].includes(c.status));
+    else if (def.metric === 'expirations') {
+      const within = Number(def.within_days) || 0;
+      rows = rows.map((c) => ({ ...c, expires_on: expiryOf(c) })).filter((c) => c.expires_on && (within ? daysBetween(today, c.expires_on) <= within : ['expiring', 'expired'].includes(c.code)));
+    }
+    for (const c of rows) {
+      const days = c.expires_on ? daysBetween(today, c.expires_on) : null;
+      const name = def.group_by === 'window' ? windowOf(days ?? 0) : c[GROUP_KEY[def.group_by] || 'facility'];
+      put(name, { subject_id: c.subject_id, subject_type: c.subject_type, subject: c.subject_name, facility: c.facility, control_key: c.control_key, control: c.control_name, pack: c.pack_key, status: c.status, code: c.code, reason: c.reason, expires_on: c.expires_on || null, days_left: days });
+    }
+  }
+  const order = def.group_by === 'window' ? WINDOWS : def.group_by === 'readiness' ? READINESS_ORDER : null;
+  const out = Object.entries(groups).map(([name, items]) => {
+    if (def.metric === 'expirations') items.sort((a, b) => a.days_left - b.days_left);
+    const split = { pass: 0, fail: 0, unknown: 0 };
+    for (const i of items) if (Object.hasOwn(split, i.status)) split[i.status]++;
+    return { name, count: items.length, split, items };
+  });
+  out.sort((a, b) => (order ? order.indexOf(a.name) - order.indexOf(b.name) : b.count - a.count));
+  const all = out.flatMap((g) => g.items), split = { pass: 0, fail: 0, unknown: 0 };
+  for (const i of all) if (Object.hasOwn(split, i.status)) split[i.status]++;
+  return { total: all.length, split, groups: out, as_of: clock.iso() };
 }
-function dashboardsFor(t, user) { return db.all('SELECT * FROM dashboards WHERE tenant_id=? ORDER BY created_at DESC', t).filter((d) => P.isAdmin(user) || j(d.roles_json, []).includes(user.role)); }
+function dashboardsFor(t, user) { return [...BUILT_IN, ...db.all('SELECT * FROM dashboards WHERE tenant_id=? ORDER BY created_at DESC', t).filter((d) => P.isAdmin(user) || j(d.roles_json, []).includes(user.role))]; }
 function reportCsv(t, user, pack) {
   const rows = checks(t, user, pack === 'all' ? {} : { pack }), cov = coverage(t);
   const lines = [['Subject', 'Facility', 'Pack', 'Control', 'Requirement type', 'Status', 'Reason', 'Evidence references', 'Control version', 'Evaluated at']];

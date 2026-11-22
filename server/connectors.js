@@ -336,13 +336,17 @@ function previewImport(t, user, { filename, data }) {
 }
 function commitImport(t, user, impId) {
   return db.tx(() => {
-  const imp = db.get("SELECT * FROM imports WHERE id=? AND tenant_id=? AND status='preview'", impId, t);
-  if (!imp) throw new HttpError(404, 'Import not found or already committed.');
-  let created = 0, updated = 0;
-  for (const r of j(imp.rows_json)) { const x = upsertWorker(t, r, 'spreadsheet', user); if (x.created) created++; else if (x.changed) updated++; }
-  db.update('imports', imp.id, { status: 'committed' });
-  P.audit(t, 'ROSTER_IMPORT', imp.filename, `Imported roster: ${created} added, ${updated} updated.`, user);
-  return { created, updated };
+    const imp = db.get("SELECT * FROM imports WHERE id=? AND tenant_id=? AND status='preview'", impId, t);
+    if (!imp) throw new HttpError(404, 'Import not found or already committed.');
+    let created = 0, updated = 0;
+    for (const r of j(imp.rows_json)) {
+      const x = upsertWorker(t, r, 'spreadsheet', user);
+      if (x.created) created++;
+      else if (x.changed) updated++;
+    }
+    db.update('imports', imp.id, { status: 'committed' });
+    P.audit(t, 'ROSTER_IMPORT', imp.filename, `Imported roster: ${created} added, ${updated} updated.`, user);
+    return { created, updated };
   });
 }
 module.exports = { upsertWorker, changeAssignment, createConnector, syncConnector, testConnection, processHrmsEvent, previewImport, commitImport, ensureEntity, ensureFacility, configOf, saveConfig, validateConfig, publicConfig, mapHrms };

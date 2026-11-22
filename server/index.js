@@ -8,7 +8,7 @@ if (sandboxRequested && provisionRequested) {
   process.exit(1);
 }
 if (sandboxRequested) sandbox.configure();
-else {
+else if (process.env.NODE_ENV !== 'test') {
   try { if (process.loadEnvFile && fs.existsSync(path.join(__dirname, '..', '.env'))) process.loadEnvFile(path.join(__dirname, '..', '.env')); } catch {}
 }
 const DATA = process.env.AEGIS_DATA = process.env.AEGIS_DATA || path.join(__dirname, '..', 'data');
@@ -134,6 +134,7 @@ const server = http.createServer(async (req, res) => {
 });
 async function start(port = +(process.env.PORT || 4100), { loop = true } = {}) {
   R.loadPacks(); P.recoverStale();
+  require('./evidence').recheckAcceptedHolders();
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen({ port, host: sandbox.isActive() ? '127.0.0.1' : undefined }, () => {

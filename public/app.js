@@ -124,7 +124,7 @@ const NAV = [
   ['Reporting', [['dashboards', 'Dashboards'], ['reports', 'Reports & notices'], ['metrics', 'Pilot metrics'], ['audit', 'Audit history']]],
   ['Organization', [['setup', 'Company setup'], ['integrations', 'Connections'], ['settings', 'Settings']]]
 ];
-const HEAD = { overview: ['Workspace', 'Overview', 'Current status across activated packs, accepted evidence and open remediation.'], setup: ['Organization', 'Company setup', 'Connect records, confirm context, activate packs and run the first assessment.'], cases: ['Workspace', 'Cases', 'Each gap moves from identified to closed. Only accepted evidence closes a case.'], approvals: ['Workspace', 'Approvals', 'Consequential actions wait here for an authorized person.'], evidence: ['Workspace', 'Evidence', 'AI proposes matches and fields. Uncertain documents go to a person.'], checks: ['Records', 'Checks', 'Every result has a reason, evidence references and a control version.'], workers: ['Records', 'Workers', 'Per-pack status for each worker. One pack never hides another.'], packs: ['Records', 'Compliance packs', 'Versioned packs reviewed and activated by an authorized person.'], controls: ['Records', 'Control rules', 'Draft, preview and approve changes before they take effect.'], integrations: ['Organization', 'Connections', 'Connectors, messages, background jobs and visible failures.'], dashboards: ['Reporting', 'Dashboards', 'Saved views with role-based access.'], reports: ['Reporting', 'Reports & notices', 'Evidence-backed exports and tax notice intake.'], metrics: ['Reporting', 'Pilot metrics', 'Measured from records. Blank means not measured yet.'], audit: ['Reporting', 'Audit history', 'Append-only, hash-chained history of evaluations, requests and closures.'], settings: ['Organization', 'Settings', 'Users, roles, reporting channel and schedules.'] };
+const HEAD = { overview: ['Workspace', 'Overview', 'Current status across activated packs, accepted evidence and open remediation.'], setup: ['Organization', 'Company setup', 'Connect records, confirm context, activate packs and run the first assessment.'], cases: ['Workspace', 'Cases', 'Each gap moves from identified to closed. Only accepted evidence closes a case.'], approvals: ['Workspace', 'Approvals', 'Consequential actions wait here for an authorized person.'], evidence: ['Workspace', 'Evidence', 'AI proposes matches and fields. Uncertain documents go to a person.'], checks: ['Records', 'Checks', 'Every result has a reason, evidence references and a control version.'], workers: ['Records', 'Workers', 'Per-pack status for each worker. One pack never hides another.'], packs: ['Records', 'Compliance packs', 'Versioned packs reviewed and activated by an authorized person.'], controls: ['Records', 'Control rules', 'Draft, preview and approve changes before they take effect.'], integrations: ['Organization', 'Connections', 'Connectors, messages, background jobs and visible failures.'], dashboards: ['Reporting', 'Dashboards', 'Live views of readiness, expirations and gaps, from the same records as Checks and the coworker.'], reports: ['Reporting', 'Reports & notices', 'Evidence-backed exports and tax notice intake.'], metrics: ['Reporting', 'Pilot metrics', 'Measured from records. Blank means not measured yet.'], audit: ['Reporting', 'Audit history', 'Append-only, hash-chained history of evaluations, requests and closures.'], settings: ['Organization', 'Settings', 'Users, roles, reporting channel and schedules.'] };
 
 // Ticked cases on the Cases page (ids). Cleared when the tab or page changes.
 const caseSel = new Set();
@@ -142,16 +142,18 @@ async function boot() {
   document.body.style.background = '';
   const ls = $('#loginScreen'); if (ls) { ls.hidden = true; ls.style.display = 'none'; ls.innerHTML = ''; }
   const as = $('#appShell'); if (as) { as.hidden = false; as.style.display = 'block'; }
-  $('#chatPrompts').innerHTML = render(['What is missing for new workers?', 'Which credentials expire next month?', 'Request the missing documents.', 'What needs my approval?', 'Show unresolved cases by team', 'Create a healthcare dashboard showing missing evidence by facility.'].map((q) => h`<button class="prompt-pill" data-act="prompt" data-q="${q}">${q}</button>`));
+  const questions = ['What is missing for new workers?', 'Which credentials expire next month?', 'What needs my approval?', 'Show unresolved cases by team'];
+  if (canEdit()) questions.push('Request the missing documents.', 'Create a healthcare dashboard showing missing evidence by facility.');
+  $('#chatPrompts').innerHTML = render(questions.map((q) => h`<button class="prompt-pill" data-act="prompt" data-q="${q}">${q}</button>`));
   renderTop();
   renderDemoRack();
   readHash();
 }
 
 // Header buttons per page. The search box shows on pages that are mostly tables.
-const PAGE_TOOLS = { cases: ['uploadEvidence'], workers: ['importRoster', 'addWorker'], evidence: ['uploadEvidence'] };
+const PAGE_TOOLS = { dashboards: ['newView'], cases: ['uploadEvidence'], workers: ['importRoster', 'addWorker'], evidence: ['uploadEvidence'] };
 const SEARCH_PAGES = new Set(['cases', 'evidence', 'approvals', 'workers', 'checks', 'controls', 'audit', 'settings']);
-const TOOL_ALLOWED = { addWorker: () => canAddWorker(), importRoster: () => canEdit(), uploadEvidence: () => canEdit() };
+const TOOL_ALLOWED = { addWorker: () => canAddWorker(), importRoster: () => canEdit(), uploadEvidence: () => canEdit(), newView: () => canEdit() };
 function syncTools() {
   if (!me?.user) return;
   const mine = PAGE_TOOLS[route] || [];
@@ -331,11 +333,92 @@ function confirmFollowUps(ids, scopeText) {
     h`<button class="btn-cancel" data-act="closeModal">Cancel</button><button class="btn-submit-green" data-act="confirmChaseAll" data-ids="${JSON.stringify(ids)}" ${willSend.length ? '' : raw('disabled')}>${willSend.length ? `Send ${willSend.length} follow-up${willSend.length === 1 ? '' : 's'}` : 'Nothing to send'}</button>`);
 }
 
+// ---------- Dashboards ----------
+const DASH_ICON = {
+  readiness: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="m16 11 2 2 4-4"/>',
+  expirations: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  open_gaps: '<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+  missing_evidence: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="m9.5 12.5 5 5"/><path d="m14.5 12.5-5 5"/>',
+  coverage: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/>',
+};
+const dashIcon = (metric) => raw(`<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${DASH_ICON[metric] || DASH_ICON.coverage}</svg>`);
+const GROUP_LABEL = { facility: 'facility', team: 'team', pack: 'pack', status: 'result', control: 'requirement', window: 'time left', readiness: 'readiness decision' };
+const WINDOW_TONE = { Expired: 'fail', 'Next 30 days': 'warn', '31 to 60 days': 'info', '61 to 90 days': 'na', Later: 'na' };
+const READY_TONE = { approved: 'pass', pending: 'warn', blocked: 'fail' };
+const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+// The headline number, its label and the coloured parts of the bar, from the same numbers the API sends.
+function dashFigures(d, data) {
+  const m = d.definition.metric, groups = data.groups, count = (name) => groups.find((g) => g.name === name)?.count || 0;
+  if (m === 'readiness') {
+    const ok = count('approved');
+    return { value: `${ok} of ${data.total}`, label: 'workers approved for assignment', parts: ['blocked', 'pending', 'approved'].map((k) => ({ label: words(k), n: count(k), tone: READY_TONE[k] })) };
+  }
+  if (m === 'expirations') {
+    const expired = count('Expired');
+    return { value: data.total, label: data.total === 1 ? 'credential to renew' : 'credentials to renew', note: expired ? `${expired} already expired` : 'None expired', parts: Object.keys(WINDOW_TONE).map((k) => ({ label: k, n: count(k), tone: WINDOW_TONE[k] })) };
+  }
+  const split = [{ label: 'Pass', n: data.split.pass, tone: 'pass' }, { label: 'Fail', n: data.split.fail, tone: 'fail' }, { label: 'Unknown', n: data.split.unknown, tone: 'unknown' }];
+  if (m === 'coverage') {
+    const pct = data.total ? Math.round(data.split.pass / data.total * 100) : 0;
+    return { value: `${pct}%`, label: `of ${plural(data.total, 'check')} pass`, parts: split };
+  }
+  const by = GROUP_LABEL[d.definition.group_by] || 'group';
+  return { value: data.total, label: m === 'missing_evidence' ? (data.total === 1 ? 'missing document' : 'missing documents') : data.total === 1 ? 'open gap' : 'open gaps', note: groups.length ? `Across ${plural(groups.length, by, by === 'facility' ? 'facilities' : `${by}s`)}` : '', parts: split.filter((x) => x.tone !== 'pass') };
+}
+const segBar = (parts, cls = '') => {
+  const total = parts.reduce((a, x) => a + x.n, 0);
+  return h`<div class="seg-bar ${cls}" role="img" aria-label="${parts.filter((x) => x.n).map((x) => `${x.label} ${x.n}`).join(', ') || 'Nothing to show'}">${total ? parts.filter((x) => x.n).map((x) => h`<span class="seg seg-${x.tone}" style="flex-grow:${x.n}"></span>`) : h`<span class="seg seg-empty"></span>`}</div>`;
+};
+const segLegend = (parts) => h`<ul class="seg-legend">${parts.filter((x) => x.n).map((x) => h`<li><i class="dot dot-${x.tone}"></i>${x.label} <b>${x.n}</b></li>`)}</ul>`;
+const dashOrigin = (d) => (d.built_in ? h`<span class="dash-tag">Built in</span>` : h`<span class="dash-tag is-saved">Saved by ${d.created_by}</span>`);
+function dashCard(d) {
+  const f = dashFigures(d, d.summary);
+  return h`<a class="dash-card" href="#dashboards/${d.id}">
+    <div class="dash-card-top"><span class="dash-icon dash-icon-${d.definition.metric}">${dashIcon(d.definition.metric)}</span>${dashOrigin(d)}</div>
+    <h3>${d.name}</h3>
+    <div class="dash-figure"><b>${f.value}</b><span>${f.label}</span></div>
+    ${segBar(f.parts)}
+    <p class="dash-note">${f.note || d.description || `Grouped by ${GROUP_LABEL[d.definition.group_by]}`}</p>
+  </a>`;
+}
+const daysLeft = (n) => (n < 0 ? h`<span class="pill pill-fail">Expired ${plural(-n, 'day')} ago</span>` : n === 0 ? h`<span class="pill pill-fail">Expires today</span>` : n <= 30 ? h`<span class="pill pill-warn">${plural(n, 'day')} left</span>` : h`<span class="pill pill-na">${plural(n, 'day')} left</span>`);
+const personCell = (i) => (i.subject_type === 'worker' ? h`<button class="row-title" data-act="workerDetail" data-id="${i.subject_id}">${i.subject}</button><div class="case-sub">${i.facility}</div>` : h`<strong>${i.subject}</strong><div class="case-sub">Company level</div>`);
+function dashRows(metric, items) {
+  if (metric === 'readiness') return table(['Worker', 'Open checks', 'Overall', 'Readiness'], items.map((i) => h`<tr><td>${personCell(i)}</td><td>${i.open ? h`<span class="open-count">${i.open}</span>` : h`<span class="muted">None</span>`}</td><td>${statusPill(i.status)}</td><td><span class="pill pill-${READY_TONE[i.readiness] === 'warn' ? 'warn' : READY_TONE[i.readiness]}">${words(i.readiness)}</span></td></tr>`), 'Nobody here.');
+  if (metric === 'expirations') return table(['Worker', 'Credential', 'Expires', 'Time left'], items.map((i) => h`<tr><td>${personCell(i)}</td><td>${i.control}<div class="case-sub">${words(i.pack)}</div></td><td class="nowrap">${date(i.expires_on)}</td><td>${daysLeft(i.days_left)}</td></tr>`), 'Nothing expires in this window.');
+  return table(['Worker', 'Requirement', 'Result', 'Why'], items.map((i) => h`<tr><td>${personCell(i)}</td><td>${i.control}<div class="case-sub">${words(i.pack)}</div></td><td>${statusPill(i.status)}</td><td class="small">${i.reason}</td></tr>`), 'Nothing here.');
+}
+function dashboardDetail(d) {
+  const data = d.data, m = d.definition.metric, f = dashFigures(d, data), max = Math.max(1, ...data.groups.map((g) => g.count));
+  const by = d.definition.group_by, groupName = (n) => (by === 'status' || by === 'readiness' ? words(n) : n);
+  const canDelete = !d.built_in && canEdit() && (me.user.is_admin || d.created_by === me.user.name);
+  const filters = [d.definition.pack ? `${words(d.definition.pack)} pack` : 'All packs', `grouped by ${GROUP_LABEL[by]}`, d.definition.within_days ? `next ${d.definition.within_days} days` : ''].filter(Boolean).join(' · ');
+  return h`<div class="stack">
+    <a class="back-link" href="#dashboards"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>All dashboards</a>
+    <div class="panel dash-hero">
+      <div class="dash-hero-main">
+        <span class="dash-icon dash-icon-${m}">${dashIcon(m)}</span>
+        <div><div class="dash-hero-title"><h2>${d.name}</h2>${dashOrigin(d)}</div><p>${d.description || filters}</p><p class="dash-meta">${d.description ? `${filters} · ` : ''}As of ${dt(data.as_of)}</p></div>
+      </div>
+      <div class="dash-hero-tools"><button class="btn-card-outline" data-act="copyLink">Copy link</button>${canDelete ? h`<button class="btn-card-outline danger" data-act="deleteView" data-id="${d.id}" data-name="${d.name}">Delete view</button>` : ''}</div>
+      <div class="dash-hero-figures">
+        <div class="dash-figure is-large"><b>${f.value}</b><span>${f.label}</span>${f.note ? h`<small>${f.note}</small>` : ''}</div>
+        <div class="dash-hero-bar">${segBar(f.parts, 'is-large')}${segLegend(f.parts)}</div>
+      </div>
+    </div>
+    ${data.groups.length ? data.groups.map((g, i) => h`<details class="panel dash-group" ${i < 4 ? raw('open') : ''}>
+      <summary><span class="dash-group-name">${groupName(g.name)}</span><span class="dash-group-bar"><span style="width:${g.count / max * 100}%" class="${by === 'window' ? `tone-${WINDOW_TONE[g.name]}` : by === 'readiness' ? `tone-${READY_TONE[g.name]}` : ''}"></span></span><b class="dash-group-count">${g.count}</b><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary>
+      ${dashRows(m, g.items)}
+    </details>`) : h`<div class="panel">${emptyState([m === 'expirations' ? 'Nothing expires in this window' : 'Nothing to show', 'This dashboard updates by itself as checks change.'])}</div>`}
+  </div>`;
+}
+
 // Worker window buttons. When every check passes, asking for the readiness decision is the main step.
 // While checks are open, getting the missing documents is, and the decision is still there but quieter.
 function workerFoot(w, openN, total) {
+  if (!canEdit() || w.status !== 'active') return '';
   const move = h`<button class="btn-cancel" data-act="moveWorker" data-id="${w.id}">Change assignment</button>`;
-  const upload = (cls) => (canEdit() ? h`<button class="${cls}" data-act="uploadEvidence" data-subject="worker:${w.id}" data-name="${w.name}">Upload evidence</button>` : '');
+  const upload = (cls) => h`<button class="${cls}" data-act="uploadEvidence" data-subject="worker:${w.id}" data-name="${w.name}">Upload evidence</button>`;
   // Already asked: one open request at a time (the backend refuses a second one).
   if (w.readiness_request) return h`${move}<button class="btn-cancel" data-act="openApprovals">Waiting in Approvals</button>${upload(openN ? 'btn-submit-green' : 'btn-cancel')}`;
   // Already approved: nothing to ask. If a passing check fails later, the backend sets it back to pending.
@@ -373,7 +456,7 @@ const VIEWS = {
     const today = [
       { n: overdue, one: 'case overdue', many: 'cases overdue', tone: 'late', href: '#cases' },
       { n: dueSoon, one: 'case due this week', many: 'cases due this week', tone: 'soon', href: '#cases' },
-      { n: kpi.expiring, one: 'credential expiring soon', many: 'credentials expiring soon', tone: 'soon', href: '#checks' },
+      { n: kpi.expiring, one: 'credential expiring soon', many: 'credentials expiring soon', tone: 'soon', href: '#dashboards/builtin-expiring' },
       { n: kpi.pending_approvals, one: 'approval waiting for you', many: 'approvals waiting for you', tone: 'soon', href: '#approvals' }
     ];
     const allClear = today.every((t) => !t.n);
@@ -521,10 +604,13 @@ const VIEWS = {
   },
   async dashboards(arg) {
     scope(null);
-    const list = await api('/api/dashboards'), cur = arg ? await api(`/api/dashboards/${arg}`) : null;
-    return h`<div class="stack">${cur ? card(cur.name, `Grouped by ${cur.definition.group_by}. ${cur.data.total} item(s). Access: ${JSON.parse(cur.roles_json).map(words).join(', ')}.`, cur.data.groups.length ? cur.data.groups.map((g) => h`<div class="bar-row"><span>${g.name}</span><div class="bar-track"><div class="bar-fill" style="width:${g.count / cur.data.groups[0].count * 100}%"></div></div><strong>${g.count}</strong></div><div class="muted small mb">${g.items.slice(0, 5).map((i) => `${i.subject}: ${i.control}`).join(' · ')}</div>`) : h`<div class="empty">Nothing to show for this view.</div>`, h`<button class="btn-card-outline" data-act="copyLink">Copy link</button>`) : ''}
-    ${card('Saved Views', 'Ask the coworker to create one, or use the form.', table(['Name', 'Created by', ''], list.map((d) => h`<tr><td><strong>${d.name}</strong></td><td class="muted">${d.created_by}</td><td style="text-align:right"><a class="btn-link-action" href="#dashboards/${d.id}">Open</a></td></tr>`), ['No saved views yet', 'Create one below, or ask the coworker, for example "Show open gaps by facility".']))}
-    <form class="plain-card" data-form="dashboard"><strong>New view</strong><div class="form-grid mt"><div class="form-group"><label class="form-label">Name</label><input name="name" class="form-select" required></div><div class="form-group"><label class="form-label">Pack</label><select name="pack" class="form-select"><option value="">All</option><option>healthcare</option><option>onboarding</option><option>immigration</option><option>payroll</option></select></div><div class="form-group"><label class="form-label">Show</label><select name="metric" class="form-select"><option value="open_gaps">Open gaps</option><option value="missing_evidence">Missing evidence</option><option value="expirations">Expirations</option><option value="coverage">All applicable checks</option></select></div><div class="form-group"><label class="form-label">Group by</label><select name="group_by" class="form-select"><option>facility</option><option>team</option><option>pack</option><option>status</option><option>control</option></select></div></div><button class="btn-submit-green">Save view</button></form></div>`;
+    if (arg) return dashboardDetail(await api(`/api/dashboards/${arg}`));
+    const list = await api('/api/dashboards');
+    const built = list.filter((d) => d.built_in), saved = list.filter((d) => !d.built_in);
+    return h`<div class="stack">
+      <section><div class="dash-section-head"><h2>Built-in dashboards</h2><p>Ready for every team. They read the same records as Checks and the coworker.</p></div><div class="dash-grid">${built.map(dashCard)}</div></section>
+      <section><div class="dash-section-head"><h2>Saved views</h2><p>Made by your team with New view, or by asking the coworker, for example "Make a view of missing documents by team".</p></div>${saved.length ? h`<div class="dash-grid">${saved.map(dashCard)}</div>` : emptyState(['No saved views yet', canEdit() ? 'Use New view at the top, or ask the coworker to make one.' : 'Saved views made by your team appear here.'])}</section>
+    </div>`;
   },
   async reports() {
     const o = await api('/api/overview'); scope(o.coverage);
@@ -638,7 +724,7 @@ function draftCard(d) {
 // waiting for review, Accept and Reject stay pinned at the bottom.
 const EV_FIELDS = [['holder_name', 'Name on document'], ['doc_number', 'Document number'], ['issued_on', 'Issued', 'date'], ['expires_on', 'Expires', 'date'], ['state', 'State'], ['period', 'Period'], ['entity_name', 'Company']];
 function evidencePanel(e, controls = {}) {
-  const pending = e.status === 'needs_review' && canEdit();
+  const pending = e.can_review;
   const conf = (k) => e.field_confidence[k] ? h` <span class="conf">${Math.round(e.field_confidence[k] * 100)}%</span>` : '';
   const ctl = controls[e.control_key];
   const requirement = ctl ? `${ctl.name} · ${words(ctl.pack)}` : e.control_key ? words(e.control_key) : 'Not matched yet';
@@ -653,17 +739,17 @@ function evidencePanel(e, controls = {}) {
       ${read.length ? h`<dl class="kv ev-read">${read.map(([k, l, t]) => h`<dt>${l}</dt><dd>${t === 'date' ? date(e[k]) : e[k]}${conf(k)}</dd>`)}</dl>` : h`<p class="muted small">No details were read from this document.</p>`}
     </div></aside>`;
   }
-  const f = ([k, l, type = 'text']) => h`<div class="form-group"><label class="form-label">${l}${conf(k)}</label><input name="${k}" type="${type}" class="form-select" value="${e[k] || ''}"></div>`;
+  const f = ([k, l, type = 'text']) => h`<div class="form-group"><label class="form-label" for="evidence-${k}">${l}${conf(k)}</label><input id="evidence-${k}" name="${k}" type="${type}" class="form-select" value="${e[k] || ''}"></div>`;
   return h`<aside class="split-card inspector" aria-label="Review document">${head}
     <form class="inspector-form" data-form="reviewEvidence" data-id="${e.id}">
       <div class="inspector-body">${reasons}${facts}
         <h4 class="inspector-sub">What the document says</h4>
         <p class="muted small">Correct anything Aegis read wrongly. The percentage shows how sure Aegis was.</p>
-        ${e.doc_type === 'unknown' ? h`<div class="form-group"><label class="form-label">Document type</label><select name="doc_type" class="form-select" required><option value="">Choose a type</option>${['professional_license', 'bls_card', 'acls_card', 'tb_screening', 'flu_vaccine', 'facility_orientation', 'handbook_ack', 'security_training', 'i9_record', 'work_authorization', 'w4', 'payroll_filing_receipt'].map((x) => h`<option value="${x}">${words(x)}</option>`)}</select></div>` : ''}
+        ${e.doc_type === 'unknown' ? h`<div class="form-group"><label class="form-label" for="evidence-type">Document type</label><select id="evidence-type" name="doc_type" class="form-select" required><option value="">Choose a type</option>${['professional_license', 'bls_card', 'acls_card', 'tb_screening', 'flu_vaccine', 'facility_orientation', 'handbook_ack', 'security_training', 'i9_record', 'work_authorization', 'w4', 'payroll_filing_receipt'].map((x) => h`<option value="${x}">${words(x)}</option>`)}</select></div>` : ''}
         <div class="form-grid">${EV_FIELDS.map(f)}</div>
-        <div class="form-group"><label class="form-label">Reason, if you reject it</label><input name="reason" class="form-select" placeholder="Required to reject. The sender sees this."></div>
+        <div class="form-group"><label class="form-label" for="evidence-rejection-reason">Reason, if you reject it</label><input id="evidence-rejection-reason" name="reason" class="form-select" placeholder="Required to reject. The sender sees this."></div>
       </div>
-      <div class="inspector-foot"><p class="muted small">Accepting records the document. Aegis reruns the check; the case closes only if it passes.</p><div class="row"><button class="btn-danger" name="decision" value="reject">Reject</button><button class="btn-submit-green" name="decision" value="accept">Accept evidence</button></div></div>
+      <div class="inspector-foot"><p class="muted small">Accepting records the document. Aegis reruns the check. The case closes if it passes.</p><div class="row"><button class="btn-danger" name="decision" value="reject" formnovalidate>Reject</button><button class="btn-submit-green" name="decision" value="accept">Accept evidence</button></div></div>
     </form></aside>`;
 }
 const LIFE = [['Identify', ['identified']], ['Assign', ['assigned']], ['Request', ['requested']], ['Follow up', ['following_up']], ['Review', ['in_review']], ['Re-evaluate', ['reevaluating']], ['Close', ['closed']]];
@@ -796,7 +882,7 @@ const ACT = {
     const list = w.checks_list.filter((c) => c.status !== 'not_applicable').sort((a, b) => rank[a.status] - rank[b.status]);
     const openN = list.filter((c) => c.status !== 'pass').length;
     openModal(w.name, `${w.role || 'No role'} · ${w.facility || 'No confirmed location'}`, h`<div class="pack-boxes">${rv.summary.map((s) => h`<div class="pack-box pack-box-${s.status}"><span>${words(s.pack)}</span>${statusPill(s.status)}<small>${s.open ? `${s.open} open` : s.status === 'restricted' ? 'Restricted' : 'Nothing open'}</small></div>`)}</div>
-      <div class="readiness-note ${openN ? 'is-open' : 'is-clear'}"><b>${openN ? `${openN} of ${list.length} checks still open` : `All ${list.length} checks pass`}</b><span>${rv.statement}${w.readiness_request ? ` Waiting in Approvals since ${date(w.readiness_request.created_at)}, asked by ${w.readiness_request.requested_by}.` : ''}</span></div>
+      <div class="readiness-note ${openN || !list.length ? 'is-open' : 'is-clear'}"><b>${!list.length ? 'No applicable checks yet' : openN ? `${openN} of ${list.length} visible checks still open` : 'All visible checks pass'}</b><span>${rv.statement}${w.readiness_request ? ` Waiting in Approvals since ${date(w.readiness_request.created_at)}, asked by ${w.readiness_request.requested_by}.` : ''}</span></div>
       ${table(['Requirement', 'Result', 'Why', ''], list.map((c) => h`<tr><td>${c.control_name}<div class="case-sub">${words(c.pack_key)}</div></td><td>${statusPill(c.status)}</td><td class="small">${c.reason}</td><td class="row-action">${canEdit() && (c.status !== 'pass' || /expir/.test(c.code || '')) ? h`<button class="btn-link-action" data-act="uploadEvidence" data-subject="worker:${w.id}" data-control="${c.control_key}" data-name="${w.name}">Upload</button>` : ''}</td></tr>`), 'No checks yet.')}`, workerFoot(w, openN, list.length), true);
   },
   moveWorker(el) { openModal('Change assignment', 'Aegis re-runs the checks that apply to the new location.', h`<form data-form="move" data-id="${el.dataset.id}"><div class="form-group"><label class="form-label">Facility</label><input name="facility" class="form-select" required></div><div class="form-group"><label class="form-label">State</label><input name="facility_state" class="form-select" maxlength="2"></div><button class="btn-submit-green">Save</button></form>`); },
@@ -845,7 +931,7 @@ const ACT = {
   bulkUpload() { return ACT.uploadEvidence(); },
   async reviewPack(el) {
     const [packs, owners] = await Promise.all([api('/api/packs'), api('/api/owners')]), p = packs.find((x) => x.key === el.dataset.id);
-    openModal(p.name, `Version ${p.latest_version}`, h`<div class="alert-box">${p.review_note}</div>${table(['Control', 'Type', 'Source'], p.controls.map((c) => h`<tr><td><strong>${c.name}</strong></td><td class="muted">${words(c.requirement_type)}</td><td class="small">${c.source}</td></tr>`), '')}<p class="small mt"><strong>Validation tests:</strong> ${p.validation.filter((v) => v.ok).length} of ${p.validation.length} pass.</p>${me.user.is_admin ? h`<form data-form="activate" data-id="${p.key}" class="mt"><div class="form-group"><label class="form-label">Responsible owner</label><select name="owner_user_id" class="form-select" required>${owners.map((o) => h`<option value="${o.id}" ${(p.owner_user_id ? o.id === p.owner_user_id : o.role === p.owner_role) ? raw('selected') : ''}>${o.name} (${words(o.role)})</option>`)}</select></div><label class="row small"><input type="checkbox" name="reviewed" required> I reviewed applicability, sources and deadlines for this company.</label><button class="btn-submit-green mt">${p.status === 'active' ? 'Update' : 'Activate in validation mode'}</button></form>` : ''}`, null, true);
+    openModal(p.name, `Version ${p.latest_version}`, h`<div class="alert-box">${p.review_note}</div>${table(['Control', 'Type', 'Source'], p.controls.map((c) => h`<tr><td><strong>${c.name}</strong></td><td class="muted">${words(c.requirement_type)}</td><td class="small">${c.source}</td></tr>`), '')}<p class="small mt"><strong>Validation tests:</strong> ${p.validation.filter((v) => v.ok).length} of ${p.validation.length} pass.</p>${me.user.is_admin ? h`<form data-form="activate" data-id="${p.key}" class="mt"><div class="form-group"><label class="form-label">Responsible owner</label><select name="owner_user_id" class="form-select" required>${owners.filter((o) => o.role === 'admin' || o.role === p.owner_role).map((o) => h`<option value="${o.id}" ${(p.owner_user_id ? o.id === p.owner_user_id : o.role === p.owner_role) ? raw('selected') : ''}>${o.name} (${words(o.role)})</option>`)}</select></div><label class="row small"><input type="checkbox" name="reviewed" required> I reviewed applicability, sources and deadlines for this company.</label><button class="btn-submit-green mt">${p.status === 'active' ? 'Update in validation mode' : 'Activate in validation mode'}</button></form>` : ''}`, null, true);
   },
   async packMode(el) { await api(`/api/packs/${el.dataset.id}/mode`, { mode: el.dataset.m }); toast('Pack mode updated.', 'success'); after(); },
   async submitDraft(el) { await api(`/api/controls/${el.dataset.id}/submit`, {}); lastDraft = (lastDraft || []).filter((d) => d.id !== el.dataset.id); toast('Sent to Approvals. It is not active yet.', 'success'); refresh(); },
@@ -909,6 +995,21 @@ const ACT = {
     toast(via === 'slack' ? 'Digest posted to Slack.' : 'Digest saved to the Aegis outbox.', 'success');
   },
   viewNotice(el) { openModal('Draft response', 'For finance review. Aegis does not file or send this.', h`<div style="white-space:pre-wrap;font-size:12px">${el.dataset.text}</div>`); },
+  newView() {
+    openModal('New view', 'Pick what to count and how to group it. It updates by itself as checks change.', h`<form data-form="dashboard">
+      <div class="form-group"><label class="form-label" for="nvName">Name</label><input id="nvName" name="name" class="form-select" required maxlength="120" placeholder="For example: Healthcare gaps by facility"></div>
+      <div class="form-grid">
+        <div class="form-group"><label class="form-label" for="nvMetric">Show</label><select id="nvMetric" name="metric" class="form-select" data-view-metric><option value="open_gaps">Open gaps (fail or unknown)</option><option value="missing_evidence">Missing documents</option><option value="expirations">Expiring credentials (next 90 days)</option><option value="coverage">All applicable checks</option></select></div>
+        <div class="form-group"><label class="form-label" for="nvPack">Pack</label><select id="nvPack" name="pack" class="form-select"><option value="">All packs</option>${['healthcare', 'onboarding', 'immigration', 'payroll'].map((k) => h`<option value="${k}">${words(k)}</option>`)}</select></div>
+        <div class="form-group"><label class="form-label" for="nvGroup">Group by</label><select id="nvGroup" name="group_by" class="form-select"><option value="facility">Facility</option><option value="team">Team</option><option value="pack">Pack</option><option value="status">Result</option><option value="control">Requirement</option><option value="window" hidden disabled>Time left</option></select></div>
+      </div>
+      <p class="muted small">People with your role and administrators can open it.</p>
+      <button class="btn-submit-green">Save view</button></form>`);
+  },
+  deleteView(el) {
+    openModal(`Delete "${el.dataset.name}"?`, 'Only this saved view is removed. No checks, cases or records change.', '', h`<button class="btn-cancel" data-act="closeModal">Cancel</button><button class="btn-danger" data-act="confirmDeleteView" data-id="${el.dataset.id}">Delete view</button>`);
+  },
+  async confirmDeleteView(el) { await api(`/api/dashboards/${el.dataset.id}/delete`, {}); closeModal(); toast('Saved view deleted.', 'success'); location.hash = 'dashboards'; },
   copyLink() { navigator.clipboard?.writeText(location.href); toast('Link copied. Access still depends on role.', 'success'); },
   demoPanel() {
     if (!me.demo || !me.user.is_admin) return;
@@ -982,7 +1083,7 @@ const FORM = {
     closeModal();
     refresh();
   },
-  async dashboard(d) { const r = await api('/api/dashboards', { ...d, pack: d.pack || null }); location.hash = `dashboards/${r.id}`; },
+  async dashboard(d) { const r = await api('/api/dashboards', { ...d, pack: d.pack || null, within_days: d.metric === 'expirations' ? 90 : undefined }); closeModal(); toast('View saved.', 'success'); location.hash = `dashboards/${r.id}`; },
   async notice(d) { await api('/api/notices', d); toast('Draft created and sent to Approvals.', 'success'); refresh(); },
   async baseline(d) { await api('/api/metrics/baseline', { key: 'minutes_per_chase', value: d.value }); toast('Baseline saved.', 'success'); refresh(); },
   async manualSupport(d) { await api('/api/metrics/manual-support', d); toast('Logged.', 'success'); refresh(); },
@@ -1569,5 +1670,11 @@ for (const type of ['dragenter', 'dragover', 'dragleave', 'drop']) {
     zone.classList.toggle('is-over', type === 'dragenter' || type === 'dragover');
   });
 }
+document.addEventListener('change', (e) => {
+  const metric = e.target.closest?.('[data-view-metric]'); if (!metric) return;
+  const group = metric.form.elements.group_by, win = group.querySelector('[value="window"]'), on = metric.value === 'expirations';
+  win.hidden = win.disabled = !on;
+  if (on) group.value = 'window'; else if (group.value === 'window') group.value = 'facility';
+});
 window.addEventListener('hashchange', readHash);
 fetch('/api/me').then((r) => { if (r.ok) boot(); else showLogin(); });

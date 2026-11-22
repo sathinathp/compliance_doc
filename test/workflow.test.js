@@ -355,3 +355,167 @@ test('readiness: one open request per worker, and approval reopens when a passin
   assert.equal(db.get('SELECT readiness FROM workers WHERE id=?', wid).readiness, 'pending');
   assert.ok(db.get("SELECT 1 AS x FROM audit_log WHERE type='READINESS_REOPENED' AND subject LIKE ?", `%${d.name}%`));
 });
+
+test('pilot evidence rejects a wrong holder and protects newly classified and legacy restricted documents', async () => {
+  const t = bid().id;
+  const viewer = await login('viewer@bluebix.demo');
+  const worker = db.get("SELECT * FROM workers WHERE tenant_id=? AND name LIKE 'David Kim%';", t);
+  const add = (name, content, extra = {}) => admin.post('/api/evidence', { subject_id: worker.id, file: file(name, content), ...extra });
+  const mismatch = await add('wrong-holder.txt', 'Registered Nurse License\nName: Different Person\nLicense No: QA-321\nState: CA\nExpiration Date: 2099-03-01\n', { control_key: 'CTRL-HC-LICENSE' });
+  assert.equal(mismatch.data.status, 'needs_review');
+  const reviewPath = `/api/evidence/${mismatch.data.id}/review`;
+  assert.equal((await admin.post(reviewPath, { decision: 'accept' })).status, 422);
+  assert.equal((await admin.post(reviewPath, { decision: 'accept', fields: { holder_name: worker.name } })).status, 422);
+  assert.equal(db.get('SELECT status FROM evidence WHERE id=?', mismatch.data.id).status, 'needs_review');
+  assert.equal((await hr.get('/api/evidence')).data.find((e) => e.id === mismatch.data.id).can_review, false);
+  assert.equal((await health.get('/api/evidence')).data.find((e) => e.id === mismatch.data.id).can_review, true);
+
+  const unknown = await add('private-intake.txt', `Unclassified attachment\nName: ${worker.name}\n`);
+  assert.equal(unknown.data.status, 'needs_review');
+  assert.equal(db.get('SELECT doc_type FROM evidence WHERE id=?', unknown.data.id).doc_type, 'unknown');
+  assert.ok(!(await viewer.get('/api/evidence')).data.some((e) => e.id === unknown.data.id));
+  assert.equal((await admin.post(`/api/evidence/${unknown.data.id}/review`, { decision: 'accept', fields: { doc_type: 'i9_record' } })).status, 200);
+  assert.equal(db.get('SELECT restricted FROM evidence WHERE id=?', unknown.data.id).restricted, 1);
+  db.update('evidence', unknown.data.id, { restricted: 0 });
+  assert.ok(!(await viewer.get('/api/evidence')).data.some((e) => e.id === unknown.data.id));
+  assert.equal((await viewer.get(`/api/evidence/${unknown.data.id}/file`)).status, 403);
+  assert.equal((await imm.get(`/api/evidence/${unknown.data.id}/file`)).status, 200);
+
+  const unclassified = await add('reject-unclassified.txt', 'An unrelated attachment');
+  assert.equal((await admin.post(`/api/evidence/${unclassified.data.id}/review`, { decision: 'reject', reason: 'Wrong document' })).status, 200);
+  db.update('evidence', mismatch.data.id, { status: 'accepted', holder_name: worker.name });
+  require('../server/evidence').recheckAcceptedHolders();
+  assert.equal(db.get('SELECT status FROM evidence WHERE id=?', mismatch.data.id).status, 'needs_review');
+});
+
+test('pilot control previews enforce every target and hide restricted history from other roles', async () => {
+  const t = bid().id;
+  const before = db.get('SELECT COUNT(*) AS n FROM control_changes WHERE tenant_id=?', t).n;
+  const result = await health.post('/api/controls/draft', { text: 'Request BLS and work authorization 45 days before expiration' });
+  assert.equal(result.status, 403);
+  assert.equal(db.get('SELECT COUNT(*) AS n FROM control_changes WHERE tenant_id=?', t).n, before);
+  const draft = await imm.post('/api/controls/draft', { text: 'Request work authorization 45 days before expiration' });
+  assert.equal(draft.status, 200);
+  assert.equal(draft.data[0].pack_key, 'immigration');
+  const other = (await health.get('/api/controls')).data;
+  assert.ok(!other.changes.some((c) => c.pack_key === 'immigration'));
+  assert.ok(!other.controls.some((c) => c.pack === 'immigration'));
+  assert.ok((await admin.get('/api/controls')).data.changes.some((c) => c.id === draft.data[0].id));
+});
+
+test('pilot roster import maps worker IDs and preserves terminated worker records; reassignment keeps the worker ID', async () => {
+  const t = bid().id;
+  const w = (await admin.post('/api/workers', { name: 'Pilot Worker Without Email', facility: 'Old Pilot Facility' })).data;
+  assert.equal(w.created, true);
+  assert.equal((await admin.post(`/api/workers/${w.id}/assignment`, { facility: 'New Pilot Facility', facility_state: 'CA' })).status, 200);
+  assert.equal((await admin.get(`/api/workers/${w.id}`)).data.facility, 'New Pilot Facility');
+  assert.equal(db.get('SELECT COUNT(*) AS n FROM workers WHERE tenant_id=? AND name=?', t, 'Pilot Worker Without Email').n, 1);
+
+  const email = 'pilot-preserve@example.test';
+  const old = (await admin.post('/api/workers', { name: 'Existing Pilot Worker', email, entity: 'Pilot Entity', license_type: 'RN', dept: 'Nursing' })).data;
+  db.update('workers', old.id, { status: 'terminated' });
+  assert.equal((await admin.post('/api/workers', { name: 'Duplicate Pilot Worker', email: email.toUpperCase() })).status, 409);
+  const roster = await admin.post('/api/import/preview', { file: file('pilot.csv', `Name,Worker ID,Category,Email\nExisting Pilot Worker,WORK-7,Non-clinical,${email}\n`) });
+  assert.equal(roster.status, 200);
+  assert.deepEqual(roster.data.sample[0], { name: 'Existing Pilot Worker', external_id: 'WORK-7', category: 'corporate', email });
+  assert.equal((await admin.post(`/api/import/${roster.data.id}/commit`)).status, 200);
+  const saved = db.get('SELECT name,status,license_type,dept,entity_id FROM workers WHERE id=?', old.id);
+  assert.deepEqual([saved.name, saved.status, saved.license_type, saved.dept], ['Existing Pilot Worker', 'terminated', 'RN', 'Nursing']);
+  assert.ok(saved.entity_id);
+});
+
+test('pilot chat keeps how-to questions read-only and confirmation is single-use and tied to the requester', async () => {
+  const t = bid().id;
+  const viewer = await login('viewer@bluebix.demo');
+  const count = () => db.get("SELECT COUNT(*) AS n FROM actions WHERE tenant_id=? AND type='follow_up'", t).n;
+  const before = count();
+  const dashboards = db.get('SELECT COUNT(*) AS n FROM dashboards WHERE tenant_id=?', t).n;
+  const query = (who, text) => who.post('/api/chat', { text });
+  assert.equal((await query(admin, 'How do I request the missing documents?')).status, 200);
+  assert.equal(count(), before);
+  assert.match((await query(viewer, 'Create a healthcare dashboard showing missing evidence')).data.reply, /read-only/);
+  assert.equal(db.get('SELECT COUNT(*) AS n FROM dashboards WHERE tenant_id=?', t).n, dashboards);
+  const preview = await query(admin, 'Request the missing documents.');
+  const instruction = /Confirm follow-ups [a-f0-9]{12}/.exec(preview.data.reply)?.[0];
+  assert.ok(instruction);
+  assert.equal(count(), before);
+  assert.match((await query(health, instruction)).data.reply, /unavailable/);
+  assert.equal(count(), before);
+  assert.match((await query(admin, instruction)).data.reply, /Queued \*\*[1-9]/);
+  assert.ok(count() > before);
+  const after = count();
+  assert.match((await query(admin, instruction)).data.reply, /unavailable/);
+  assert.equal(count(), after);
+});
+
+test('pilot queued delivery resolves stable case identities and stops when the pack returns to validation', async () => {
+  const E = require('../server/engine'), R = require('../server/registry');
+  const t = bid().id;
+  const owner = db.get("SELECT * FROM users WHERE tenant_id=? AND role='healthcare_compliance'", t);
+  const administrator = db.get("SELECT * FROM users WHERE tenant_id=? AND role='admin'", t);
+  const name = 'Pilot Same Name';
+  for (const email of ['first-pilot@example.test', 'second-pilot@example.test']) {
+    assert.equal((await admin.post('/api/workers', { name, email, role: 'RN', category: 'clinical', license_type: 'RN', facility: 'Kaiser Permanente' })).status, 200);
+  }
+  await P.drain();
+  const subject = db.get('SELECT id FROM workers WHERE tenant_id=? AND email=?', t, 'second-pilot@example.test');
+  const c = db.get("SELECT * FROM cases WHERE tenant_id=? AND subject_id=? AND control_key='CTRL-HC-BLS' AND closed_at IS NULL", t, subject.id);
+  assert.ok(c);
+  const queue = (key) => E.enqueueAction(t, { case_id: c.id, pack_key: c.pack_key, type: 'follow_up', idempotency_key: `${c.id}:${key}`, recipient: name, recipient_type: 'worker', subject: 'Synthetic follow-up', body: 'Synthetic content' });
+  const delivered = [], original = channels.deliver;
+  channels.deliver = async (_tenant, action) => { delivered.push(action.recipient_email); return 'outbox'; };
+  try {
+    await E.sendAction(t, { action_id: queue('identity-test').id });
+    assert.deepEqual(delivered, ['second-pilot@example.test']);
+    const held = queue('validation-test');
+    E.setMode(t, owner, c.pack_key, 'shadow');
+    await E.sendAction(t, { action_id: held.id });
+    assert.equal(db.get('SELECT status FROM actions WHERE id=?', held.id).status, 'paused');
+    assert.equal(delivered.length, 1);
+    db.run("UPDATE tenant_packs SET mode='auto' WHERE tenant_id=? AND pack_key=?", t, c.pack_key);
+    db.update('cases', c.id, { finding_verdict: 'confirmed' });
+    const stale = queue('reactivation-test');
+    R.activatePack(t, administrator, c.pack_key, { owner_user_id: owner.id, reviewed: true });
+    assert.equal(R.tenantPack(t, c.pack_key).mode, 'shadow');
+    assert.equal(db.get('SELECT finding_verdict FROM cases WHERE id=?', c.id).finding_verdict, null);
+    await E.sendAction(t, { action_id: stale.id });
+    assert.equal(delivered.length, 1);
+  } finally { channels.deliver = original; }
+});
+
+test('dashboards: built-in views match the checks, saved views are validated and can be deleted', async () => {
+  const list = (await admin.get('/api/dashboards')).data;
+  const ids = list.filter((d) => d.built_in).map((d) => d.id);
+  assert.deepEqual(ids, ['builtin-readiness', 'builtin-expiring', 'builtin-gaps', 'builtin-missing', 'builtin-coverage']);
+
+  // Open gaps equal the failing and unknown checks the Checks page shows.
+  const checks = (await admin.get('/api/checks')).data.rows.filter((c) => c.status !== 'not_applicable');
+  const gaps = (await admin.get('/api/dashboards/builtin-gaps')).data.data;
+  assert.equal(gaps.total, checks.filter((c) => ['fail', 'unknown'].includes(c.status)).length);
+  assert.equal(list.find((d) => d.id === 'builtin-gaps').summary.total, gaps.total, 'the card and the open dashboard agree');
+  const cov = (await admin.get('/api/dashboards/builtin-coverage')).data.data;
+  assert.equal(cov.total, checks.length);
+  assert.equal(cov.split.pass, checks.filter((c) => c.status === 'pass').length);
+
+  // Expiring: soonest first, every item has a date within 90 days, expired ones are in "Expired".
+  const exp = (await admin.get('/api/dashboards/builtin-expiring')).data.data;
+  for (const g of exp.groups) {
+    for (const i of g.items) { assert.ok(i.expires_on && i.days_left <= 90); assert.equal(i.days_left < 0, g.name === 'Expired'); }
+    assert.deepEqual(g.items.map((i) => i.days_left), [...g.items.map((i) => i.days_left)].sort((a, b) => a - b));
+  }
+
+  // Readiness counts every active worker once.
+  const ready = (await admin.get('/api/dashboards/builtin-readiness')).data.data;
+  const active = (await admin.get('/api/workers')).data.filter((w) => w.status === 'active');
+  assert.equal(ready.total, active.length);
+
+  // Unknown settings fall back to safe values; "time left" only applies to expiring credentials.
+  const made = (await admin.post('/api/dashboards', { name: 'Test view', metric: 'drop table', group_by: 'window', pack: 'nope' })).data;
+  const saved = (await admin.get(`/api/dashboards/${made.id}`)).data;
+  assert.deepEqual(saved.definition, { pack: null, metric: 'open_gaps', group_by: 'facility' });
+  assert.ok(db.get("SELECT 1 AS x FROM audit_log WHERE type='DASHBOARD_CREATED' AND subject='Test view'"));
+
+  assert.equal((await admin.post('/api/dashboards/builtin-gaps/delete')).status, 404, 'built-in dashboards cannot be deleted');
+  assert.equal((await admin.post(`/api/dashboards/${made.id}/delete`)).status, 200);
+  assert.equal((await admin.get(`/api/dashboards/${made.id}`)).status, 403);
+});

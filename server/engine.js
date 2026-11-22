@@ -202,9 +202,10 @@ async function sendAction(t, { action_id }) {
   if (!cs || cs.closed_at) { db.update('actions', a.id, { status: 'cancelled' }); return; }
   const maySend = () => {
     const pack = R.tenantPack(t, cs.pack_key);
-    const target = db.get('SELECT closed_at FROM cases WHERE id=? AND tenant_id=?', cs.id, t);
-    const action = db.get('SELECT status FROM actions WHERE id=? AND tenant_id=?', a.id, t);
-    return pack?.status === 'active' && pack.mode === 'auto' && target && !target.closed_at && action?.status === 'queued';
+    const target = db.get('SELECT closed_at,owner_user_id FROM cases WHERE id=? AND tenant_id=?', cs.id, t);
+    const action = db.get('SELECT status,body,created_at FROM actions WHERE id=? AND tenant_id=?', a.id, t);
+    return pack?.status === 'active' && pack.mode === 'auto' && target && !target.closed_at && target.owner_user_id === cs.owner_user_id
+      && action?.status === 'queued' && action.body === a.body && action.created_at === a.created_at;
   };
   if (!maySend()) { R.pausePackActions(t, cs.pack_key); return; }
   const tn = db.get('SELECT * FROM tenants WHERE id=?', t);
@@ -212,7 +213,11 @@ async function sendAction(t, { action_id }) {
   const canReceive = recipient && (a.recipient_type === 'worker' ? recipient.status === 'active' : P.canPack(recipient, cs.pack_key));
   try {
     const channel = await channels.deliver(tn, { ...a, recipient_slack: canReceive ? recipient.slack_id : null, recipient_email: canReceive ? recipient.email : null }, maySend);
-    if (channel === 'paused') return;
+    if (channel === 'paused') {
+      const current = db.get('SELECT closed_at FROM cases WHERE id=? AND tenant_id=?', cs.id, t);
+      if (current?.closed_at) db.run("UPDATE actions SET status='cancelled' WHERE id=? AND tenant_id=? AND status='queued'", a.id, t);
+      return;
+    }
     db.tx(() => {
       db.update('actions', a.id, { status: 'sent', sent_at: clock.iso(), error: null });
       const how = channel === 'outbox' ? 'kept in the Aegis outbox: no email or Slack is set up for this person, so it did not leave Aegis' : `sent by ${channel}`;
@@ -282,6 +287,7 @@ function followUp(t, user, cs) {
   const c = R.effectiveControls(t).find((x) => x.key === cs.control_key);
   if (!c) throw new HttpError(409, 'Control is no longer active.');
   if (c.mode !== 'auto') return { sent: false, message: 'This pack is in validation mode, so nothing was sent.' };
+  if (cs.finding_verdict === 'false_finding') return { sent: false, message: 'This finding was marked false, so nothing was sent.' };
   if (cs.gap_kind === 'review') return { sent: false, message: 'Evidence is already awaiting review.' };
   const { worker } = audience(t, cs), o = owner(t, cs), toW = worker && c.remediation?.route === 'worker' && cs.gap_kind !== 'data';
   const gap = currentGap(t, cs, c);

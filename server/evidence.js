@@ -58,6 +58,8 @@ const canView = (user, ev) => ev.doc_type === 'unknown' ? P.isAdmin(user)
   : !(ev.restricted || restrictedType(ev.doc_type)) || P.canSeeRestricted(user);
 const canReview = (user, ev, control) => user.role !== 'viewer' && canView(user, ev)
   && (control ? P.canPack(user, control.pack_key) : P.isAdmin(user));
+const hasRecordedHolderMismatch = (ev) => (j(ev.fields_json, {}).holder_name || 0) >= 0.95
+  && j(ev.review_reasons_json, []).some((reason) => reason.startsWith('Name on document ('));
 function subjectOf(t, type, sid) {
   if (!['worker', 'entity'].includes(type)) throw new HttpError(400, 'Choose a worker or company record.');
   const s = db.get(`SELECT * FROM ${type === 'worker' ? 'workers' : 'entities'} WHERE id=? AND tenant_id=?`, sid, t);
@@ -136,7 +138,7 @@ function review(t, user, ev, { decision, fields = {}, reason }) {
     if (!canReview(user, { ...next, restricted: u.restricted }, target)) throw new HttpError(403, 'Your role cannot review the selected document type.');
     u.control_key = target?.key || ev.control_key || null;
     const holderVerifiedFromFile = (j(ev.fields_json, {}).holder_name || 0) >= 0.95 && ev.holder_name;
-    if (ev.subject_type === 'worker' && ((holderVerifiedFromFile && !sameName(ev.holder_name, sub.name))
+    if (ev.subject_type === 'worker' && (hasRecordedHolderMismatch(ev) || (holderVerifiedFromFile && !sameName(ev.holder_name, sub.name))
       || ((next.holder_name || target?.evidence?.required_fields?.includes('holder_name')) && !sameName(next.holder_name, sub.name)))) {
       throw new HttpError(422, 'The document holder must match the worker. Reject the document and request a replacement if it belongs to someone else.');
     }
@@ -152,7 +154,34 @@ function review(t, user, ev, { decision, fields = {}, reason }) {
   P.enqueue(t, 'evaluate_subject', { type: ev.subject_type, id: ev.subject_id, trigger: 'evidence_reviewed' }, { dedupe: `eval:${ev.subject_type}:${ev.subject_id}` });
 }
 const readFile = (ev) => storage.get(ev.stored_path);
+function recheckAcceptedHolders() {
+  const candidates = db.all(`SELECT e.*, w.name AS worker_name FROM evidence e JOIN workers w
+    ON w.id=e.subject_id AND w.tenant_id=e.tenant_id
+    WHERE e.subject_type='worker' AND e.status='accepted' AND e.holder_name IS NOT NULL`);
+  const affected = new Map();
+  db.tx(() => {
+    for (const ev of candidates) {
+      if (sameName(ev.holder_name, ev.worker_name) && !hasRecordedHolderMismatch(ev)) continue;
+      const reason = 'The document holder needs to be verified against the worker record.';
+      const reasons = [...new Set([...j(ev.review_reasons_json, []), reason])];
+      db.update('evidence', ev.id, { status: 'needs_review', review_reasons_json: JSON.stringify(reasons) });
+      P.audit(ev.tenant_id, 'EVIDENCE_REVIEW', ev.worker_name, reason, SYSTEM, { case_id: ev.case_id });
+      if (!affected.has(ev.tenant_id)) affected.set(ev.tenant_id, []);
+      affected.get(ev.tenant_id).push(ev);
+    }
+    for (const [t, records] of affected) {
+      const controls = R.effectiveControls(t).filter((c) => c.subject === 'worker');
+      const evaluate = require('./engine').evaluateSubject;
+      for (const ev of records) {
+        const worker = subjectOf(t, 'worker', ev.subject_id);
+        for (const c of controls) {
+          if (c.key === ev.control_key || c.evidence?.doc_types?.includes(ev.doc_type)) evaluate(t, 'worker', worker, 'evidence_holder_recheck', c.key);
+        }
+      }
+    }
+  });
+}
 function seedAccepted(t, type, sid, f) {
   db.insert('evidence', { id: id('ev'), tenant_id: t, subject_type: type, subject_id: sid, status: 'accepted', source: 'demo_seed', filename: `${f.doc_type}.txt`, mime: 'text/plain', size: 0, sha256: sha256(id('x')), stored_path: '', confidence: 1, fields_json: '{}', created_at: clock.iso(), reviewed_by: 'Demo seed', reviewed_at: clock.iso(), ...f });
 }
-module.exports = { intake, review, canView, canReview, readFile, seedAccepted, heuristicExtract, INJECTION };
+module.exports = { intake, review, canView, canReview, readFile, recheckAcceptedHolders, seedAccepted, heuristicExtract, INJECTION };
