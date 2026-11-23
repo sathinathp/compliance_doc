@@ -98,14 +98,14 @@ function toolResult(out, isChat, name, schema) {
   return fields.length && (schema.required || []).every((key) => Object.hasOwn(result, key)) ? result : null;
 }
 
-async function request(t, cfg, system, userContent, name, schema) {
+async function request(t, cfg, system, userContent, name, schema, timeoutMs = 60000) {
   const p = PROVIDERS[cfg.provider];
   const destination = requestUrl(cfg, p);
   const auth = p.chat ? { authorization: `Bearer ${cfg.key}` } : { 'x-api-key': cfg.key, 'anthropic-version': '2023-06-01' };
   const body = p.chat ? chatRequest(cfg, p, system, userContent, name, schema)
     : { model: modelOf(cfg), max_tokens: 1000, system, messages: [{ role: 'user', content: userContent }], tools: [{ name, description: 'Record the structured result.', input_schema: schema }], tool_choice: { type: 'tool', name }, ...p.extra };
   const res = await fetch(destination, {
-    method: 'POST', redirect: 'error', signal: AbortSignal.timeout(60000),
+    method: 'POST', redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
     headers: { ...auth, 'content-type': 'application/json' },
     body: JSON.stringify(body),
   }).catch((e) => { if (e.name === 'TimeoutError') throw e; throw new Error(`Could not reach ${p.label}. Check this server's internet access.`); });
@@ -123,11 +123,11 @@ async function request(t, cfg, system, userContent, name, schema) {
   return result;
 }
 // Never throws: a failed AI call falls back to human review, and the failure stays visible.
-async function callTool(t, system, userContent, name, schema) {
+async function callTool(t, system, userContent, name, schema, { timeoutMs } = {}) {
   const cfg = config(t);
   if (!cfg) return null;
   try {
-    const out = await request(t, cfg, system, userContent, name, schema);
+    const out = await request(t, cfg, system, userContent, name, schema, timeoutMs);
     db.run('DELETE FROM meta WHERE k=?', errKey(t));
     return out;
   } catch (e) {

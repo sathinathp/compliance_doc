@@ -23,7 +23,7 @@ function applies(c, s, ctx) {
   }
   if (a.has && !s[a.has] && !attrs[a.has]) return { ok: false, why: `No ${a.has.replace(/_/g, ' ')} on the worker record.` };
   if (a.facility_requires) {
-    if (!ctx.facility) return { ok: null, why: 'No confirmed work location, so facility requirements cannot be determined.' };
+    if (!ctx.facility) return { ok: null, why: 'Not assigned to a work location, so location requirements cannot be checked.' };
     if (!ctx.facility.requirements_confirmed) return { ok: null, why: `Requirements for ${ctx.facility.name} have not been confirmed.` };
     if (!(ctx.facilityReqs || []).includes(a.facility_requires)) return { ok: false, why: `${ctx.facility.name} does not require this.` };
   }

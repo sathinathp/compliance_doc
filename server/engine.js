@@ -51,7 +51,10 @@ function enqueueAction(t, a, actor = SYSTEM) {
     if (a.requires_approval) {
       db.insert('approvals', { id: id('apr'), tenant_id: t, kind: 'action', ref_id: row.id, case_id: a.case_id, pack_key: a.pack_key, title: a.approval_title || `Approve message to ${a.recipient}`, detail: a.body, requested_by: actor.name, created_at: clock.iso() });
       P.audit(t, 'APPROVAL_REQUESTED', a.recipient, `Awaiting approval: ${a.subject}`, actor, { case_id: a.case_id });
-    } else P.enqueue(t, 'send_action', { action_id: row.id }, { dedupe: `send:${row.id}` });
+    } else {
+      const payload = { action_id: row.id, ...(a.confirmed_follow_up && { confirmed_follow_up: a.confirmed_follow_up }) };
+      P.enqueue(t, 'send_action', payload, { dedupe: `send:${row.id}` });
+    }
     return row;
   });
 }
@@ -197,17 +200,38 @@ const evaluateById = (t, type, sid, trigger) => {
   const s = db.get(`SELECT * FROM ${type === 'worker' ? 'workers' : 'entities'} WHERE id=? AND tenant_id=?`, sid, t);
   if (s) evaluateSubject(t, type, s, trigger);
 };
-async function sendAction(t, { action_id }) {
+function canDeliverConfirmedFollowUp(t, cs, confirmed) {
+  if (!cs || cs.closed_at || cs.control_key !== confirmed.controlKey || cs.gap_kind !== 'evidence' || cs.finding_verdict === 'false_finding') return false;
+  const user = db.get('SELECT id,role FROM users WHERE id=? AND tenant_id=?', confirmed.actorId, t);
+  if (!user || !P.canPack(user, cs.pack_key) || (cs.restricted && !P.canSeeRestricted(user))) return false;
+  const control = R.effectiveControls(t).find((c) => c.key === cs.control_key);
+  if (!control || control.mode !== 'auto') return false;
+  const { person, type } = followUpRecipient(t, cs, control);
+  return person?.id === confirmed.recipientId && type === confirmed.recipientType
+    && (type === 'worker' ? person.status === 'active' : P.canPack(person, cs.pack_key));
+}
+
+async function sendAction(t, { action_id, confirmed_follow_up }) {
   const a = db.get('SELECT * FROM actions WHERE id=? AND tenant_id=?', action_id, t);
   if (!a || a.status !== 'queued') return; // retried or duplicate job: nothing to send again
   const cs = a.case_id ? db.get('SELECT * FROM cases WHERE id=? AND tenant_id=?', a.case_id, t) : null;
   if (!cs || cs.closed_at) { db.update('actions', a.id, { status: 'cancelled' }); return; }
+  const stillConfirmed = (target) => !confirmed_follow_up || canDeliverConfirmedFollowUp(t, target, confirmed_follow_up);
+  const cancelConfirmed = () => {
+    const error = 'The case, recipient or requester’s access changed after confirmation.';
+    db.tx(() => {
+      const cancelled = db.run("UPDATE actions SET status='cancelled',error=? WHERE id=? AND tenant_id=? AND status='queued'", error, a.id, t);
+      if (!cancelled.changes) return;
+      P.audit(t, 'CHAT_COMMAND', 'Confirmed follow-up', error, SYSTEM, { case_id: cs.id, detail: { action_id: a.id, requester_id: confirmed_follow_up.actorId } });
+    });
+  };
+  if (!stillConfirmed(cs)) { cancelConfirmed(); return; }
   const maySend = () => {
     const pack = R.tenantPack(t, cs.pack_key);
-    const target = db.get('SELECT closed_at,owner_user_id FROM cases WHERE id=? AND tenant_id=?', cs.id, t);
+    const target = db.get('SELECT * FROM cases WHERE id=? AND tenant_id=?', cs.id, t);
     const action = db.get('SELECT status,body,created_at FROM actions WHERE id=? AND tenant_id=?', a.id, t);
     return !W.pending(t) && pack?.status === 'active' && pack.mode === 'auto' && target && !target.closed_at && target.owner_user_id === cs.owner_user_id
-      && action?.status === 'queued' && action.body === a.body && action.created_at === a.created_at;
+      && action?.status === 'queued' && action.body === a.body && action.created_at === a.created_at && stillConfirmed(target);
   };
   if (!maySend()) { R.pausePackActions(t, cs.pack_key); return; }
   const tn = db.get('SELECT * FROM tenants WHERE id=?', t);
@@ -216,8 +240,9 @@ async function sendAction(t, { action_id }) {
   try {
     const channel = await channels.deliver(tn, { ...a, recipient_slack: canReceive ? recipient.slack_id : null, recipient_email: canReceive ? recipient.email : null }, maySend);
     if (channel === 'paused') {
-      const current = db.get('SELECT closed_at FROM cases WHERE id=? AND tenant_id=?', cs.id, t);
+      const current = db.get('SELECT * FROM cases WHERE id=? AND tenant_id=?', cs.id, t);
       if (current?.closed_at) db.run("UPDATE actions SET status='cancelled' WHERE id=? AND tenant_id=? AND status='queued'", a.id, t);
+      else if (!stillConfirmed(current)) cancelConfirmed();
       return;
     }
     db.tx(() => {
@@ -285,7 +310,7 @@ function setMode(t, user, pack, mode) {
     for (const cs of db.all(`SELECT * FROM cases WHERE tenant_id=? AND pack_key=? AND ${OPEN} AND state='assigned' AND (finding_verdict IS NULL OR finding_verdict='confirmed')`, t, pack)) planNext(t, cs, controls.find((c) => c.key === cs.control_key));
   }
 }
-function followUp(t, user, cs) {
+function followUp(t, user, cs, confirmedRecipient = null) {
   P.assertPack(user, cs.pack_key);
   W.requireVerified(t);
   if (cs.closed_at) throw new HttpError(409, 'Case is closed.');
@@ -294,15 +319,22 @@ function followUp(t, user, cs) {
   if (c.mode !== 'auto') return { sent: false, message: 'This pack is in validation mode, so nothing was sent.' };
   if (cs.finding_verdict === 'false_finding') return { sent: false, message: 'This finding was marked false, so nothing was sent.' };
   if (cs.gap_kind === 'review') return { sent: false, message: 'Evidence is already awaiting review.' };
-  const { worker } = audience(t, cs), o = owner(t, cs), toW = worker && c.remediation?.route === 'worker' && cs.gap_kind !== 'data';
+  const { person, type } = followUpRecipient(t, cs, c), toW = type === 'worker';
   const gap = currentGap(t, cs, c);
   const body = c.restricted
     ? 'A restricted review needs your attention in Aegis.'
     : toW
-      ? `Hi ${firstName(worker.name)}, a follow-up from your compliance team about your ${c.name}. ${gap} Please upload it using your secure link: ${newLink(t, cs)}`
+      ? `Hi ${firstName(person.name)}, a follow-up from your compliance team about your ${c.name}. ${gap} Please upload it using your secure link: ${newLink(t, cs)}`
       : `${cs.subject_name}: ${gap}${cs.gap_kind !== 'data' ? ` Upload: ${newLink(t, cs)}` : ''}`;
-  const a = enqueueAction(t, { case_id: cs.id, pack_key: cs.pack_key, type: 'follow_up', idempotency_key: `${cs.id}:manual:${clock.today()}`, recipient: toW ? worker.name : o?.name, recipient_type: toW ? 'worker' : 'owner', subject: `Follow-up: ${c.name}`, body }, user);
-  return a.duplicate ? { sent: false, message: 'A follow-up was already sent today.' } : { sent: true, message: `Follow-up queued for ${toW ? worker.name : o?.name}.` };
+  const confirmed_follow_up = confirmedRecipient && { actorId: user.id, controlKey: c.key, recipientId: confirmedRecipient.recipientId, recipientType: confirmedRecipient.recipientType };
+  const a = enqueueAction(t, { case_id: cs.id, pack_key: cs.pack_key, type: 'follow_up', idempotency_key: `${cs.id}:manual:${clock.today()}`, recipient: person?.name, recipient_type: type, subject: `Follow-up: ${c.name}`, body, confirmed_follow_up }, user);
+  return a.duplicate ? { sent: false, message: 'A follow-up was already sent today.' } : { sent: true, message: `Follow-up queued for ${person?.name}.` };
+}
+function followUpRecipient(t, cs, control) {
+  const { worker } = audience(t, cs);
+  return worker && control.remediation?.route === 'worker' && cs.gap_kind !== 'data'
+    ? { person: worker, type: 'worker' }
+    : { person: owner(t, cs), type: 'owner' };
 }
 function recordVerdict(t, user, cs, verdict, note) {
   P.assertPack(user, cs.pack_key);
@@ -340,4 +372,4 @@ function decide(t, user, apr, decision, note) {
     }
   });
 }
-module.exports = { notifyRejected, loadCtx, evaluateSubject, evaluateTenant, evaluateById, sendAction, runReminders, setMode, followUp, recordVerdict, requestDecision, decide, enqueueAction, planNext, setState, currentFacility, OPEN };
+module.exports = { notifyRejected, loadCtx, evaluateSubject, evaluateTenant, evaluateById, sendAction, runReminders, setMode, followUp, followUpRecipient, recordVerdict, requestDecision, decide, enqueueAction, planNext, setState, currentFacility, OPEN };

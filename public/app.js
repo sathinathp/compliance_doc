@@ -68,8 +68,16 @@ function closeModal() {
 }
 
 function setNavigationOpen(open) {
-  $('#sheet').classList.toggle('open', open);
-  $('#menu').setAttribute('aria-expanded', String(open));
+  const sheet = $('#sheet'), menu = $('#menu');
+  if (sheet.open === open) return;
+  if (open) {
+    closeAllDirMenus();
+    sheet.showModal();
+    (sheet.querySelector('[aria-current="page"]') || $('#closeNavigation')).focus();
+  } else {
+    sheet.close();
+  }
+  menu.setAttribute('aria-expanded', String(open));
 }
 
 const PILL = { pass: ['pill-pass', 'Pass'], fail: ['pill-fail', 'Fail'], unknown: ['pill-unknown', 'Unknown'], not_applicable: ['pill-na', 'N/A'], restricted: ['pill-na', 'Restricted'], not_assessed: ['pill-na', 'Not assessed'] };
@@ -119,13 +127,35 @@ const table = (heads, rows, none) => rows.length
 const num = (t) => ({ t, num: true });
 const card = (title, sub, body, tools) => h`<div class="panel"><div class="ph2"><div><h2>${title}</h2><p>${sub}</p></div>${tools ? h`<div>${tools}</div>` : ''}</div>${body}</div>`;
 
-const I = { notices: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>', overview: '<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>', setup: '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>', cases: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>', approvals: '<path d="M20 6 9 17l-5-5"/>', checks: '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>', workers: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>', evidence: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M12 18v-6m-3 3 3-3 3 3"/>', packs: '<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/>', controls: '<path d="M4 21h16M4 14h16M4 7h16"/><circle cx="8" cy="7" r="2"/><circle cx="16" cy="14" r="2"/>', integrations: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="m9 12 2 2 4-4"/>', dashboards: '<rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/>', audit: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>', reports: '<path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/>', metrics: '<path d="M12 20V10M18 20V4M6 20v-4"/>', settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>' };
+// Side menu icons: Lucide (lucide.dev), drawn at 16 px with a 1.6 stroke. Each one says what the page is for.
+const I = {
+  overview: '<path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  cases: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
+  approvals: '<path d="M5 22h14"/><path d="M19.27 13.73A2.5 2.5 0 0 0 17.5 13h-11A2.5 2.5 0 0 0 4 15.5V17a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-1.5c0-.66-.26-1.3-.73-1.77Z"/><path d="M14 13V8.5C14 7 15 7 15 5a3 3 0 0 0-3-3c-1.66 0-3 1-3 3s1 2 1 3.5V13"/>',
+  evidence: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="m9 15 2 2 4-4"/>',
+  notices: '<path d="M3 22h18"/><path d="M6 18v-7"/><path d="M10 18v-7"/><path d="M14 18v-7"/><path d="M18 18v-7"/><path d="M12 2 20 7H4z"/>',
+  workers: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  checks: '<path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/>',
+  packs: '<path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>',
+  controls: '<path d="m16 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="m2 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="M7 21h10"/><path d="M12 3v18"/><path d="M3 7h2c2 0 5-1 7-2 2 1 5 2 7 2h2"/>',
+  dashboards: '<rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/>',
+  reports: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M8 18v-2"/><path d="M12 18v-6"/><path d="M16 18v-4"/>',
+  audit: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>',
+  metrics: '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
+  setup: '<path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z"/><path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/><path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2"/><path d="M10 6h4"/><path d="M10 10h4"/><path d="M10 14h4"/><path d="M10 18h4"/>',
+  integrations: '<path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/>',
+  settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
+};
+// Daily work first and without a heading, then records, then reporting. Organisation pages are
+// used mostly during setup, so they sit at the bottom of the menu, out of the way.
 const NAV = [
-  ['Workspace', [['overview', 'Overview'], ['cases', 'Cases'], ['evidence', 'Evidence'], ['approvals', 'Approvals'], ['notices', 'Tax notices']]],
+  ['', [['overview', 'Overview'], ['cases', 'Cases'], ['approvals', 'Approvals'], ['evidence', 'Evidence'], ['notices', 'Tax notices']]],
   ['Records', [['workers', 'Workers'], ['checks', 'Checks'], ['packs', 'Compliance packs'], ['controls', 'Control rules']]],
-  ['Reporting', [['dashboards', 'Dashboards'], ['reports', 'Reports'], ['metrics', 'Pilot metrics'], ['audit', 'Audit history']]],
-  ['Organization', [['setup', 'Company setup'], ['integrations', 'Connections'], ['settings', 'Settings']]]
+  ['Reporting', [['dashboards', 'Dashboards'], ['reports', 'Reports'], ['audit', 'Audit history'], ['metrics', 'Pilot metrics']]],
 ];
+const NAV_ORG = [['setup', 'Company setup'], ['integrations', 'Connections'], ['settings', 'Settings']];
+// Dashboards opens to its standard views (the ids match the built-in dashboards on the server).
+const DASH_VIEWS = [['builtin-readiness', 'Readiness'], ['builtin-expiring', 'Expiring soon'], ['builtin-gaps', 'Open gaps'], ['builtin-missing', 'Missing documents'], ['builtin-coverage', 'Coverage']];
 const HEAD = { overview: ['Workspace', 'Overview', 'Current status across activated packs, accepted evidence and open remediation.'], setup: ['Organization', 'Company setup', 'Get your organisation ready: bring in your people, confirm requirements, and run the first check.'], cases: ['Workspace', 'Cases', 'Each gap moves from identified to closed. Only accepted evidence closes a case.'], approvals: ['Workspace', 'Approvals', 'Consequential actions wait here for an authorized person.'], evidence: ['Workspace', 'Evidence', 'AI proposes matches and fields. Uncertain documents go to a person.'], checks: ['Records', 'Checks', 'Every result has a reason, evidence references and a control version.'], workers: ['Records', 'Workers', 'Per-pack status for each worker. One pack never hides another.'], packs: ['Records', 'Compliance packs', 'Versioned packs reviewed and activated by an authorized person.'], controls: ['Records', 'Control rules', 'Draft, preview and approve changes before they take effect.'], integrations: ['Organization', 'Connections', 'Manage workforce sync, reporting channels, and message delivery.'], dashboards: ['Reporting', 'Dashboards', 'Readiness, expirations and gaps, counted from current checks.'], reports: ['Reporting', 'Reports', 'Reports to share with clients, auditors and managers.'], notices: ['Workspace', 'Tax notices', 'Letters from tax agencies and the replies Finance approves.'], metrics: ['Reporting', 'Pilot metrics', 'How the pilot is going, measured from Aegis records.'], audit: ['Reporting', 'Audit history', 'Every check, request and decision, in order. Entries cannot be edited or deleted.'], settings: ['Organization', 'Settings', 'Users, roles, reporting channel and schedules.'] };
 
 // Ticked cases on the Cases page (ids). Cleared when the tab or page changes.
@@ -133,6 +163,13 @@ const caseSel = new Set();
 let lastCaseCheck = null;
 let caseClosed = false, me = null, route = 'overview', routeArg = null, checkFilter = {}, evidenceSel = null, lastDraft = null, importPreview = null;
 let navigation = 0;
+// The company's locations, from the last Setup or Workers page, for the location suggestions.
+let knownLocations = [];
+const rememberLocations = (list) => {
+  const seen = new Map(knownLocations.map((f) => [f.name, f]));
+  for (const f of list) if (f?.name) seen.set(f.name, { name: f.name, state: f.state || '' });
+  knownLocations = [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
+};
 const adminRoutes = new Set(['setup', 'settings', 'audit', 'integrations']);
 const canEdit = () => me.user.role !== 'viewer';
 // Tax notices belong to the payroll pack: Finance and administrators.
@@ -151,6 +188,7 @@ async function boot() {
   if (canEdit()) questions.push('Create a healthcare dashboard showing missing evidence by facility.');
   $('#chatPrompts').innerHTML = render(questions.map((q) => h`<button class="prompt-pill" data-act="prompt" data-q="${q}">${q}</button>`));
   renderTop();
+  renderNav();
   renderVerificationNotice();
   renderDemoRack();
   readHash();
@@ -172,11 +210,15 @@ function syncTools() {
 
 function renderTop() {
   if (!me || !me.user) return;
-  const tenantAvatar = $('#tenantAvatar'); if (tenantAvatar) tenantAvatar.textContent = (me.tenant?.name || 'BH').slice(0, 2).toUpperCase();
+  const tenantAvatar = $('#tenantAvatar'); if (tenantAvatar) tenantAvatar.textContent = badgeInitials(me.tenant?.name || 'Aegis');
   const tenantName = $('#tenantName'); if (tenantName) tenantName.textContent = me.tenant?.name || 'Aegis';
   const tenantStatus = $('#tenantStatus');
   tenantStatus.hidden = !me.demo && !me.sandbox;
   tenantStatus.textContent = me.sandbox ? 'Sandbox' : 'Demo data';
+  tenantStatus.title = me.sandbox ? 'A practice workspace. Messages stay in Aegis.' : 'This workspace holds sample people and records.';
+  $('#meMenuAvatar').textContent = badgeInitials(me.user.name || '?');
+  $('#meMenuName').textContent = me.user.name || 'User';
+  $('#meMenuEmail').textContent = me.user.email || '';
   $('#meMenuDemoRole').hidden = !me.demo;
   $('#meMenuDemoControls').hidden = !me.demo || !me.user.is_admin;
   syncTools();
@@ -204,16 +246,124 @@ function renderTop() {
   if (meMenuSettings) meMenuSettings.hidden = !me.user.is_admin;
 }
 
-function renderNav() {
-  const links = NAV.map(([group, items]) => {
-    const visible = items.filter(([key]) => (me.user.is_admin || !adminRoutes.has(key)) && (key !== 'notices' || canFinance()));
-    if (!visible.length) return '';
-    return h`<section class="rail-group"><h2>${group}</h2>${visible.map(([key, label]) => h`<a class="rail-link" href="#${key}" aria-current="${route === key ? 'page' : 'false'}"><svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round">${raw(I[key])}</svg><span>${label}</span></a>`)}</section>`;
-  });
-  const markup = render(links);
-  $('#tabs').innerHTML = markup;
-  $('#sheetIn').innerHTML = markup;
+// ---------- Side menu ----------
+// Counts come from /api/nav and are counted exactly as the page they open. Only things waiting on
+// this person get a tinted badge; plain totals are grey numbers; Company setup gets a dot when
+// something needs fixing.
+let navCounts = {}, navCountsLoading = false;
+const NAV_COUNT_WORDS = { cases: 'open', approvals: 'waiting for you', evidence: 'to review', notices: 'waiting' };
+const navIcon = (key) => raw(`<svg class="rail-icon" aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${I[key]}</svg>`);
+const caretSvg = '<svg class="rail-caret" aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
+function navMeta(key) {
+  const n = navCounts[key];
+  if (key === 'setup') return n ? h`<span class="rail-dot" aria-hidden="true"></span><span class="visually-hidden">, ${plural(n, 'thing')} to fix</span>` : '';
+  if (!n || !NAV_COUNT_WORDS[key]) return '';
+  return h`<span class="rail-count${key === 'approvals' ? ' is-yours' : ''}" aria-hidden="true">${n}</span><span class="visually-hidden">, ${n} ${NAV_COUNT_WORDS[key]}</span>`;
 }
+const canOpen = (key) => (me.user.is_admin || !adminRoutes.has(key)) && (key !== 'notices' || canFinance());
+const navLink = (key, label) => h`<a class="rail-link" href="#${key}" data-key="${key}" data-label="${label}">${navIcon(key)}<span class="rail-label">${label}</span><span class="rail-meta">${navMeta(key)}</span>${key === 'dashboards' ? raw(caretSvg) : ''}</a>`;
+function renderNav() {
+  setRailCollapsed(document.documentElement.classList.contains('rail-collapsed'), false);
+  const groups = NAV.map(([group, items]) => {
+    const visible = items.filter(([key]) => canOpen(key));
+    if (!visible.length) return '';
+    const links = visible.map(([key, label]) => (key === 'dashboards'
+      ? h`<div class="rail-tree">${navLink(key, label)}<div class="rail-sub" role="group" aria-label="Dashboards">${DASH_VIEWS.map(([id, name]) => h`<a class="rail-sublink" href="#dashboards/${id}">${name}</a>`)}</div></div>`
+      : navLink(key, label)));
+    return group
+      ? h`<section class="rail-group" aria-labelledby="nav-${group.toLowerCase()}"><h2 class="rail-group-title" id="nav-${group.toLowerCase()}">${group}</h2>${links}</section>`
+      : h`<section class="rail-group" aria-label="Daily work">${links}</section>`;
+  });
+  const org = NAV_ORG.filter(([key]) => canOpen(key)).map(([key, label]) => navLink(key, label));
+  $('#tabs').innerHTML = render(groups);
+  $('#tabsOrg').innerHTML = render(org);
+  // The phone menu is one list: daily work, records, reporting, then the organisation pages.
+  $('#sheetIn').innerHTML = render(h`${groups}${org.length ? h`<section class="rail-group rail-group-org" aria-label="Organisation">${org}</section>` : ''}`);
+  syncNav();
+}
+// Marks the current page. A dashboard view marks its sub-item and keeps Dashboards open.
+function syncNav() {
+  for (const nav of document.querySelectorAll('.rail-nav, .rail-org')) {
+    for (const a of nav.querySelectorAll('[aria-current]')) a.removeAttribute('aria-current');
+    for (const a of nav.querySelectorAll('.is-section')) a.classList.remove('is-section');
+    const main = nav.querySelector(`.rail-link[href="#${route}"]`);
+    const sub = route === 'dashboards' && routeArg ? nav.querySelector(`.rail-sublink[href="#dashboards/${CSS.escape(routeArg)}"]`) : null;
+    nav.querySelector('.rail-tree')?.classList.toggle('is-open', route === 'dashboards');
+    const current = sub || main;
+    if (!current) continue;
+    current.setAttribute('aria-current', 'page');
+    if (sub) main?.classList.add('is-section');
+    if (nav.clientHeight) current.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+}
+// Refreshes the counts in place, so keyboard focus in the menu is never lost.
+async function loadNavCounts() {
+  if (navCountsLoading || !me?.user) return;
+  navCountsLoading = true;
+  try {
+    navCounts = await api('/api/nav');
+    for (const a of document.querySelectorAll('.rail-link[data-key]')) {
+      const slot = a.querySelector('.rail-meta');
+      if (slot) slot.innerHTML = render(navMeta(a.dataset.key));
+    }
+  } catch { /* the counts are a convenience; the page itself still loads */ } finally { navCountsLoading = false; }
+  renderFresh();
+}
+// ---------- Top bar ----------
+// Breadcrumb after the company name: section, then page, then a detail view. A part given as
+// [label, href] is a link back up; the last part is the current page.
+function setTrail(parts) {
+  const ol = $('#barTrail'); if (!ol) return;
+  const last = parts.length - 1;
+  ol.innerHTML = render(parts.map((p, i) => {
+    const [label, href] = Array.isArray(p) ? p : [p, null];
+    return h`<li class="${i === 0 && last > 0 ? 'is-section' : ''}">${href ? h`<a href="${href}">${label}</a>` : i === last ? h`<span aria-current="page">${label}</span>` : h`<span>${label}</span>`}</li>`;
+  }));
+}
+// When the checks last ran, in the same UTC wording as the rest of the app. Green while it is from
+// today or yesterday, amber once it is older. Opens the Checks page.
+const TIME = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' });
+function renderFresh() {
+  const el = $('#barFresh'), at = navCounts.checked_at;
+  if (!el) return;
+  if (!at || !parse(at)) { el.hidden = true; return; }
+  // A run dated after "today" (the demo clock can be moved forward) counts as today.
+  const day = String(at).slice(0, 10), age = daysFromToday(day), time = TIME.format(parse(at));
+  const recent = age !== null && age >= -1, today = age !== null && age >= 0;
+  const short = today ? `${time} UTC` : age === -1 ? 'yesterday' : date(day);
+  const long = today ? `today at ${time} UTC` : age === -1 ? `yesterday at ${time} UTC` : `on ${date(day)}`;
+  el.innerHTML = render(h`<i class="${recent ? 'is-fresh' : 'is-stale'}" aria-hidden="true"></i><span>Checked ${short}</span>`);
+  el.title = `Aegis last ran the checks ${long}.`;
+  el.setAttribute('aria-label', `Checks last ran ${long}. Open Checks.`);
+  el.hidden = false;
+}
+// Collapsed sidebar: a 60 px icon rail. The choice is remembered on this device only.
+const RAIL_KEY = 'aegis.sidebar.collapsed';
+function setRailCollapsed(collapsed, remember = true) {
+  // The width animates only when someone toggles it, never on page load.
+  if (remember) document.documentElement.classList.add('rail-ready');
+  document.documentElement.classList.toggle('rail-collapsed', collapsed);
+  const toggle = $('.rail-toggle');
+  if (toggle) { toggle.setAttribute('aria-expanded', String(!collapsed)); toggle.setAttribute('aria-label', collapsed ? 'Expand sidebar' : 'Collapse sidebar'); }
+  hideRailTip();
+  if (remember) { try { localStorage.setItem(RAIL_KEY, collapsed ? '1' : '0'); } catch { /* private mode: not remembered */ } }
+}
+try { if (localStorage.getItem(RAIL_KEY) === '1') document.documentElement.classList.add('rail-collapsed'); } catch { /* not remembered */ }
+// In the collapsed rail each icon names itself (and its count) beside the pointer or keyboard focus.
+function showRailTip(el) {
+  const tip = $('#railTip');
+  if (!tip || !document.documentElement.classList.contains('rail-collapsed')) return;
+  const n = el.dataset.key && navCounts[el.dataset.key];
+  tip.innerHTML = render(h`${el.dataset.label}${n && el.dataset.key !== 'setup' ? h`<b>${n}</b>` : ''}${n && el.dataset.key === 'setup' ? h`<b>${plural(n, 'thing')} to fix</b>` : ''}`);
+  const r = el.getBoundingClientRect();
+  tip.hidden = false;
+  tip.style.top = `${Math.round(r.top + r.height / 2)}px`;
+  tip.style.left = `${Math.round(r.right + 10)}px`;
+}
+function hideRailTip() { const tip = $('#railTip'); if (tip) tip.hidden = true; }
+document.addEventListener('pointerover', (ev) => { const el = ev.target.closest?.('.workspace-rail [data-label]'); if (el) showRailTip(el); else hideRailTip(); });
+document.addEventListener('focusin', (ev) => { const el = ev.target.closest?.('.workspace-rail [data-label]'); if (el && el.matches(':focus-visible')) showRailTip(el); else hideRailTip(); });
+document.addEventListener('scroll', hideRailTip, true);
 
 function readHash() {
   if (!me) {
@@ -264,18 +414,25 @@ function showVerifyEmail(token) {
   };
 }
 
+// Due-date views of the Cases page (#cases/overdue, #cases/week). The Overview counts link here,
+// so each count matches the list it opens. Any other #cases/<id> opens that case.
+const isOverdue = (c) => (daysFromToday(c.due_date) ?? 1) < 0;
+const isDueThisWeek = (c) => { const n = daysFromToday(c.due_date); return n !== null && n >= 0 && n <= 7; };
+const CASE_DUE = { overdue: ['Overdue', isOverdue], week: ['Due this week', isDueThisWeek] };
 async function go(r, arg = null, keep) {
   const version = ++navigation;
-  if (!keep && r !== route) { $('#globalSearch').value = ''; caseSel.clear(); closeChat(); }
+  if (!keep && r !== route) { $('#globalSearch').value = ''; caseSel.clear(); closeChat(false); }
   route = r; routeArg = arg;
   closeAllDirMenus();
   setNavigationOpen(false);
+  syncNav();
   if (r !== 'overview') {
     const alertEl = $('#alert');
     if (alertEl) { alertEl.hidden = true; alertEl.innerHTML = ''; }
   }
   const [c, t, d] = HEAD[r] || ['Workspace', words(r), ''];
   const crumb = $('#crumb'); if (crumb) crumb.textContent = c;
+  setTrail([c, t]);
   const heading = $('#heading'); if (heading) heading.textContent = t;
   const scopeEl = $('#scope'); if (scopeEl) scopeEl.textContent = d;
   syncTools();
@@ -299,8 +456,9 @@ async function go(r, arg = null, keep) {
         : e.message === 'Failed to fetch' ? 'Aegis could not reach the server. Check that it is running, then try again.' : e.message;
     $('#view').innerHTML = render(h`<div class="panel load-error" role="alert"><div><b>This page did not load</b><p>${hint}</p></div><button class="btn-card-outline" data-act="retryView">Try again</button></div>`);
   }
-  renderNav();
-  if (r === 'cases' && arg && !keep) {
+  // Every page load and every refresh after an action brings the menu counts up to date.
+  loadNavCounts();
+  if (r === 'cases' && arg && !CASE_DUE[arg] && !keep) {
     try { await ACT.caseDetail({ dataset: { id: arg } }); } catch (e) { toast(e.message, 'warning'); }
   }
 }
@@ -392,8 +550,18 @@ function confirmFollowUps(ids, scopeText) {
 function setupSteps(s) {
   const st = s.steps, gapsFor = (k) => s.gap_items.filter((g) => g.step === k);
   const needsEmail = me.workspace_email?.pending;
+  rememberLocations(s.facilities);
   // Gaps on records and context are problems to fix; the packs note is guidance, so it reads as information.
-  const gapNote = (k, info) => (gapsFor(k).length ? h`<div class="setup-note${info ? ' is-info' : ''}"><b>${info ? 'Good to know' : gapsFor(k).length === 1 ? 'One thing to fix' : `${gapsFor(k).length} things to fix`}</b><ul>${gapsFor(k).map((g) => h`<li>${g.text}</li>`)}</ul></div>` : '');
+  // A gap about people names them; workers without a location get a button that sets it.
+  const SHOWN = 5;
+  const gapPeople = (g) => {
+    if (!g.workers?.length) return '';
+    const fix = g.kind === 'no_location' && canEdit();
+    if (g.workers.length === 1 && !fix) return '';
+    const shown = g.workers.slice(0, SHOWN), more = g.workers.length - shown.length;
+    return h`<ul class="gap-people">${shown.map((w) => h`<li><button class="btn-link-action" data-act="workerDetail" data-id="${w.id}">${w.name}</button>${fix ? h`<button class="btn-card-outline" data-act="moveWorker" data-id="${w.id}" data-title="Set work location for ${w.name}">Set location</button>` : ''}</li>`)}${more ? h`<li><a class="btn-link-action" href="#workers">${plural(more, 'more worker')} on the Workers page</a></li>` : ''}</ul>`;
+  };
+  const gapNote = (k, info) => (gapsFor(k).length ? h`<div class="setup-note${info ? ' is-info' : ''}"><b>${info ? 'Good to know' : gapsFor(k).length === 1 ? 'One thing to fix' : `${gapsFor(k).length} things to fix`}</b><ul>${gapsFor(k).map((g) => h`<li>${g.text}${gapPeople(g)}</li>`)}</ul></div>` : '');
   const active = s.recommended.filter((p) => p.status === 'active');
   const cons = s.source.connectors, bySrc = s.source.workers_by_source;
   const srcWords = { hrms: 'from the HRMS', spreadsheet: 'from spreadsheets', manual: 'added by hand', webhook: 'from the HRMS' };
@@ -514,6 +682,7 @@ async function reloadAudit() {
 // Detail pages carry their own title; the crumb links back to the list they came from.
 function pageHead(crumb, href, title, sub) {
   const c = $('#crumb'); if (c) c.innerHTML = render(h`<a href="${href}">${crumb}</a>`);
+  setTrail([(HEAD[route] || [])[0] || 'Workspace', [crumb, href], title]);
   const t = $('#heading'); if (t) t.textContent = title;
   const d = $('#scope'); if (d) d.textContent = sub || '';
 }
@@ -701,12 +870,12 @@ const VIEWS = {
     const subtitle = $('#scope');
     if (subtitle) subtitle.textContent = `Last checked ${dt(coverage.as_of)} UTC · ${packs.length} active pack${packs.length === 1 ? '' : 's'}`;
     // "Today": what needs attention now, each part a link to the list behind it.
-    const overdue = openCases.filter((c) => (daysFromToday(c.due_date) ?? 1) < 0).length;
-    const dueSoon = openCases.filter((c) => { const n = daysFromToday(c.due_date); return n !== null && n >= 0 && n <= 7; }).length;
+    const overdue = openCases.filter(isOverdue).length;
+    const dueSoon = openCases.filter(isDueThisWeek).length;
     const today = [
-      { n: overdue, one: 'case overdue', many: 'cases overdue', tone: 'late', href: '#cases' },
-      { n: dueSoon, one: 'case due this week', many: 'cases due this week', tone: 'soon', href: '#cases' },
-      { n: kpi.expiring, one: 'credential expiring soon', many: 'credentials expiring soon', tone: 'soon', href: '#dashboards/builtin-expiring' },
+      { n: overdue, one: 'case overdue', many: 'cases overdue', tone: 'late', href: '#cases/overdue' },
+      { n: dueSoon, one: 'case due this week', many: 'cases due this week', tone: 'soon', href: '#cases/week' },
+      { n: kpi.expiring, one: 'credential to renew', many: 'credentials to renew', tone: 'soon', href: '#dashboards/builtin-expiring' },
       { n: kpi.pending_approvals, one: 'approval waiting for you', many: 'approvals waiting for you', tone: 'soon', href: '#approvals' }
     ];
     const allClear = today.every((t) => !t.n);
@@ -732,7 +901,7 @@ const VIEWS = {
         <div class="ov-workload">
           <h2>Workspace activity</h2>
           <div class="ov-counter-list">${workload.map((item) => h`<a href="#${item.destination}"><strong>${item.count}</strong><span>${item.label}</span></a>`)}</div>
-          <p>${kpi.expiring} credential${kpi.expiring === 1 ? '' : 's'} approaching expiration</p>
+          <p><a href="#dashboards/builtin-expiring">${plural(kpi.expiring, 'credential')} expired or expiring within 90 days</a></p>
         </div>
       </section>
       <div class="ov-detail-grid">
@@ -756,12 +925,12 @@ const VIEWS = {
     scope(null);
     const s = await api('/api/setup');
     const steps = setupSteps(s), done = steps.filter((x) => x.done).length, next = steps.find((x) => !x.done && !x.locked);
-    const total = steps.length, fix = steps.find((x) => x.done && x.attention);
+    const total = steps.length, toFix = steps.filter((x) => x.done && x.attention), fix = toFix[0];
     return h`<div class="stack">
       <section class="panel setup-progress" aria-labelledby="setupProgress">
         <div class="setup-progress-text">
           <h2 id="setupProgress">${done === total ? 'Setup is complete' : `${done} of ${total} steps done`}</h2>
-          <p>${done === total ? `Aegis is checking ${plural(s.summary.workers, 'worker')} against ${plural(s.recommended.filter((p) => p.status === 'active').length, 'active pack')}.${fix ? ` One step needs attention: ${fix.title.toLowerCase()}.` : ' You can change any step below.'}` : `Next: ${next ? next.title.toLowerCase() : 'finish the steps above'}.`}</p>
+          <p>${done === total ? `Aegis is checking ${plural(s.summary.workers, 'worker')} against ${plural(s.recommended.filter((p) => p.status === 'active').length, 'active pack')}.${toFix.length > 1 ? ` ${toFix.length} steps need attention: ${toFix.map((x) => x.title.toLowerCase()).join('; ')}.` : fix ? ` One step needs attention: ${fix.title.toLowerCase()}.` : ' You can change any step below.'}` : `Next: ${next ? next.title.toLowerCase() : 'finish the steps above'}.`}</p>
         </div>
         <ol class="setup-meter" aria-hidden="true">${steps.map((x) => h`<li class="${x.done ? 'is-done' : x === next ? 'is-current' : ''}"></li>`)}</ol>
         ${next ? h`<button class="btn-submit-green" data-act="openStep" data-step="${next.key}">Continue</button>` : fix ? h`<button class="btn-card-outline" data-act="openStep" data-step="${fix.key}">Review</button>` : ''}
@@ -769,9 +938,11 @@ const VIEWS = {
       <div class="setup-steps">${steps.map((x, n) => setupStep(x, n + 1, x === next))}</div>
     </div>`;
   },
-  async cases() {
+  async cases(arg) {
     scope(null);
-    const [rows, packs] = await Promise.all([api(`/api/cases${caseClosed ? '?closed=1' : ''}`), caseClosed ? [] : api('/api/packs')]);
+    const [all, packs] = await Promise.all([api(`/api/cases${caseClosed ? '?closed=1' : ''}`), caseClosed ? [] : api('/api/packs')]);
+    const due = !caseClosed && CASE_DUE[arg] ? arg : '';
+    const rows = due ? all.filter(CASE_DUE[due][1]) : all;
     const autoPacks = new Set(packs.filter((p) => p.mode === 'auto').map((p) => p.key));
     // Why a follow-up would not be sent, known before sending. "Already sent today" is only known by the server.
     const skipOf = (c) => !autoPacks.has(c.pack_key) ? 'validation' : c.gap_kind === 'review' ? 'review' : '';
@@ -780,7 +951,8 @@ const VIEWS = {
     const pickCell = (c) => !selectable ? '' : c.can_act
       ? h`<td class="select-cell"><label><input type="checkbox" class="case-check" data-id="${c.id}" ${caseSel.has(c.id) ? raw('checked') : ''} aria-label="${`Select ${c.control_name} for ${c.subject_name}`}"></label></td>`
       : h`<td class="select-cell"></td>`;
-    const tabs = h`<div class="filters"><button class="chip${caseClosed ? '' : ' on'}" data-act="caseTab" data-v="">Open</button><button class="chip${caseClosed ? ' on' : ''}" data-act="caseTab" data-v="1">Closed</button></div>`;
+    const dueChips = caseClosed ? '' : h`<span class="filter-sep" aria-hidden="true"></span>${[['', 'Any due date', all.length], ...Object.entries(CASE_DUE).map(([k, [label, test]]) => [k, label, all.filter(test).length])].map(([k, label, n]) => h`<button class="chip${due === k ? ' on' : ''}" data-act="caseDue" data-v="${k}" aria-pressed="${due === k}">${label}${k ? ` (${n})` : ''}</button>`)}`;
+    const tabs = h`<div class="filters"><button class="chip${caseClosed ? '' : ' on'}" data-act="caseTab" data-v="">Open</button><button class="chip${caseClosed ? ' on' : ''}" data-act="caseTab" data-v="1">Closed</button>${dueChips}</div>`;
     const caseRows = rows.map((c) => h`<tr class="click${caseSel.has(c.id) ? ' is-picked' : ''}" data-act="caseDetail" data-id="${c.id}" data-can-follow-up="${!caseClosed && c.can_act}" data-skip="${skipOf(c)}" data-name="${c.control_name}" data-subject="${c.subject_name}">
       ${pickCell(c)}
       <td class="case-main" title="${c.gap}"><button class="row-title" data-act="caseDetail" data-id="${c.id}">${c.control_name}</button><div class="case-sub">${c.subject_name}<span aria-hidden="true"> · </span><span class="mono">${c.id}</span></div></td>
@@ -793,8 +965,9 @@ const VIEWS = {
     </tr>`);
     const followUps = selectable ? h`<button class="btn-intake-evidence" id="chaseAllBtn" data-act="chaseAll">Follow up on all</button>` : '';
     const allBox = h`<label class="select-all"><input type="checkbox" class="case-check-all" aria-label="Select all cases shown"></label>`;
-    return card(caseClosed ? 'Closed cases' : 'Open cases', caseClosed ? 'Cases closed by accepted evidence or no longer applicable.' : `${rows.length} open${rows.filter((c) => (daysFromToday(c.due_date) ?? 1) < 0).length ? ` · ${rows.filter((c) => (daysFromToday(c.due_date) ?? 1) < 0).length} overdue` : ''}. Open a case to see its gap and history.`,
-      h`${tabs}${table([...(selectable ? [allBox] : []), 'Case', 'Pack', 'Stage', 'Owner', 'Due', 'Finding', caseClosed ? 'How it closed' : ''], caseRows, caseClosed ? ['No closed cases yet', 'Cases appear here once accepted evidence closes them.'] : ['No open cases', 'Every check in scope passes, or its gap is already closed.'])}`, followUps);
+    const late = all.filter(isOverdue).length;
+    return card(caseClosed ? 'Closed cases' : due ? `Open cases: ${CASE_DUE[due][0].toLowerCase()}` : 'Open cases', caseClosed ? 'Cases closed by accepted evidence or no longer applicable.' : due ? `${rows.length} of ${all.length} open cases. Open a case to see its gap and history.` : `${all.length} open${late ? ` · ${late} overdue` : ''}. Open a case to see its gap and history.`,
+      h`${tabs}${table([...(selectable ? [allBox] : []), 'Case', 'Pack', 'Stage', 'Owner', 'Due', 'Finding', caseClosed ? 'How it closed' : ''], caseRows, caseClosed ? ['No closed cases yet', 'Cases appear here once accepted evidence closes them.'] : due ? [`No cases ${CASE_DUE[due][0].toLowerCase()}`, 'Choose Any due date to see every open case.'] : ['No open cases', 'Every check in scope passes, or its gap is already closed.'])}`, followUps);
   },
   async approvals() {
     scope(null);
@@ -815,7 +988,8 @@ const VIEWS = {
     const openOf = (w) => (w.checks?.fail || 0) + (w.checks?.unknown || 0);
     const rows = (await api('/api/workers')).sort((a, b) => openOf(b) - openOf(a) || a.name.localeCompare(b.name));
     const withGaps = rows.filter((w) => openOf(w)).length;
-    return card('All workers', `${rows.length} workers${withGaps ? ` · ${withGaps} with open checks` : ''}. A tick means the pack passes; only problems are highlighted.`, table(['Worker', 'Location', 'Onboarding', 'Healthcare', 'Immigration', 'Payroll', 'Overall', 'Open', 'Readiness'], rows.map((w) => h`<tr class="click" data-act="workerDetail" data-id="${w.id}"><td><button class="row-title" data-act="workerDetail" data-id="${w.id}">${w.name}</button>${w.status !== 'active' ? h` <span class="pill pill-na">${words(w.status)}</span>` : ''}<div class="case-sub">${w.role || 'No role'}</div></td><td class="${w.facility ? '' : 'muted'}">${w.facility || 'No confirmed location'}</td><td class="result-cell">${quietStatus(w.packs.onboarding)}</td><td class="result-cell">${quietStatus(w.packs.healthcare)}</td><td class="result-cell">${quietStatus(w.packs.immigration)}</td><td class="result-cell">${quietStatus(w.packs.payroll)}</td><td class="result-cell">${quietStatus(w.overall)}</td><td class="open-cell">${openOf(w) ? h`<b>${openOf(w)}</b>` : h`<span class="muted">0</span>`}</td><td class="${w.readiness === 'blocked' ? 'text-fail' : 'muted'}">${words(w.readiness)}</td></tr>`), ['No workers yet', 'Add a worker, import a roster, or connect your HR system under Connections.']));
+    rememberLocations(rows.filter((w) => w.facility).map((w) => ({ name: w.facility, state: w.state })));
+    return card('All workers', `${rows.length} workers${withGaps ? ` · ${withGaps} with open checks` : ''}. A tick means the pack passes; only problems are highlighted.`, table(['Worker', 'Location', 'Onboarding', 'Healthcare', 'Immigration', 'Payroll', 'Overall', 'Open', 'Readiness'], rows.map((w) => h`<tr class="click" data-act="workerDetail" data-id="${w.id}"><td><button class="row-title" data-act="workerDetail" data-id="${w.id}">${w.name}</button>${w.status !== 'active' ? h` <span class="pill pill-na">${words(w.status)}</span>` : ''}<div class="case-sub">${w.role || 'No role'}</div></td><td class="${w.facility ? '' : 'muted'}">${w.facility || 'No location assigned'}</td><td class="result-cell">${quietStatus(w.packs.onboarding)}</td><td class="result-cell">${quietStatus(w.packs.healthcare)}</td><td class="result-cell">${quietStatus(w.packs.immigration)}</td><td class="result-cell">${quietStatus(w.packs.payroll)}</td><td class="result-cell">${quietStatus(w.overall)}</td><td class="open-cell">${openOf(w) ? h`<b>${openOf(w)}</b>` : h`<span class="muted">0</span>`}</td><td class="${w.readiness === 'blocked' ? 'text-fail' : 'muted'}">${words(w.readiness)}</td></tr>`), ['No workers yet', 'Add a worker, import a roster, or connect your HR system under Connections.']));
   },
   async evidence() {
     scope(null);
@@ -1278,9 +1452,10 @@ const ACT = {
       go(VIEWS[r] ? r : 'overview', a || null);
     }
   },
-  closeModal, openChat: () => { $('#chatDrawer').classList.add('open'); loadChat(); setTimeout(() => $('#chatDrawer [name="text"]')?.focus(), 120); }, closeChat: () => closeChat(),
+  closeModal, openChat, closeChat: () => closeChat(),
+  toggleRail: () => setRailCollapsed(!document.documentElement.classList.contains('rail-collapsed')),
   async logout() { await api('/api/logout', {}); history.replaceState(null, '', location.pathname + location.search); location.reload(); },
-  prompt: (el) => { $('#chatDrawer').classList.add('open'); sendChat(el.dataset.q); },
+  prompt: (el) => sendChat(el.dataset.q),
   async caseDetail(el) {
     const version = navigation;
     const c = await api(`/api/cases/${el.dataset.id}`), e = c.evaluation, open = !c.closed_at;
@@ -1322,7 +1497,8 @@ const ACT = {
     } finally { el.disabled = false; }
   },
   async decide(el) { await api(`/api/approvals/${el.dataset.id}/decide`, { decision: el.dataset.d }); toast(`Marked ${el.dataset.d}.`, 'success'); after(); },
-  caseTab(el) { caseClosed = !!el.dataset.v; caseSel.clear(); refresh(); },
+  caseTab(el) { caseClosed = !!el.dataset.v; caseSel.clear(); if (routeArg) location.hash = 'cases'; else refresh(); },
+  caseDue(el) { caseSel.clear(); location.hash = el.dataset.v ? `cases/${el.dataset.v}` : 'cases'; },
   checkFilter(el) { checkFilter[el.dataset.k] = el.dataset.v; refresh(); },
   async workerDetail(el, ev) {
     ev?.stopPropagation();
@@ -1331,11 +1507,15 @@ const ACT = {
     const rank = { fail: 0, unknown: 1, pass: 2 };
     const list = w.checks_list.filter((c) => c.status !== 'not_applicable').sort((a, b) => rank[a.status] - rank[b.status]);
     const openN = list.filter((c) => c.status !== 'pass').length;
-    openModal(w.name, `${w.role || 'No role'} · ${w.facility || 'No confirmed location'}`, h`<div class="pack-boxes">${rv.summary.map((s) => h`<div class="pack-box pack-box-${s.status}"><span>${words(s.pack)}</span>${statusPill(s.status)}<small>${s.open ? `${s.open} open` : s.status === 'restricted' ? 'Restricted' : 'Nothing open'}</small></div>`)}</div>
+    openModal(w.name, `${w.role || 'No role'} · ${w.facility || 'No location assigned'}`, h`<div class="pack-boxes">${rv.summary.map((s) => h`<div class="pack-box pack-box-${s.status}"><span>${words(s.pack)}</span>${statusPill(s.status)}<small>${s.open ? `${s.open} open` : s.status === 'restricted' ? 'Restricted' : 'Nothing open'}</small></div>`)}</div>
       <div class="readiness-note ${openN || !list.length ? 'is-open' : 'is-clear'}"><b>${!list.length ? 'No applicable checks yet' : openN ? `${openN} of ${list.length} visible checks still open` : 'All visible checks pass'}</b><span>${rv.statement}${w.readiness_request ? ` Waiting in Approvals since ${date(w.readiness_request.created_at)}, asked by ${w.readiness_request.requested_by}.` : ''}</span></div>
       ${table(['Requirement', 'Result', 'Why', ''], list.map((c) => h`<tr><td>${c.control_name}<div class="case-sub">${words(c.pack_key)}</div></td><td>${statusPill(c.status)}</td><td class="small">${c.reason}</td><td class="row-action">${canEdit() && (c.status !== 'pass' || /expir/.test(c.code || '')) ? h`<button class="btn-link-action" data-act="uploadEvidence" data-subject="worker:${w.id}" data-control="${c.control_key}" data-name="${w.name}">Upload</button>` : ''}</td></tr>`), 'No checks yet.')}`, workerFoot(w, openN, list.length), true);
   },
-  moveWorker(el) { openModal('Change assignment', 'Aegis re-runs the checks that apply to the new location.', h`<form data-form="move" data-id="${el.dataset.id}"><div class="form-group"><label class="form-label">Facility</label><input name="facility" class="form-select" required></div><div class="form-group"><label class="form-label">State</label><input name="facility_state" class="form-select" maxlength="2"></div><button class="btn-submit-green">Save</button></form>`); },
+  // Suggests the locations the company already has, so a typo does not create a new one.
+  moveWorker(el, ev) {
+    ev?.stopPropagation();
+    openModal(el.dataset.title || 'Change assignment', 'Aegis re-runs the checks that apply to the new location.', h`<form data-form="move" data-id="${el.dataset.id}"><div class="form-group"><label class="form-label" for="mvFacility">Location</label><input id="mvFacility" name="facility" class="form-select" list="mvLocations" autocomplete="off" required><datalist id="mvLocations">${knownLocations.map((f) => h`<option value="${f.name}">${f.state || ''}</option>`)}</datalist></div><div class="form-group"><label class="form-label" for="mvState">State</label><input id="mvState" name="facility_state" class="form-select" maxlength="2" placeholder="${knownLocations.length ? 'Filled in for a known location' : ''}"></div><button class="btn-submit-green">Save</button></form>`);
+  },
   openApprovals() { closeModal(); location.hash = 'approvals'; },
   // With checks still open, ask once more and show what the approver will see.
   async readiness(el) {
@@ -1562,9 +1742,15 @@ const ACT = {
 };
 const after = () => refresh();
 const FORM = {
-  chat: (d, f) => { f.reset(); sendChat(d.text); },
+  async chat(d, f) {
+    if (await sendChat(d.text) && f.elements.text.value === d.text) f.reset();
+  },
   async addWorker(d) { await api('/api/workers', d); toast('Worker added. Checks are running.', 'success'); closeModal(); setTimeout(after, 1200); },
-  async move(d, f) { await api(`/api/workers/${f.dataset.id}/assignment`, d); toast('Assignment updated. Checks are running.', 'success'); closeModal(); setTimeout(after, 1200); },
+  async move(d, f) {
+    const known = knownLocations.find((x) => x.name.toLowerCase() === d.facility.trim().toLowerCase());
+    const body = known ? { facility: known.name, facility_state: d.facility_state || known.state || '' } : d;
+    await api(`/api/workers/${f.dataset.id}/assignment`, body); toast('Location saved. Checks are running.', 'success'); closeModal(); setTimeout(after, 1200);
+  },
   async note(d, f) { await api(`/api/cases/${f.dataset.id}/note`, d); toast('Note added.', 'success'); ACT.caseDetail({ dataset: { id: f.dataset.id } }); },
   async importFile(d, f) {
     const p = await api('/api/import/preview', { file: await fileData(f.elements.file.files[0]) });
@@ -1625,20 +1811,81 @@ const FORM = {
   async user(d) { await api('/api/users', d); toast('User added.', 'success'); refresh(); },
   async login(d) { await api('/api/login', d); location.reload(); },
 };
-const md = (t) => esc(t).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/#dashboards\/(dash_[a-f0-9]+)/g, '<a href="#dashboards/$1">Open dashboard</a>').replace(/\n/g, '<br>');
-// Closing the panel returns focus to the button that opened it.
-function closeChat() {
-  const d = $('#chatDrawer'); if (!d?.classList.contains('open')) return false;
+const CHAT_LINKS = { checks: 'Open checks', cases: 'Open cases', evidence: 'Open evidence', approvals: 'Open approvals', workers: 'Open workers' };
+function chatText(text, fromCoworker) {
+  const escaped = esc(text);
+  if (!fromCoworker) return escaped.replace(/\n/g, '<br>');
+  return escaped
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/#(cases\/CASE-[A-F0-9]{6}|dashboards\/dash_[a-f0-9]{12}|checks|cases|workers|evidence|approvals)(?=[\s.,]|$)/g, (_, path) => {
+      const label = CHAT_LINKS[path] || (path.startsWith('dashboards/') ? 'Open dashboard' : path.split('/')[1]);
+      return '<a href="#' + path + '">' + label + '</a>';
+    })
+    .replace(/\n/g, '<br>');
+}
+let chatOpener;
+let chatBusy = false;
+let chatHistoryVersion = 0;
+function openChat(opener) {
+  const d = $('#chatDrawer');
+  if (d.classList.contains('open')) return closeChat();
+  chatOpener = opener;
+  d.classList.add('open');
+  setChatExpanded(true);
+  const focusTarget = opener.classList.contains('mobile-assistant') ? '.btn-close-drawer' : '[name="text"]';
+  requestAnimationFrame(() => {
+    if (chatOpener === opener) d.querySelector(focusTarget).focus({ preventScroll: true });
+  });
+  return loadChat();
+}
+function setChatExpanded(expanded) {
+  for (const button of document.querySelectorAll('[aria-controls="chatDrawer"]')) {
+    button.setAttribute('aria-expanded', String(expanded));
+  }
+}
+function closeChat(restoreFocus = true) {
+  const d = $('#chatDrawer'); if (!d.classList.contains('open')) return false;
   d.classList.remove('open');
-  $('.rail-assistant')?.focus({ preventScroll: true });
+  setChatExpanded(false);
+  if (restoreFocus) {
+    const button = chatOpener?.getClientRects().length
+      ? chatOpener
+      : [...document.querySelectorAll('[aria-controls="chatDrawer"]')].find((el) => el.getClientRects().length);
+    button?.focus({ preventScroll: true });
+  }
+  chatOpener = null;
   return true;
 }
 async function loadChat() {
+  const version = ++chatHistoryVersion;
   const list = await api('/api/chat'), m = $('#chatMessages');
-  m.innerHTML = list.length ? list.map((x) => `<div class="chat-bubble ${x.sender === 'bot' ? 'bot' : 'user'}"><span class="chat-bubble-author">${esc(x.author)}</span><div class="chat-bubble-content">${md(x.text)}</div></div>`).join('') : '<div class="empty chat-empty">Ask about gaps, expirations or approvals.</div>';
+  if (version !== chatHistoryVersion) return;
+  m.innerHTML = list.length ? render(list.map((message, index) => {
+    const fromCoworker = message.sender === 'bot';
+    const confirmation = fromCoworker && index === list.length - 1
+      ? /\nTo queue these follow-ups, reply within five minutes with: (Confirm follow-ups [a-f0-9]{12})$/.exec(message.text)?.[1] : null;
+    return h`<div class="chat-bubble ${fromCoworker ? 'bot' : 'user'}"><span class="chat-bubble-author">${message.author}</span><div class="chat-bubble-content">${raw(chatText(message.text, fromCoworker))}</div>${confirmation ? h`<button type="button" class="prompt-pill chat-confirm" data-act="prompt" data-q="${confirmation}">Confirm follow-ups</button>` : ''}</div>`;
+  })) : '<div class="empty chat-empty">Ask about gaps, expirations or approvals.</div>';
   m.scrollTop = m.scrollHeight;
 }
-async function sendChat(text) { if (!text) return; try { await api('/api/chat', { text }); } catch (e) { toast(e.message, 'warning'); } await loadChat(); refresh(); }
+async function sendChat(text) {
+  if (!text?.trim() || chatBusy) return false;
+  chatBusy = true;
+  const status = $('#chatStatus');
+  status.textContent = 'Working on your request…';
+  try {
+    const result = await api('/api/chat', { text });
+    await loadChat().catch(() => toast('Your reply was saved. Reopen Ask coworker to see it.', 'warning'));
+    if (result.updated) refresh();
+    return true;
+  } catch (error) {
+    toast(error.message, 'warning');
+    return false;
+  } finally {
+    status.textContent = '';
+    chatBusy = false;
+  }
+}
 /* ==========================================================================
    AEGIS HANGING BADGE AUTH & RBAC PERSONAS
    ========================================================================== */
@@ -1888,6 +2135,8 @@ async function showLogin() {
   navigation++;
   me = null;
   closeModal();
+  setNavigationOpen(false);
+  closeChat(false);
   const as = $('#appShell'); if (as) { as.hidden = true; as.style.display = 'none'; }
   const ls = $('#loginScreen'); if (ls) { ls.hidden = false; ls.style.display = 'block'; }
   document.body.style.background = 'var(--wall)';
@@ -2141,12 +2390,16 @@ document.addEventListener('click', async (ev) => {
     return;
   }
 
-  // Check mobile menu button or sheet backdrop
+  // The mobile dialog traps focus and restores it to the menu button on close.
   if (ev.target.closest('#menu')) {
-    setNavigationOpen(!$('#sheet').classList.contains('open'));
+    setNavigationOpen(true);
     return;
   }
-  if (ev.target.id === 'sheet') {
+  if (ev.target.id === 'sheet' || ev.target.closest('#closeNavigation')) {
+    setNavigationOpen(false);
+    return;
+  }
+  if (ev.target.closest('#sheet :is(.rail-link, .rail-sublink)') && !ev.ctrlKey && !ev.metaKey && !ev.shiftKey && !ev.altKey) {
     setNavigationOpen(false);
     return;
   }
@@ -2156,13 +2409,11 @@ document.addEventListener('click', async (ev) => {
     return;
   }
 
-  // Check any link inside a .dir dropdown or mobile sheet
-  const dirLink = ev.target.closest('.dir a, .sheet a');
+  const dirLink = ev.target.closest('.dir a');
   if (dirLink) {
     const act = dirLink.dataset.act;
     const href = dirLink.getAttribute('href');
     closeAllDirMenus();
-    setNavigationOpen(false);
     if (act && ACT[act] && act !== 'dirLink') {
       ev.preventDefault();
       try { await ACT[act](dirLink, ev); } catch (e) { toast(e.message, 'warning'); }
@@ -2205,6 +2456,7 @@ document.addEventListener('submit', async (ev) => {
   try { await FORM[f.dataset.form](data, f, sub); } catch (e) { toast(e.message, 'warning'); } finally { if (btn) btn.disabled = false; }
 });
 document.addEventListener('keydown', (e) => {
+  if ($('#sheet').open) return;
   if (e.key === 'Escape') {
     // Escape closes the top-most thing: a window, then the coworker panel, then the case selection.
     if ($('#modal').classList.contains('open')) closeModal();
@@ -2212,7 +2464,6 @@ document.addEventListener('keydown', (e) => {
     else if (caseSel.size) clearCaseSelection();
     closeDemoRack();
     closeAllDirMenus();
-    setNavigationOpen(false);
   }
   if (e.key === 'Tab' && $('#modal').classList.contains('open')) {
     const focusable = [...$('#modalCard').querySelectorAll('a[href], button, input, select, textarea, [tabindex]')]
@@ -2228,6 +2479,13 @@ document.addEventListener('keydown', (e) => {
     if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
   }
+});
+$('#sheet').addEventListener('cancel', (e) => {
+  e.preventDefault();
+  setNavigationOpen(false);
+});
+matchMedia('(max-width: 760px)').addEventListener('change', (e) => {
+  if (!e.matches) setNavigationOpen(false);
 });
 $('#globalSearch')?.addEventListener('input', (e) => filterRows(e.target.value));
 document.addEventListener('input', (e) => {

@@ -19,7 +19,7 @@ function allChecks(t) {
   for (const r of db.all('SELECT id,name,status FROM workers WHERE tenant_id=?', t)) names[r.id] = r.name;
   for (const r of db.all('SELECT id,name FROM entities WHERE tenant_id=?', t)) names[r.id] = r.name;
   return db.all('SELECT * FROM evaluations WHERE tenant_id=? AND is_current=1', t).filter((e) => cm[e.control_key]).map((e) => ({
-    id: e.id, subject_type: e.subject_type, subject_id: e.subject_id, subject_name: names[e.subject_id] || e.subject_id, facility: e.subject_type === 'worker' ? fac[e.subject_id] || 'No confirmed location' : 'Company level', pack_key: e.pack_key, pack_name: cm[e.control_key].pack_name, team: cm[e.control_key].team, restricted: cm[e.control_key].restricted, control_key: e.control_key, control_name: cm[e.control_key].name, requirement_type: cm[e.control_key].requirement_type, control_version: e.control_version, status: e.status, code: e.code, reason: e.reason, evidence_ids: j(e.evidence_ids_json, []), action_needed: !!e.action_needed, evaluated_at: e.evaluated_at,
+    id: e.id, subject_type: e.subject_type, subject_id: e.subject_id, subject_name: names[e.subject_id] || e.subject_id, facility: e.subject_type === 'worker' ? fac[e.subject_id] || 'No location assigned' : 'Company level', pack_key: e.pack_key, pack_name: cm[e.control_key].pack_name, team: cm[e.control_key].team, restricted: cm[e.control_key].restricted, control_key: e.control_key, control_name: cm[e.control_key].name, requirement_type: cm[e.control_key].requirement_type, control_version: e.control_version, status: e.status, code: e.code, reason: e.reason, evidence_ids: j(e.evidence_ids_json, []), action_needed: !!e.action_needed, evaluated_at: e.evaluated_at,
   }));
 }
 function checks(t, user, f = {}) {
@@ -90,11 +90,14 @@ function readinessStatement(w, blockers) {
   const n = blockers.length, open = `${n} check${n === 1 ? '' : 's'} unresolved (${blockers.map((b) => b.control_name).join(', ')})`;
   return w.readiness === 'approved' ? `Approved by an owner with ${open}.` : w.readiness === 'blocked' ? `Blocked by an owner. ${open[0].toUpperCase()}${open.slice(1)}.` : `Readiness pending: ${open}.`;
 }
-function listEvidence(t, user) {
+function listEvidence(t, user, { acceptedFrom, acceptedThrough } = {}) {
   const names = {};
   const controls = controlMap(t);
   for (const r of db.all('SELECT id,name FROM workers WHERE tenant_id=? UNION SELECT id,name FROM entities WHERE tenant_id=?', t, t)) names[r.id] = r.name;
-  return db.all('SELECT * FROM evidence WHERE tenant_id=? ORDER BY created_at DESC', t).filter((e) => Ev.canView(user, e)).map((e) => ({ id: e.id, subject_name: names[e.subject_id], subject_type: e.subject_type, subject_id: e.subject_id, doc_type: e.doc_type, status: e.status, source: e.source, filename: e.filename, doc_number: e.doc_number, holder_name: e.holder_name, state: e.state, entity_name: e.entity_name, period: e.period, issued_on: e.issued_on, expires_on: e.expires_on, confidence: e.confidence, field_confidence: j(e.fields_json, {}), review_reasons: j(e.review_reasons_json, []), flags: j(e.flags_json, []), control_key: e.control_key, reviewed_by: e.reviewed_by, reject_reason: e.reject_reason, created_at: e.created_at, has_file: !!e.stored_path, can_review: e.status === 'needs_review' && Ev.canReview(user, e, controls[e.control_key]) }));
+  const rows = acceptedFrom && acceptedThrough
+    ? db.all("SELECT * FROM evidence WHERE tenant_id=? AND status='accepted' AND expires_on BETWEEN ? AND ? ORDER BY expires_on,created_at DESC", t, acceptedFrom, acceptedThrough)
+    : db.all('SELECT * FROM evidence WHERE tenant_id=? ORDER BY created_at DESC', t);
+  return rows.filter((e) => Ev.canView(user, e)).map((e) => ({ id: e.id, subject_name: names[e.subject_id], subject_type: e.subject_type, subject_id: e.subject_id, doc_type: e.doc_type, status: e.status, source: e.source, filename: e.filename, doc_number: e.doc_number, holder_name: e.holder_name, state: e.state, entity_name: e.entity_name, period: e.period, issued_on: e.issued_on, expires_on: e.expires_on, confidence: e.confidence, field_confidence: j(e.fields_json, {}), review_reasons: j(e.review_reasons_json, []), flags: j(e.flags_json, []), control_key: e.control_key, reviewed_by: e.reviewed_by, reject_reason: e.reject_reason, created_at: e.created_at, has_file: !!e.stored_path, can_review: e.status === 'needs_review' && Ev.canReview(user, e, controls[e.control_key]) }));
 }
 function listApprovals(t, user, status = 'pending') {
   return db.all('SELECT * FROM approvals WHERE tenant_id=? AND status=? ORDER BY created_at DESC', t, status).filter((a) => (a.pack_key ? P.canPack(user, a.pack_key) : P.isAdmin(user)));
@@ -103,7 +106,9 @@ function overview(t, user) {
   const cov = coverage(t), open = listCases(t, user), m = metrics(t);
   const workers = listWorkers(t, user);
   const feed = P.isAdmin(user) ? db.all('SELECT seq,ts,type,action FROM audit_log WHERE tenant_id=? ORDER BY seq DESC LIMIT 8', t) : [];
-  return { coverage: cov, packs: packRows(t).filter((p) => p.status === 'active'), urgent: open.slice(0, 6), feed, kpi: { open_cases: open.length, expiring: allChecks(t).filter((c) => c.code === 'expiring').length, missing_onboarding: open.filter((c) => c.pack_key === 'onboarding').length, specialist: open.filter((c) => ['immigration', 'payroll'].includes(c.pack_key)).length, workers: workers.filter((w) => w.status === 'active').length, clinical: workers.filter((w) => w.category === 'clinical' && w.status === 'active').length, corporate: workers.filter((w) => w.category !== 'clinical' && w.status === 'active').length, with_gaps: workers.filter((w) => ['fail', 'unknown'].includes(w.overall)).length, pending_approvals: listApprovals(t, user).length, ...m } };
+  // "Expiring" is counted exactly as the Expiring soon dashboard it links to: same window, same role limits.
+  const expiring = dashboardData(t, user, BUILT_IN.find((d) => d.id === 'builtin-expiring').definition).total;
+  return { coverage: cov, packs: packRows(t).filter((p) => p.status === 'active'), urgent: open.slice(0, 6), feed, kpi: { open_cases: open.length, expiring, missing_onboarding: open.filter((c) => c.pack_key === 'onboarding').length, specialist: open.filter((c) => ['immigration', 'payroll'].includes(c.pack_key)).length, workers: workers.filter((w) => w.status === 'active').length, clinical: workers.filter((w) => w.category === 'clinical' && w.status === 'active').length, corporate: workers.filter((w) => w.category !== 'clinical' && w.status === 'active').length, with_gaps: workers.filter((w) => ['fail', 'unknown'].includes(w.overall)).length, pending_approvals: listApprovals(t, user).length, ...m } };
 }
 function metrics(t) {
   const base = (k) => db.get('SELECT value FROM baselines WHERE tenant_id=? AND key=?', t, k)?.value ?? null;
@@ -136,7 +141,7 @@ function dashboardData(t, user, def) {
   const put = (name, item) => (groups[name] ||= []).push(item);
   if (def.metric === 'readiness') {
     for (const w of listWorkers(t, user).filter((x) => x.status === 'active')) {
-      put(w.readiness || 'pending', { subject_id: w.id, subject_type: 'worker', subject: w.name, facility: w.facility || 'No confirmed location', status: w.overall, readiness: w.readiness || 'pending', open: w.checks.fail + w.checks.unknown });
+      put(w.readiness || 'pending', { subject_id: w.id, subject_type: 'worker', subject: w.name, facility: w.facility || 'No location assigned', status: w.overall, readiness: w.readiness || 'pending', open: w.checks.fail + w.checks.unknown });
     }
   } else {
     let rows = checks(t, user, { pack: def.pack }).filter((c) => c.status !== 'not_applicable');
@@ -206,13 +211,18 @@ function setupState(t) {
   const tn = db.get('SELECT * FROM tenants WHERE id=?', t), s = j(tn.setup_json, {}), ws = db.all("SELECT * FROM workers WHERE tenant_id=? AND status='active'", t);
   const noLoc = ws.filter((w) => !E.currentFacility(t, w.id)), facs = db.all('SELECT * FROM facilities WHERE tenant_id=? ORDER BY name', t), ents = db.all('SELECT * FROM entities WHERE tenant_id=? ORDER BY name', t);
   const clinical = ws.filter((w) => w.category === 'clinical').length;
-  // Each gap names the setup step that fixes it. "gaps" keeps the plain sentences for older callers.
+  // Each gap names the setup step that fixes it and, where it is about people, who they are, so the
+  // page can say who and offer the fix. "gaps" keeps the plain sentences for older callers.
   const gapItems = [], n = (k, one, many) => `${k} ${k === 1 ? one : many}`;
-  if (noLoc.length) gapItems.push({ step: 'context', text: `${n(noLoc.length, 'worker has', 'workers have')} no confirmed work location.` });
+  const people = (list) => list.map((w) => ({ id: w.id, name: w.name }));
+  const who = (list, one, many) => (list.length === 1 ? `${list[0].name} ${one}` : `${list.length} workers ${many}`);
+  // A worker without a location is fixed on the worker's record, not in the locations table.
+  if (noLoc.length) gapItems.push({ step: 'records', kind: 'no_location', text: `${who(noLoc, 'is', 'are')} not assigned to a work location, so location requirements cannot be checked.`, workers: people(noLoc) });
+  const noEmail = ws.filter((w) => !w.email);
+  if (noEmail.length) gapItems.push({ step: 'records', kind: 'no_email', text: `${who(noEmail, 'has', 'have')} no email address, so document requests cannot reach them.`, workers: people(noEmail) });
   const unf = facs.filter((f) => !f.requirements_confirmed);
-  if (unf.length) gapItems.push({ step: 'context', text: `Requirements are not confirmed for ${n(unf.length, 'location', 'locations')}.` });
-  if (!ents.length) gapItems.push({ step: 'context', text: 'No employing entity on record.' });
-  if (ws.some((w) => !w.email)) gapItems.push({ step: 'records', text: `${n(ws.filter((w) => !w.email).length, 'worker has', 'workers have')} no email address, so they cannot get document requests.` });
+  if (unf.length) gapItems.push({ step: 'context', kind: 'unconfirmed_location', text: `Requirements are not confirmed for ${unf.length <= 3 ? unf.map((f) => f.name).join(', ') : n(unf.length, 'location', 'locations')}. Use Edit on ${unf.length === 1 ? 'that row' : 'those rows'} to confirm them.` });
+  if (!ents.length) gapItems.push({ step: 'context', kind: 'no_entity', text: 'No employing entity on record. Add it to your workers in the HR system or spreadsheet.' });
   if (ws.length) gapItems.push({ step: 'packs', text: 'Payroll filing evidence is not in HR records and must be uploaded.' });
   const gaps = gapItems.map((g) => g.text);
   // Where the records come from: connected systems, and workers by source.

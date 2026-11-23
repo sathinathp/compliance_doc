@@ -11,7 +11,7 @@
 // For local development the same values can come from .env (SLACK_BOT_TOKEN, SLACK_APP_TOKEN,
 // SLACK_SIGNING_SECRET). Keys saved on the Integrations page always win.
 //
-// Aegis answers direct messages and @mentions only, never every message in a channel.
+// Direct messages can read records. Channel mentions only point people to a private conversation.
 const crypto = require('crypto');
 const db = require('./lib/db'), { encrypt, decrypt, clock } = require('./lib/util');
 
@@ -154,19 +154,32 @@ async function handleEvent(tenantId, envelope, chatHandle) {
   if (!text) return;
   const cfg = tenantId ? config(tenantId) : fromEnv();
   if (!cfg?.bot_token) return;
-  const reply = (msg) => api('chat.postMessage', { channel: e.channel, text: toSlack(msg), unfurl_links: false }, cfg.bot_token).catch((err) => console.error('[slack] reply failed:', err.message));
-  const scope = tenantId ? ' AND tenant_id=?' : '', args = tenantId ? [tenantId] : [];
+  if (cfg.team_id && envelope.team_id && cfg.team_id !== envelope.team_id) return;
+  const reply = (msg) => {
+    const safeText = msg.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
+    return api('chat.postMessage', { channel: e.channel, text: toSlack(safeText), unfurl_links: false, unfurl_media: false }, cfg.bot_token).catch((err) => console.error('[slack] reply failed:', err.message));
+  };
+  if (e.type === 'app_mention' && e.channel_type !== 'im') return reply('Send me a direct message to ask about Aegis records, or open Ask coworker in Aegis to run actions.');
+  const scope = tenantId ? ' AND tenant_id=?' : " AND tenant_id IN (SELECT id FROM tenants WHERE kind IS NULL OR kind<>'customer')";
+  const args = tenantId ? [tenantId] : [];
+  const singleMatch = (predicate, value) => {
+    const users = db.all(`SELECT * FROM users WHERE ${predicate}${scope} LIMIT 2`, value, ...args);
+    return users.length === 1 ? users[0] : null;
+  };
   // A Slack account is matched to an Aegis user by Slack ID, or else by the same work email.
-  let u = db.get(`SELECT * FROM users WHERE slack_id=?${scope}`, e.user, ...args);
+  let u = singleMatch('slack_id=?', e.user);
   if (!u) {
     try {
       const email = (await api('users.info', { user: e.user }, cfg.bot_token)).user?.profile?.email;
-      u = email && db.get(`SELECT * FROM users WHERE lower(email)=lower(?)${scope}`, email, ...args);
+      u = email && singleMatch('lower(email)=lower(?)', email);
       if (u) db.update('users', u.id, { slack_id: e.user });
     } catch (err) { console.error('[slack] users.info failed:', err.message); }
   }
   if (!u) return reply('I do not know who you are in Aegis yet. Ask an administrator to add your work email to your Aegis user.');
-  try { await reply(await chatHandle(u.tenant_id, { ...u, type: 'user' }, text.slice(0, 1000))); }
+  try {
+    const { reply: answer } = await chatHandle(u.tenant_id, { ...u, type: 'user' }, text.slice(0, 1000), { source: 'slack' });
+    await reply(answer);
+  }
   catch (err) { console.error('[slack] chat failed:', err); await reply('Something went wrong while answering. The error was logged.'); }
 }
 function verify(secret, ts, raw, sig) {

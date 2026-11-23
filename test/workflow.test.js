@@ -320,7 +320,14 @@ test('external customer: spreadsheet onboarding works without a connector', asyn
   const csv = await n.post('/api/import/preview', { file: { name: 'r.csv', data: Buffer.from('Name,Email,Role,Facility,State,Hire Date\n"Doe, Jane",jane@n.demo,RN,Mercy,TX,2026-01-05\n').toString('base64') } });
   assert.equal(csv.data.sample[0].name, 'Doe, Jane');
   await n.post(`/api/import/${csv.data.id}/commit`); await P.drain();
-  const st = (await n.get('/api/setup')).data; assert.ok(st.gaps.some((g) => /no confirmed work location/.test(g))); assert.ok(st.steps.connect);
+  const st = (await n.get('/api/setup')).data; assert.ok(st.steps.connect);
+  // A worker without a location is named, sits under the people step (not the locations table), and setting it clears the gap.
+  const noLoc = st.gap_items.find((g) => g.kind === 'no_location');
+  assert.equal(noLoc.step, 'records'); assert.equal(noLoc.workers.length, 1);
+  assert.ok(noLoc.text.startsWith(`${noLoc.workers[0].name} is not assigned to a work location`), noLoc.text);
+  assert.ok(!st.gap_items.some((g) => g.step === 'context' && /assigned/.test(g.text)));
+  assert.equal((await n.post(`/api/workers/${noLoc.workers[0].id}/assignment`, { facility: 'Mercy', facility_state: 'TX' })).status, 200);
+  assert.ok(!(await n.get('/api/setup')).data.gap_items.some((g) => g.kind === 'no_location'));
   assert.equal((await n.post('/api/packs/healthcare/activate', { owner_user_id: users[0].id })).status, 400);
   const owner = users.find((u) => u.role === 'healthcare_compliance');
   assert.equal((await n.post('/api/packs/healthcare/activate', { owner_user_id: owner.id, reviewed: true })).status, 200);
@@ -525,18 +532,54 @@ test('pilot chat keeps how-to questions read-only and confirmation is single-use
   assert.equal((await query(admin, 'How do I request the missing documents?')).status, 200);
   assert.equal(count(), before);
   assert.match((await query(viewer, 'Create a healthcare dashboard showing missing evidence')).data.reply, /read-only/);
+  assert.match((await query(hr, 'Create an immigration dashboard')).data.reply, /restricted immigration/);
+  await query(admin, 'Make sure we have a dashboard');
   assert.equal(db.get('SELECT COUNT(*) AS n FROM dashboards WHERE tenant_id=?', t).n, dashboards);
   const preview = await query(admin, 'Request the missing documents.');
   const instruction = /Confirm follow-ups [a-f0-9]{12}/.exec(preview.data.reply)?.[0];
   assert.ok(instruction);
+  assert.match(preview.data.reply, /· to .+ \((worker|owner)\)/);
+  const caseIds = [...preview.data.reply.matchAll(/#cases\/(CASE-[A-F0-9]{6})/g)].map((m) => m[1]);
+  assert.ok(caseIds.length > 0 && caseIds.length <= 10);
   assert.equal(count(), before);
   assert.match((await query(health, instruction)).data.reply, /unavailable/);
   assert.equal(count(), before);
   assert.match((await query(admin, instruction)).data.reply, /Queued \*\*[1-9]/);
   assert.ok(count() > before);
+  const audit = db.get("SELECT detail_json FROM audit_log WHERE tenant_id=? AND type='CHAT_COMMAND' AND action LIKE 'Confirmed evidence follow-ups.%' ORDER BY seq DESC LIMIT 1", t);
+  const detail = JSON.parse(audit.detail_json);
+  assert.deepEqual(detail.case_ids, caseIds);
+  assert.ok(detail.queued_case_ids.every((id) => caseIds.includes(id)));
+  const actor = db.get("SELECT id,role FROM users WHERE tenant_id=? AND email='sathinath@bluebix.demo'", t);
+  const action = db.get("SELECT id FROM actions WHERE tenant_id=? AND case_id=? AND type='follow_up' AND status='queued' ORDER BY created_at DESC LIMIT 1", t, detail.queued_case_ids[0]);
+  const job = db.get('SELECT payload_json FROM jobs WHERE tenant_id=? AND dedupe_key=?', t, 'send:' + action.id);
+  assert.equal(JSON.parse(job.payload_json).confirmed_follow_up.actorId, actor.id);
+  db.update('users', actor.id, { role: 'viewer' });
+  try {
+    await require('../server/engine').sendAction(t, JSON.parse(job.payload_json));
+  } finally {
+    db.update('users', actor.id, { role: actor.role });
+  }
+  assert.equal(db.get('SELECT status FROM actions WHERE id=?', action.id).status, 'cancelled');
+  assert.equal(db.get('SELECT 1 AS x FROM messages WHERE action_id=?', action.id), undefined);
   const after = count();
   assert.match((await query(admin, instruction)).data.reply, /unavailable/);
   assert.equal(count(), after);
+});
+
+test('coworker answers from the caller’s visible checks and handles specific worker questions', async () => {
+  const viewer = await login('viewer@bluebix.demo');
+  const ask = (text) => viewer.post('/api/chat', { text });
+  const { rows } = (await viewer.get('/api/checks')).data;
+  const applicable = rows.filter((row) => row.status !== 'not_applicable');
+  const coverage = await ask('What is our coverage?');
+  assert.match(coverage.data.reply, new RegExp(applicable.filter((row) => row.status === 'pass').length + ' of ' + applicable.length + ' applicable checks pass'));
+  assert.match(coverage.data.reply, /visible to your role/);
+  const worker = await ask('What is blocking Chloe Dubois?');
+  assert.match(worker.data.reply, /Chloe Dubois.*\n/);
+  assert.doesNotMatch(worker.data.reply, /I-9|work authorization/i);
+  assert.match((await ask('What expires in 999999999999999999999999 days?')).data.reply, /between 1 and 365 days/);
+  assert.equal((await ask('   ')).status, 400);
 });
 
 test('pilot queued delivery resolves stable case identities and stops when the pack returns to validation', async () => {
@@ -578,6 +621,24 @@ test('dashboards: built-in views match the checks, saved views are validated and
   const list = (await admin.get('/api/dashboards')).data;
   const ids = list.filter((d) => d.built_in).map((d) => d.id);
   assert.deepEqual(ids, ['builtin-readiness', 'builtin-expiring', 'builtin-gaps', 'builtin-missing', 'builtin-coverage']);
+
+  // Side menu counts match the pages they open, per role; pages a role cannot open have no count.
+  for (const who of [admin, hr, fin]) {
+    const nav = (await who.get('/api/nav')).data;
+    assert.equal(nav.cases, (await who.get('/api/cases')).data.length);
+    assert.equal(nav.approvals, (await who.get('/api/approvals')).data.length);
+    assert.equal(nav.evidence, (await who.get('/api/evidence')).data.filter((e) => e.status === 'needs_review' && e.can_review).length);
+  }
+  assert.equal(typeof (await admin.get('/api/nav')).data.setup, 'number');
+  assert.equal((await hr.get('/api/nav')).data.setup, null);
+  assert.equal((await hr.get('/api/nav')).data.notices, null);
+  assert.equal(typeof (await fin.get('/api/nav')).data.notices, 'number');
+
+  // The Overview's "credentials to renew" links to the Expiring dashboard, so both show the same number for each role.
+  for (const who of [admin, hr, imm]) {
+    const kpi = (await who.get('/api/overview')).data.kpi.expiring;
+    assert.equal(kpi, (await who.get('/api/dashboards/builtin-expiring')).data.data.total);
+  }
 
   // Open gaps equal the failing and unknown checks the Checks page shows.
   const checks = (await admin.get('/api/checks')).data.rows.filter((c) => c.status !== 'not_applicable');

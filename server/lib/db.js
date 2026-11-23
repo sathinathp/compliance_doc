@@ -39,6 +39,11 @@ CREATE TABLE IF NOT EXISTS imports(id TEXT PRIMARY KEY, tenant_id TEXT, filename
 CREATE TABLE IF NOT EXISTS dashboards(id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, name TEXT, definition_json TEXT, roles_json TEXT, created_by TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS notices(id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, entity_id TEXT, agency TEXT, notice_type TEXT, received_on TEXT, response_due TEXT, summary TEXT, draft_response TEXT, status TEXT, created_by TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS chat_messages(id TEXT PRIMARY KEY, tenant_id TEXT, user_id TEXT, sender TEXT, author TEXT, text TEXT, created_at TEXT);
+CREATE TABLE IF NOT EXISTS coworker_policies(
+  tenant_id TEXT PRIMARY KEY REFERENCES tenants(id), enabled INT NOT NULL, follow_ups INT NOT NULL,
+  dashboards INT NOT NULL, slack INT NOT NULL, retention_days INT, daily_ai_calls INT,
+  follow_up_epoch INT NOT NULL DEFAULT 0, updated_at TEXT, updated_by TEXT
+);
 CREATE TABLE IF NOT EXISTS baselines(tenant_id TEXT, key TEXT, value REAL, note TEXT, updated_at TEXT, PRIMARY KEY(tenant_id,key));
 CREATE TABLE IF NOT EXISTS manual_support(id TEXT PRIMARY KEY, tenant_id TEXT, minutes REAL, note TEXT, created_by TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS counters(tenant_id TEXT, key TEXT, value REAL DEFAULT 0, PRIMARY KEY(tenant_id,key));
@@ -59,6 +64,48 @@ CREATE OR REPLACE FUNCTION aegis_audit_append_only() RETURNS trigger LANGUAGE pl
 DROP TRIGGER IF EXISTS audit_no_change ON audit_log;
 CREATE TRIGGER audit_no_change BEFORE UPDATE OR DELETE ON audit_log FOR EACH ROW EXECUTE FUNCTION aegis_audit_append_only();
 `;
+
+const COWORKER_HISTORY_INDEXES = `
+CREATE INDEX IF NOT EXISTS ix_chat_access ON chat_messages(tenant_id,user_id,coworker_epoch,created_at);
+CREATE INDEX IF NOT EXISTS ix_chat_retention ON chat_messages(tenant_id,created_at);
+`;
+
+function migrateCoworkerAccess() {
+  if (mode === 'pg') {
+    exec(`
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS coworker_epoch INT NOT NULL DEFAULT 0;
+      ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS coworker_epoch INT;
+      CREATE OR REPLACE FUNCTION aegis_coworker_access_changed() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF OLD.role IS DISTINCT FROM NEW.role OR OLD.tenant_id IS DISTINCT FROM NEW.tenant_id THEN
+          NEW.coworker_epoch := OLD.coworker_epoch + 1;
+        END IF;
+        RETURN NEW;
+      END $$;
+      DROP TRIGGER IF EXISTS coworker_access_changed ON users;
+      CREATE TRIGGER coworker_access_changed BEFORE UPDATE OF role,tenant_id ON users
+        FOR EACH ROW EXECUTE FUNCTION aegis_coworker_access_changed();
+      ${COWORKER_HISTORY_INDEXES}
+    `);
+    return;
+  }
+  tx(() => {
+    if (!all('PRAGMA table_info(users)').some((column) => column.name === 'coworker_epoch')) {
+      exec('ALTER TABLE users ADD COLUMN coworker_epoch INT NOT NULL DEFAULT 0');
+    }
+    if (!all('PRAGMA table_info(chat_messages)').some((column) => column.name === 'coworker_epoch')) {
+      exec('ALTER TABLE chat_messages ADD COLUMN coworker_epoch INT');
+    }
+    exec(`
+      CREATE TRIGGER IF NOT EXISTS coworker_access_changed AFTER UPDATE OF role,tenant_id ON users
+      WHEN OLD.role IS NOT NEW.role OR OLD.tenant_id IS NOT NEW.tenant_id
+      BEGIN
+        UPDATE users SET coworker_epoch=OLD.coworker_epoch+1 WHERE id=NEW.id;
+      END;
+      ${COWORKER_HISTORY_INDEXES}
+    `);
+  });
+}
 
 let mode = 'sqlite'; // 'pg' or 'sqlite'
 let sqliteDb = null;
@@ -169,6 +216,7 @@ function open(file) {
         // and indexes also reach an existing database. Changing an existing column still needs a migration.
         const fresh = !get("SELECT to_regclass('tenants') AS t").t;
         exec(PG_SCHEMA);
+        migrateCoworkerAccess();
         if (fresh) console.log('[db] Created the Aegis tables in PostgreSQL.');
         return;
       }
@@ -188,6 +236,7 @@ function open(file) {
   sqliteDb = new DatabaseSync(file);
   sqliteDb.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
   sqliteDb.exec(SCHEMA); // safe to re-run; adds new tables and indexes to an existing file
+  migrateCoworkerAccess();
   console.log('[db] Using SQLite at', file);
 }
 

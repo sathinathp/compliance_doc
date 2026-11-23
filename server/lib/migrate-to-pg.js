@@ -19,7 +19,7 @@ const tables = [
   'packs', 'tenant_packs', 'control_changes', 'cases', 'case_notes', 'evidence',
   'evaluations', 'actions', 'approvals', 'messages', 'submission_tokens', 'events',
   'jobs', 'schedules', 'connectors', 'imports', 'dashboards', 'notices',
-  'chat_messages', 'baselines', 'manual_support', 'counters', 'audit_log'
+  'chat_messages', 'coworker_policies', 'baselines', 'manual_support', 'counters', 'audit_log'
 ];
 
 let sqlDump = 'BEGIN;\n';

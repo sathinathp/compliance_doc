@@ -146,6 +146,17 @@ add('POST', '/api/webhooks/slack/:slug', (ctx) => {
 
 // ---- read models
 add('GET', '/api/overview', ({ t, user }) => V.overview(t, user));
+// Sidebar counts, each counted exactly as the page it opens shows it. Setup and notices are null for
+// people who cannot open those pages.
+add('GET', '/api/nav', ({ t, user }) => ({
+  cases: V.listCases(t, user).length,
+  approvals: V.listApprovals(t, user, 'pending').length,
+  evidence: V.listEvidence(t, user).filter((e) => e.status === 'needs_review' && e.can_review).length,
+  notices: P.canPack(user, 'payroll') ? db.get("SELECT COUNT(*) AS n FROM notices WHERE tenant_id=? AND status='draft_awaiting_approval'", t).n : null,
+  setup: P.isAdmin(user) ? V.setupState(t).gap_items.filter((g) => g.step !== 'packs').length : null,
+  // When Aegis last ran the checks, for the "Checked" note in the top bar.
+  checked_at: db.get('SELECT MAX(evaluated_at) AS last FROM evaluations WHERE tenant_id=? AND is_current=1', t)?.last || null,
+}));
 add('GET', '/api/checks', ({ t, user, q }) => ({ rows: V.checks(t, user, { status: q.get('status'), pack: q.get('pack'), subject: q.get('subject') }), coverage: V.coverage(t) }));
 add('GET', '/api/cases', ({ t, user, q }) => V.listCases(t, user, { closed: q.get('closed') === '1', pack: q.get('pack') })
   .map((c) => ({ ...c, can_act: user.role !== 'viewer' && P.canPack(user, c.pack_key) })));
@@ -344,7 +355,12 @@ add('POST', '/api/notices', ({ t, user, body }) => {
   return n;
 });
 add('GET', '/api/chat', ({ t, user }) => db.all('SELECT id,sender,author,text,created_at FROM (SELECT id,sender,author,text,created_at,rowid AS chat_order FROM chat_messages WHERE tenant_id=? AND user_id=? ORDER BY created_at DESC,rowid DESC LIMIT 200) recent ORDER BY created_at,chat_order', t, user.id));
-add('POST', '/api/chat', async ({ t, user, body }) => { if (!body.text) throw new HttpError(400, 'Message is required.'); const reply = await Chat.handle(t, user, String(body.text).slice(0, 1000)); await P.drain(); return { reply }; });
+add('POST', '/api/chat', ({ t, user, body }) => {
+  if (typeof body?.text !== 'string' || !body.text.trim()) throw new HttpError(400, 'Message is required.');
+  const text = body.text.trim();
+  if (text.length > 1000) throw new HttpError(400, 'Keep the message to 1,000 characters or fewer.');
+  return Chat.handle(t, user, text);
+});
 add('GET', '/api/users', ({ t, user }) => { P.assertAdmin(user); return db.all('SELECT id,name,email,role,slack_id FROM users WHERE tenant_id=? ORDER BY name', t); });
 add('POST', '/api/users', ({ t, user, body }) => { P.assertAdmin(user); if (!P.ROLE_PACKS[body.role]) throw new HttpError(400, 'Invalid role.'); if (!body.email || String(body.password || '').length < 8) throw new HttpError(400, 'Email and an 8+ character password are required.'); const uid = id('usr'); try { db.insert('users', { id: uid, tenant_id: t, email: body.email, name: body.name || body.email, role: body.role, password_hash: hashPassword(body.password), slack_id: body.slack_id || null, created_at: clock.iso() }); } catch { throw new HttpError(409, 'That email is already in use.'); } P.audit(t, 'USER_ADDED', body.email, `Added with role ${body.role}.`, user); return { id: uid }; });
 add('GET', '/api/owners', ({ t }) => db.all('SELECT id,name,role FROM users WHERE tenant_id=? ORDER BY name', t));

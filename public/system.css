@@ -1046,6 +1046,13 @@ a.today-item:hover {
 .chat-empty {
   color: var(--text-secondary);
 }
+.chat-status:not(:empty) {
+  margin-bottom: var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--fs-12);
+}
+.chat-bubble-content a { color: var(--primary); text-decoration: underline; }
+.chat-confirm { margin-top: var(--space-2); }
 
 /* ---------- Motion ---------- */
 /* Buttons give a small press. */
@@ -1061,10 +1068,6 @@ a.today-item:hover {
 @keyframes modalIn {
   from { opacity: 0; transform: translateY(8px) scale(.985); }
   to { opacity: 1; transform: none; }
-}
-
-:is(html, #aegis) .rail-link {
-  transition: background-color .15s ease, color .15s ease;
 }
 
 /* ---------- Phones: table rows become cards ---------- */
@@ -1525,7 +1528,7 @@ a.view-card-name:hover { color: var(--primary); }
 /* Print: the report only, on white. */
 @media print {
   @page { margin: 16mm; }
-  .workspace-rail, .workspace-bar, #pageTitleArea, .chat-drawer, .no-print, .selection-bar, .skip-main, #toast { display: none !important; }
+  .workspace-rail, .workspace-bar, .mobile-navigation, #pageTitleArea, .chat-drawer, .no-print, .selection-bar, .skip-main, #toast { display: none !important; }
   html, body, :is(html, #aegis) .content, :is(html, #aegis) #view { margin: 0 !important; padding: 0 !important; background: #fff !important; }
   .app-shell, :is(html, #aegis) .app-shell { display: block !important; }
   :is(html, #aegis) #view, #view * { animation: none !important; }
@@ -1779,6 +1782,10 @@ a.view-card-name:hover { color: var(--primary); }
 :is(html, #aegis) .setup-figures dd.tone-text-fail { color: var(--fail-fg); }
 :is(html, #aegis) .setup-figures dd.tone-text-warn { color: var(--warn-fg); }
 .setup-note ul { margin: 0; padding-left: var(--space-5); }
+/* People named by a setup gap, each with its fix. */
+:is(html, #aegis) .setup-note ul.gap-people { display: grid; gap: var(--space-2); margin: var(--space-2) 0 var(--space-1); padding: 0; list-style: none; }
+:is(html, #aegis) .gap-people li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-2) var(--space-3); border-radius: var(--radius); background: var(--card-bg); color: var(--text-body); }
+:is(html, #aegis) .gap-people .btn-card-outline { padding: 4px 12px; font-size: var(--fs-13); }
 .step-content .setup-note:not(:first-child) { margin-top: var(--space-4); }
 
 .source-list { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
@@ -2117,3 +2124,114 @@ a.view-card-name:hover { color: var(--primary); }
 
 :is(html, #aegis) #view .connection-outbox .outbox-tools { padding: 0; margin: 0 0 var(--space-3); border: 0; background: none; }
 :is(html, #aegis) #view .connection-outbox .outbox-tools #outboxCount { padding: 0; }
+
+/* ---------- Ask coworker: a floating panel ----------
+   Floats over the right of the page with a margin on every side, so the page stays in view and in
+   reach. No dimmed backdrop: people keep working while they ask. Full screen on phones. */
+:is(html, #aegis) .chat-drawer {
+  position: fixed; top: calc(var(--workspace-bar-height) + 12px); right: 16px; bottom: 16px; left: auto; z-index: 90;
+  width: min(420px, calc(100vw - 32px)); height: auto; max-width: none;
+  display: flex; flex-direction: column; overflow: hidden;
+  border: 1px solid var(--nav-edge); border-radius: 16px; background: var(--gray-0);
+  box-shadow: 0 28px 64px -24px rgb(16 28 24 / .30), 0 8px 20px -10px rgb(16 28 24 / .14);
+  opacity: 0; transform: translateX(14px) scale(.985); transform-origin: right center;
+  transition: opacity 160ms ease, transform 220ms cubic-bezier(.2,.7,.25,1), visibility 160ms;
+}
+:is(html, #aegis) .chat-drawer.open { right: 16px; opacity: 1; transform: none; }
+:is(html, #aegis) .chat-drawer-header {
+  flex: none; height: 60px; padding: 0 10px 0 16px; gap: 10px;
+  background: var(--gray-0); border-bottom: 1px solid var(--nav-edge);
+}
+:is(html, #aegis) .chat-bot-brand { gap: 11px; min-width: 0; }
+:is(html, #aegis) .bot-avatar-circle {
+  width: 30px; height: 30px; flex: none; border-radius: 8px;
+  background: var(--brand-600); color: var(--gray-0); box-shadow: 0 1px 2px rgb(10 107 95 / .28);
+}
+:is(html, #aegis) .bot-name { margin: 0; color: var(--nav-ink); font: 600 var(--fs-14)/1.25 var(--font); letter-spacing: -.01em; }
+:is(html, #aegis) .bot-channel { display: flex; align-items: center; gap: 6px; color: var(--nav-label); font: 400 var(--fs-12)/1.3 var(--font); }
+:is(html, #aegis) .bot-channel::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--pass-dot); }
+:is(html, #aegis) .btn-close-drawer {
+  display: grid; place-items: center; width: 32px; height: 32px; min-width: 32px; min-height: 32px; padding: 0;
+  border-radius: var(--radius); color: var(--nav-icon); font-size: 0;
+}
+:is(html, #aegis) .btn-close-drawer:hover { background: var(--nav-hover); color: var(--nav-ink); }
+
+/* Messages: the coworker writes as plain text; your questions sit in a soft green bubble on the right. */
+:is(html, #aegis) .chat-messages { gap: 16px; padding: 20px 18px 10px; background: var(--gray-0); scrollbar-width: thin; scrollbar-color: var(--nav-guide) transparent; }
+:is(html, #aegis) .chat-bubble { max-width: 92%; padding: 0; border-radius: 0; background: none; color: var(--nav-ink); font: 400 13.5px/1.55 var(--font); }
+:is(html, #aegis) .chat-bubble.bot { background: none; color: var(--nav-ink); }
+:is(html, #aegis) .chat-bubble.user {
+  max-width: 82%; padding: 9px 13px; border: 1px solid var(--brand-100); border-radius: 14px 14px 4px 14px;
+  background: var(--brand-50); color: var(--nav-ink);
+}
+:is(html, #aegis) .chat-bubble-author {
+  display: block; margin: 0 0 4px; opacity: 1; color: var(--nav-label);
+  font: 600 11.5px/1.2 var(--font); letter-spacing: 0; text-transform: none;
+}
+:is(html, #aegis) .chat-bubble.user .chat-bubble-author { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+:is(html, #aegis) .chat-bubble-content a { color: var(--brand-700); text-underline-offset: 2px; }
+:is(html, #aegis) .chat-bubble .chat-confirm {
+  margin-top: 10px; min-height: 30px; padding: 0 12px; border-color: var(--brand-600); border-radius: var(--radius);
+  background: var(--brand-600); color: var(--gray-0); font: 600 var(--fs-12)/1 var(--font);
+}
+:is(html, #aegis) .chat-bubble .chat-confirm:hover { border-color: var(--brand-700); background: var(--brand-700); color: var(--gray-0); }
+
+/* A new conversation opens with a short welcome and the suggestions as a list. */
+:is(html, #aegis) .chat-empty { display: block; margin: auto 0 4px; padding: 0 2px; border: 0; background: none; color: var(--nav-label); font: 400 13px/1.55 var(--font); text-align: left; }
+:is(html, #aegis) .chat-empty::before {
+  content: "How can I help?"; display: block; margin-bottom: 4px; padding-top: 50px;
+  color: var(--nav-ink); font: 600 var(--fs-16)/1.3 var(--font); letter-spacing: -.01em;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='38' height='38' viewBox='0 0 38 38'%3E%3Crect width='38' height='38' rx='10' fill='%23eaf5f1'/%3E%3Cg transform='translate(9 9) scale(.8333)' fill='none' stroke='%230a6b5f' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 2.5 20 6v6c0 4-3 7.4-8 9.5-5-2.1-8-5.5-8-9.5V6z'/%3E%3Cpath d='m8.4 11.9 2.5 2.5 4.8-5.1'/%3E%3C/g%3E%3C/svg%3E") left top / 38px 38px no-repeat;
+}
+
+/* Suggestions: a list while the conversation is empty, then one quiet scrolling row above the box. */
+:is(html, #aegis) .chat-prompts-bar { flex: none; padding: 6px 14px 0; border: 0; background: var(--gray-0); }
+:is(html, #aegis) .prompts-label { display: none; }
+:is(html, #aegis) .prompt-pills-scroll {
+  flex-wrap: nowrap; gap: 6px; overflow-x: auto; padding: 2px 0 4px; scrollbar-width: none;
+  mask-image: linear-gradient(to right, #000 88%, transparent);
+}
+:is(html, #aegis) .prompt-pills-scroll::-webkit-scrollbar { display: none; }
+:is(html, #aegis) .chat-prompts-bar .prompt-pill {
+  flex: none; display: inline-flex; align-items: center; min-height: 28px; max-width: none; padding: 0 11px;
+  border: 1px solid var(--nav-active-edge); border-radius: var(--radius-full); background: var(--gray-0);
+  color: var(--nav-text); font: 500 var(--fs-12)/1.2 var(--font); white-space: nowrap;
+}
+:is(html, #aegis) .chat-prompts-bar .prompt-pill:hover { border-color: var(--brand-200); background: var(--brand-50); color: var(--brand-700); }
+:is(html, #aegis) .chat-drawer:has(.chat-empty) .chat-prompts-bar { padding: 4px 16px 12px; }
+:is(html, #aegis) .chat-drawer:has(.chat-empty) .prompts-label { display: block; margin: 0 2px 8px; color: var(--nav-label); font: 600 var(--fs-12)/1 var(--font); letter-spacing: 0; text-transform: none; }
+:is(html, #aegis) .chat-drawer:has(.chat-empty) .prompt-pills-scroll { flex-direction: column; overflow: visible; padding: 0; mask-image: none; }
+:is(html, #aegis) .chat-drawer:has(.chat-empty) .chat-prompts-bar .prompt-pill {
+  justify-content: flex-start; min-height: 38px; padding: 8px 12px; border-radius: var(--radius);
+  font: 500 var(--fs-13)/1.35 var(--font); text-align: left; white-space: normal;
+}
+
+/* The question box: one rounded field with the send button inside it. */
+:is(html, #aegis) .chat-input-area { flex: none; padding: 10px 14px max(12px, env(safe-area-inset-bottom)); border: 0; background: var(--gray-0); }
+:is(html, #aegis) .chat-form {
+  align-items: center; gap: 6px; padding: 5px 5px 5px 13px;
+  border: 1px solid var(--nav-active-edge); border-radius: 12px; background: var(--gray-0); box-shadow: var(--nav-shadow);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+:is(html, #aegis) .chat-form:focus-within { border-color: var(--brand-300); box-shadow: 0 0 0 3px rgb(10 107 95 / .12); }
+:is(html, #aegis) .chat-form input { height: 34px; padding: 0; border: 0; background: transparent; box-shadow: none; color: var(--nav-ink); font: 400 13.5px/1.3 var(--font); }
+:is(html, #aegis) .chat-form input:focus, :is(html, #aegis) .chat-form input:focus-visible { outline: none; border: 0; box-shadow: none; }
+:is(html, #aegis) .btn-send-chat {
+  display: grid; place-items: center; flex: none; width: 32px; height: 32px; padding: 0;
+  border: 0; border-radius: var(--radius); background: var(--brand-600); color: var(--gray-0); cursor: pointer;
+}
+:is(html, #aegis) .btn-send-chat:hover { background: var(--brand-700); }
+:is(html, #aegis) .chat-note { margin: 8px 2px 0; color: var(--nav-label); font: 400 11.5px/1.4 var(--font); }
+/* "Working on your request…" with a calm pulsing dot while Aegis answers. */
+:is(html, #aegis) .chat-status:not(:empty) { display: flex; align-items: center; gap: 8px; margin: 0 2px 8px; color: var(--nav-label); font: 500 var(--fs-12)/1.3 var(--font); }
+:is(html, #aegis) .chat-status:not(:empty)::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--brand-600); animation: chat-pulse 1.1s ease-in-out infinite; }
+@keyframes chat-pulse { 50% { opacity: .3; transform: scale(.8); } }
+
+@media (max-width: 760px) {
+  :is(html, #aegis) .chat-drawer { inset: 0; width: 100%; border: 0; border-radius: 0; transform: translateY(12px); }
+  :is(html, #aegis) .chat-drawer.open { right: 0; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  :is(html, #aegis) .chat-drawer { transition: none; transform: none; }
+  :is(html, #aegis) .chat-status:not(:empty)::before { animation: none; }
+}

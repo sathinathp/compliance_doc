@@ -48,6 +48,25 @@
   --rail-text: #dbe6e9;
   --rail-muted: #9eb6c1;
   --rail-accent: #69d2b8;
+  --rail-edge: #0e2631;
+  --rail-line: rgb(158 182 193 / 0.22);
+  --rail-line-active: rgb(105 210 184 / 0.34);
+  --rail-glass: rgb(219 230 233 / 0.07);
+  --rail-active-surface: rgb(105 210 184 / 0.14);
+  --rail-scrim: rgb(14 38 49 / 0.48);
+
+  /* Side menu: quiet and light, so the page content leads. Text colours meet 4.5:1 on --nav-bg. */
+  --nav-bg: #f6f7f6;
+  --nav-edge: #e3e7e5;
+  --nav-ink: #0f1b18;
+  --nav-text: #364240;
+  --nav-label: #616c68;
+  --nav-icon: #67726e;
+  --nav-hover: #eceeed;
+  --nav-active: #ffffff;
+  --nav-active-edge: #dce1df;
+  --nav-guide: #dbe0de;
+  --nav-shadow: 0 1px 2px rgb(16 28 24 / 0.05);
 
   /* Status */
   --pass-fg: #17663f;

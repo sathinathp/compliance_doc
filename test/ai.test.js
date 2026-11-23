@@ -5,7 +5,7 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aegis-ai-'));
 process.env.NODE_ENV = 'test';
 process.env.AEGIS_DATA = dir; process.env.AEGIS_DEMO = '1';
 const KEY = 'sk-test-secret-1234';
-let calls = [], reply = null, down = false, incompatible = false, declined = false, redirects = false;
+let calls = [], reply = null, down = false, incompatible = false, declined = false, redirects = false, classification = 'coverage';
 const fake = http.createServer((req, res) => {
   let b = ''; req.on('data', (d) => { b += d; }); req.on('end', () => {
     const body = JSON.parse(b);
@@ -21,7 +21,7 @@ const fake = http.createServer((req, res) => {
       }
       if (incompatible) return send(200, { choices: [{ message: { content: 'Plain text only' } }] });
       const fn = body.tools[0].function;
-      const input = fn.name === 'record_ping' ? { ok: !declined } : fn.name === 'classify' ? { intent: 'coverage' } : reply;
+      const input = fn.name === 'record_ping' ? { ok: !declined } : fn.name === 'classify' ? { intent: classification } : reply;
       const tool = { type: 'function', function: { name: fn.name, arguments: JSON.stringify(input) } };
       const field = body.tool_choice === 'auto' ? 'toolCalls' : 'tool_calls';
       return send(200, { choices: [{ message: { [field]: [tool] } }], usage: { prompt_tokens: 10, completion_tokens: 5 } });
@@ -29,7 +29,7 @@ const fake = http.createServer((req, res) => {
     if (req.headers['x-api-key'] !== KEY) return send(401, { error: 'bad key' });
     if (body.tool_choice?.type === 'tool' && body.thinking?.type !== 'disabled') return send(400, { error: 'tool_choice tool not allowed in thinking mode' });
     if (body.messages[0].content.some((c) => c.type === 'document')) return send(400, { error: 'document not supported' });
-    const name = body.tools[0].name, input = name === 'record_ping' ? { ok: true } : name === 'classify' ? { intent: 'coverage' } : reply;
+    const name = body.tools[0].name, input = name === 'record_ping' ? { ok: true } : name === 'classify' ? { intent: classification } : reply;
     send(200, { content: [{ type: 'tool_use', name, input }], usage: { input_tokens: 10, output_tokens: 5 } });
   });
 });
@@ -96,10 +96,25 @@ test('provider outage falls back to review and stays visible', async () => {
 });
 test('chat uses the provider for free-form questions, and answers come from records', async () => {
   calls = [];
+  await admin.post('/api/chat', { text: 'What needs my approval?' });
+  assert.equal(calls.length, 0, 'known questions stay local');
   const out = await admin.post('/api/chat', { text: 'where do we stand overall on the rules?' });
   assert.equal(calls.at(-1).body.tools[0].name, 'classify'); assert.match(out.data.reply, /applicable checks pass/);
   assert.equal((await admin.get('/api/health')).data.ai_error, null);
   assert.ok((await admin.get('/api/metrics')).data.llm_calls >= 2);
+});
+
+test('chat rejects an AI classification outside the read-only schema', async () => {
+  classification = 'create_dashboard';
+  try {
+    const before = db.get('SELECT COUNT(*) AS n FROM dashboards').n;
+    const out = await admin.post('/api/chat', { text: 'Could you handle that for me?' });
+    assert.equal(out.status, 200);
+    assert.match(out.data.reply, /Try “What is missing/);
+    assert.equal(db.get('SELECT COUNT(*) AS n FROM dashboards').n, before);
+  } finally {
+    classification = 'coverage';
+  }
 });
 
 test('named OpenAI-compatible providers test and save their model and use bearer authentication', async () => {

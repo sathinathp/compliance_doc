@@ -443,69 +443,6 @@ a {
   border-radius: var(--radius-lg);
 }
 
-/* Mobile directory sheet */
-.sheet {
-  position: fixed;
-  inset: 0;
-  z-index: 40;
-  background: rgba(22, 32, 43, .45);
-  opacity: 0;
-  visibility: hidden;
-  transition: opacity .2s, visibility .2s;
-}
-
-.sheet.open {
-  opacity: 1;
-  visibility: visible;
-}
-
-.sheet .in {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 0;
-  max-height: 100vh;
-  overflow: auto;
-  background: var(--wall);
-  padding: 18px 18px 28px;
-  border-bottom: 4px solid var(--rail);
-  transform: translateY(-20px);
-  transition: transform .35s var(--swing);
-}
-
-.sheet.open .in {
-  transform: none;
-}
-
-.sheet .shd {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.sheet .shd b {
-  font-size: var(--fs-20);
-  font-weight: 850;
-  font-stretch: 118%;
-}
-
-.sheet h3 {
-  font-size: var(--fs-13);
-  font-weight: 650;
-  color: var(--ink-2);
-  margin: 16px 0 6px;
-}
-
-.sheet .dir {
-  position: static;
-  opacity: 1;
-  visibility: inherit;
-  transform: none;
-  width: auto;
-  border-radius: var(--radius-lg);
-  box-shadow: none;
-}
-
 /* ==========================================================================
    PAGE CONTENT, TITLE, TOOLS, BUTTONS
    ========================================================================== */

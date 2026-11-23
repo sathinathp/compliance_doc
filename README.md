@@ -35,6 +35,8 @@ Run the workflow tests with `npm test`.
 
 In **Settings → AI Engine**, an administrator can connect DeepSeek, Claude, OpenAI, Google Gemini, OpenRouter, Groq, or Mistral AI. Each workspace uses one active provider. For OpenAI-compatible providers, enter a model ID that supports function calling. **Test & save** checks the connection with a sample prompt and stores the key encrypted after a successful test. For server-wide DeepSeek or Claude defaults, see `.env.example`.
 
+**Ask coworker** answers from the records visible to the signed-in user. Recognized questions use Aegis queries directly. If an AI provider is configured, it may receive an unmatched question to classify it among the supported read-only queries. The web workspace supports saving a dashboard and previewing up to ten evidence follow-ups with recipients and case links. A confirmation lasts five minutes and can be used once by the requester. Aegis checks permissions and eligibility again before delivery and records previews and outcomes in Audit history. Slack direct messages are read-only.
+
 For **Custom OpenAI-compatible**, enter the full HTTPS Chat Completions endpoint. The Aegis server operator adds trusted endpoints to the comma-separated `AEGIS_LLM_CUSTOM_ENDPOINTS` setting before a workspace can use them.
 
 For compatible providers, enable document images only when the selected model supports image input. Claude supports scanned PDFs. With other providers, scanned PDFs go to human review. Fields read from an image still need a person to confirm them.

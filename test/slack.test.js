@@ -123,7 +123,7 @@ test('requests reach people in Slack by their work email, and fall back when the
   assert.equal(calls.filter((c) => c.method === 'users.lookupByEmail').length, lookups);
 });
 
-test('chat: Aegis answers direct messages and mentions once, ignores channel chatter, and knows who is asking', async () => {
+test('chat: Slack channel mentions stay private and direct messages are read-only', async () => {
   const t = ns().id, ev = (id, event) => ({ type: 'event_callback', event_id: id, event: { user: 'U_HEALTH', channel: 'D1', ts: '1', ...event } });
   calls.length = 0;
   await Slack.handleEvent(t, ev('E1', { type: 'message', channel_type: 'im', text: 'What needs my approval?' }), Chat.handle);
@@ -135,10 +135,15 @@ test('chat: Aegis answers direct messages and mentions once, ignores channel cha
   await Slack.handleEvent(t, ev('E2', { type: 'message', channel_type: 'channel', text: 'lunch?' }), Chat.handle);
   await Slack.handleEvent(t, ev('E3', { type: 'message', channel_type: 'im', text: 'hi', bot_id: 'B1' }), Chat.handle);
   assert.equal(posts().length, 1, 'channel chatter and bot messages are ignored');
-  await Slack.handleEvent(t, ev('E4', { type: 'app_mention', text: '<@UBOT> which credentials expire next month?' }), Chat.handle);
+  await Slack.handleEvent(t, ev('E4', { type: 'app_mention', channel: 'C1', channel_type: 'channel', text: '<@UBOT> which credentials expire next month?' }), () => assert.fail('Channel mentions must not query Aegis records'));
   assert.equal(posts().length, 2);
+  assert.match(posts()[1].body.text, /direct message/);
+  assert.doesNotMatch(posts()[1].body.text, /expire|credentials/);
+  await Slack.handleEvent(t, ev('E6', { type: 'message', channel_type: 'im', text: 'Request the missing documents.' }), Chat.handle);
+  assert.match(posts()[2].body.text, /Open Ask coworker in the Aegis workspace/);
+  assert.doesNotMatch(posts()[2].body.text, /Confirm follow-ups/);
   await Slack.handleEvent(t, ev('E5', { type: 'message', channel_type: 'im', text: 'hello', user: 'U_STRANGER' }), Chat.handle);
-  assert.match(posts()[2].body.text, /do not know who you are/);
+  assert.match(posts()[3].body.text, /do not know who you are/);
 });
 
 test('Events URL: per-company signing secret, and the URL check Slack sends', async () => {
