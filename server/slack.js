@@ -163,7 +163,7 @@ async function handleEvent(tenantId, envelope, chatHandle) {
   const scope = tenantId ? ' AND tenant_id=?' : " AND tenant_id IN (SELECT id FROM tenants WHERE kind IS NULL OR kind<>'customer')";
   const args = tenantId ? [tenantId] : [];
   const singleMatch = (predicate, value) => {
-    const users = db.all(`SELECT * FROM users WHERE ${predicate}${scope} LIMIT 2`, value, ...args);
+    const users = db.all(`SELECT * FROM users WHERE ${predicate} AND disabled_at IS NULL${scope} LIMIT 2`, value, ...args);
     return users.length === 1 ? users[0] : null;
   };
   // A Slack account is matched to an Aegis user by Slack ID, or else by the same work email.

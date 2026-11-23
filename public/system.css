@@ -2114,6 +2114,10 @@ a.view-card-name:hover { color: var(--primary); }
 :is(html, #aegis) #view .connection-outbox .outbox-tools { padding: 0; margin: 0 0 var(--space-3); border: 0; background: none; }
 :is(html, #aegis) #view .connection-outbox .outbox-tools #outboxCount { padding: 0; }
 
+/* Settings: a deactivated person's row is quieter, so active people stand out. */
+:is(html, #aegis) #view tr.is-muted-row td { color: var(--text-muted); }
+:is(html, #aegis) #view tr.is-muted-row strong { color: var(--text-secondary); }
+
 /* ---------- Ask coworker: a floating panel ----------
    Floats over the right of the page with a margin on every side, so the page stays in view and in
    reach. No dimmed backdrop: people keep working while they ask. Full screen on phones. */

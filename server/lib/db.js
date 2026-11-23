@@ -1,4 +1,5 @@
 'use strict';
+const fs = require('node:fs');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 const { Worker } = require('node:worker_threads');
@@ -75,7 +76,13 @@ CREATE INDEX IF NOT EXISTS ix_chat_thread ON chat_messages(coworker_chat_id,crea
 CREATE INDEX IF NOT EXISTS ix_chat_retention ON chat_messages(tenant_id,created_at);
 `;
 
+// Accounts can be switched off (deactivated) without deleting them, so their history stays readable.
+function migrateUsers() {
+  if (mode === 'pg') { exec('ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled_at TEXT'); return; }
+  if (!all('PRAGMA table_info(users)').some((column) => column.name === 'disabled_at')) exec('ALTER TABLE users ADD COLUMN disabled_at TEXT');
+}
 function migrateCoworkerAccess() {
+  migrateUsers();
   if (mode === 'pg') {
     exec(`
       ALTER TABLE users ADD COLUMN IF NOT EXISTS coworker_epoch INT NOT NULL DEFAULT 0;
@@ -190,6 +197,8 @@ function pgExecSync(type, sql, params = []) {
     let ok = false;
     try { ok = startPgWorker(pgUrlInUse); } catch (e) { console.error('[db]', e.message); }
     if (!ok) console.error('[db] Could not reconnect to PostgreSQL. Every query will fail until it is back.');
+    // The new connection must take the one-server lock again (the old connection held it).
+    else if (serverLocked && !pgExecSync('query', LOCK_SQL).rows[0]?.ok) console.error('[db] Another Aegis server took the database lock while this one was reconnecting. Stop one of them.');
     throw new Error('The database did not answer in time.');
   }
   const len = pgInt32[1];
@@ -247,11 +256,45 @@ function open(file) {
 
   // Fallback to SQLite (used in tests or when Postgres is unavailable)
   mode = 'sqlite';
+  sqliteFile = file;
   sqliteDb = new DatabaseSync(file);
   sqliteDb.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
   sqliteDb.exec(SCHEMA); // safe to re-run; adds new tables and indexes to an existing file
   migrateCoworkerAccess();
   console.log('[db] Using SQLite at', file);
+}
+
+// ---- One server per database
+// Background jobs assume they are the only ones running, so a second server on the same database
+// would send messages twice. PostgreSQL: an advisory lock held by this server's connection, which
+// PostgreSQL releases the moment the server stops or crashes. SQLite: a lock file beside the
+// database naming the server's process; a file left behind by a crashed server is ignored.
+// Returns true when this server holds the lock.
+// PostgreSQL advisory locks cover a whole database, so the key also names the schema the tables
+// live in: two Aegis installs in different schemas of one database do not block each other.
+const SERVER_LOCK = 70214523; // a fixed number that names the Aegis server lock
+const LOCK_SQL = `SELECT pg_try_advisory_lock(${SERVER_LOCK}, hashtext(current_schema())) AS ok`;
+let sqliteFile = null, serverLocked = false;
+function lockServer() {
+  if (serverLocked) return true;
+  if (mode === 'pg') { serverLocked = !!get(LOCK_SQL)?.ok; return serverLocked; }
+  const lock = `${sqliteFile}.lock`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      fs.writeFileSync(lock, String(process.pid), { flag: 'wx' });
+      serverLocked = true;
+      process.on('exit', () => { try { if (fs.readFileSync(lock, 'utf8') === String(process.pid)) fs.unlinkSync(lock); } catch { /* already gone */ } });
+      return true;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      const pid = Number(fs.readFileSync(lock, 'utf8')) || 0;
+      let alive = false;
+      try { if (pid && pid !== process.pid) { process.kill(pid, 0); alive = true; } } catch (err) { alive = err.code === 'EPERM'; }
+      if (alive) return false;
+      try { fs.unlinkSync(lock); } catch { /* another process removed it first */ }
+    }
+  }
+  return false;
 }
 
 function all(s, ...a) {
@@ -368,4 +411,4 @@ function close() {
   }
 }
 
-module.exports = { open, all, get, run, exec, tx, insert, update, resetAll, close, mode: () => mode };
+module.exports = { open, all, get, run, exec, tx, insert, update, resetAll, close, lockServer, mode: () => mode };

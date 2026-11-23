@@ -553,7 +553,7 @@ test('pilot chat keeps how-to questions read-only and confirmation is single-use
   const instruction = /Confirm follow-ups [a-f0-9]{12}/.exec(preview.data.reply)?.[0];
   assert.ok(instruction);
   assert.match(preview.data.reply, /· to .+ \((worker|owner)\)/);
-  const caseIds = [...preview.data.reply.matchAll(/#cases\/(CASE-[A-F0-9]{6})/g)].map((m) => m[1]);
+  const caseIds = [...preview.data.reply.matchAll(/#cases\/(CASE-[A-F0-9]{6,8})/g)].map((m) => m[1]);
   assert.ok(caseIds.length > 0 && caseIds.length <= 10);
   assert.equal(count(), before);
   assert.match((await query(health, instruction)).data.reply, /unavailable/);

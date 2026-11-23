@@ -63,8 +63,21 @@ To connect the real HRMS, see `docs/HRMS-CONNECTOR.md`. Field mapping is a conne
 
 1. Configure a dedicated PostgreSQL database, an HTTPS application URL, and a persistent document directory. Set `NODE_ENV=production`, `AEGIS_DEMO=0`, and a generated `AEGIS_SECRET` using `.env.example` as a reference. The production process checks these settings at startup.
 2. Supply `AEGIS_PILOT_ADMIN_EMAIL`, `AEGIS_PILOT_ADMIN_NAME`, and a generated `AEGIS_PILOT_ADMIN_PASSWORD` of at least 16 characters in the provisioning process environment. Run `npm run provision:bluebix` against the pilot database. This creates an empty Bluebix workspace and its first administrator. Repeating the command with the same administrator leaves the existing password intact.
-3. Start the application with `npm start`. `GET /healthz` checks database connectivity. Back up PostgreSQL, `AEGIS_DATA/documents`, and the encryption secret so they can be restored together.
+3. Start the application with `npm start`. `GET /healthz` checks database connectivity. Only one server may run per database: a second one refuses to start, because both would run the same background jobs and send messages twice.
 4. In **Connections**, preview the live HRMS mapping before syncing, or import a reviewed roster. In **Company setup**, confirm the locations and activate the owner-approved healthcare pack in validation mode. Review the first assessment and confirm findings before enabling automatic requests.
 5. Use the approved Slack or email test destination to verify delivery, worker upload links, evidence review and reporting before using worker records. See [HRMS setup](docs/HRMS-CONNECTOR.md) and [Slack setup](docs/SLACK-SETUP.md) for provider details.
+
+## Backups and restore
+
+The server makes a backup once a day: every database table and the stored documents, in a dated folder under `AEGIS_DATA/backups` (or `AEGIS_BACKUP_DIR`). The newest 14 are kept.
+
+- Make one now: `npm run backup` (add `-- --dir D:\aegis-backups` to choose the folder).
+- Restore: stop the server, then `npm run restore -- <backup folder>`. The database must be empty; add `--replace` to delete what is there first. Everyone signs in again afterwards.
+
+The encryption key (`AEGIS_SECRET`, or `AEGIS_DATA/.secret`) is never put in a backup. Keep it somewhere separate and safe: without the same key, restored documents and saved connector keys cannot be read, and the restore warns you if the key does not match. Copy the backup folder off the computer too; a backup on the same disk does not survive a disk failure.
+
+## Users
+
+Administrators manage people in **Settings → Users & Roles**: change a role (it applies straight away), reset a password (the person is signed out everywhere), or deactivate someone who has left (signed out at once, no sign-in or Slack chat, history kept; reactivate any time). Nobody can deactivate themselves or change their own role. Everyone can change their own password from the account menu. Passwords need at least 12 characters.
 
 See `docs/COMPLETE-WORKFLOW.md` for the gap analysis, the full workflow and what is still needed for production.

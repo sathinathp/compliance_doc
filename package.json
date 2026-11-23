@@ -10,7 +10,9 @@
     "start": "node --no-warnings server/index.js",
     "sandbox": "node --no-warnings server/index.js --sandbox",
     "provision:bluebix": "node --no-warnings server/index.js --provision-bluebix",
-    "test": "node --no-warnings --test test/workflow.test.js test/ai.test.js test/production.test.js test/slack.test.js test/pilot.test.js"
+    "backup": "node --no-warnings server/backup.js backup",
+    "restore": "node --no-warnings server/backup.js restore",
+    "test": "node --no-warnings --test test/workflow.test.js test/ai.test.js test/production.test.js test/slack.test.js test/pilot.test.js test/lock.test.js test/users.test.js test/backup.test.js"
   },
   "dependencies": {
     "nodemailer": "^10.4.0",

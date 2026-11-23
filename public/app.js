@@ -829,6 +829,12 @@ function workerFoot(w, openN, total) {
   return h`${move}<button class="btn-cancel" data-act="readiness" data-id="${w.id}" data-open="${openN || 1}">Request decision anyway</button>${upload('btn-submit-green')}`;
 }
 function openCaseCell(c) { return h`<button class="btn-link-action" data-act="caseDetail" data-id="${c.id}">Open</button>`; }
+// ---------- Users ----------
+// The roles, named as the server names them, in the order people usually choose them.
+const ROLES = [['admin', 'Administrator'], ['hr', 'HR'], ['healthcare_compliance', 'Healthcare compliance'], ['immigration_owner', 'Immigration owner'], ['finance', 'Payroll / finance'], ['viewer', 'Read only']];
+const roleName = (k) => ROLES.find(([key]) => key === k)?.[1] || words(k);
+const PW_HINT = 'At least 12 characters. A short sentence is easy to remember and hard to guess.';
+
 // ---------- Overview ----------
 // Priority cases on the Overview: everyone's (false) or only the signed-in person's (true).
 let ovMine = false;
@@ -1187,8 +1193,13 @@ const VIEWS = {
     if (!me.user.is_admin) return h`<div class="plain-card empty">Settings are available to administrators.</div>`;
     const [users, hl, ai, coworker] = await Promise.all([api('/api/users'), api('/api/health'), api('/api/ai'), api('/api/coworker/settings')]);
     return h`<div class="stack">${coworkerPolicyPanel(coworker)}${aiEnginePanel(ai)}
-    ${card('Users & Roles', 'Roles limit which packs a person can act on. Immigration records are restricted.', table(['Name', 'Email', 'Role', 'Slack ID'], users.map((u) => h`<tr><td><strong>${u.name}</strong></td><td>${u.email}</td><td>${words(u.role)}</td><td class="mono">${u.slack_id}</td></tr>`), ''))}
-    <form class="plain-card" data-form="user"><strong>Add user</strong><div class="form-grid mt"><div class="form-group"><label class="form-label">Name</label><input name="name" class="form-select" required></div><div class="form-group"><label class="form-label">Email</label><input name="email" type="email" class="form-select" required></div><div class="form-group"><label class="form-label">Role</label><select name="role" class="form-select"><option>hr</option><option>healthcare_compliance</option><option>immigration_owner</option><option>finance</option><option>viewer</option><option>admin</option></select></div><div class="form-group"><label class="form-label">Temporary password</label><input name="password" type="password" minlength="8" class="form-select" required></div></div><button class="btn-submit-green">Add user</button></form>
+    ${card('Users & Roles', 'Roles limit which packs a person can act on. Immigration records are restricted. Deactivated people keep their history but cannot sign in.', table(['Person', 'Role', 'Status', num('Open cases'), ''], users.map((u) => h`<tr class="${u.disabled_at ? 'is-muted-row' : ''}"><td><strong>${u.name}</strong>${u.is_you ? h` <span class="pill pill-na">You</span>` : ''}<div class="case-sub">${u.email}</div></td><td>${roleName(u.role)}</td><td>${u.disabled_at ? h`<span class="pill pill-na">Deactivated</span>` : h`<span class="pill pill-pass">Active</span>`}</td><td class="num">${u.open_cases}</td><td class="row-action">${u.is_you ? h`<button class="btn-link-action" data-act="changePassword">Change your password</button>` : manageMenu([
+      !u.disabled_at && h`<button role="menuitem" data-act="userRole" data-id="${u.id}" data-name="${u.name}" data-role="${u.role}">Change role</button>`,
+      !u.disabled_at && h`<button role="menuitem" data-act="userPassword" data-id="${u.id}" data-name="${u.name}">Reset password</button>`,
+      u.disabled_at ? h`<button role="menuitem" data-act="userReactivate" data-id="${u.id}" data-name="${u.name}">Reactivate</button>`
+        : h`<button role="menuitem" class="is-danger" data-act="userDeactivate" data-id="${u.id}" data-name="${u.name}" data-cases="${u.open_cases}">Deactivate</button>`,
+    ])}</td></tr>`), ''))}
+    <form class="plain-card" data-form="user"><strong>Add user</strong><div class="form-grid mt"><div class="form-group"><label class="form-label" for="nuName">Name</label><input id="nuName" name="name" class="form-select" required></div><div class="form-group"><label class="form-label" for="nuEmail">Work email</label><input id="nuEmail" name="email" type="email" class="form-select" required></div><div class="form-group"><label class="form-label" for="nuRole">Role</label><select id="nuRole" name="role" class="form-select">${ROLES.map(([k, l]) => h`<option value="${k}" ${k === 'hr' ? raw('selected') : ''}>${l}</option>`)}</select></div><div class="form-group"><label class="form-label" for="nuPw">Temporary password</label><input id="nuPw" name="password" type="password" minlength="12" maxlength="128" autocomplete="new-password" class="form-select" required><span class="subtext">At least 12 characters. Share it with them in person; they can change it in their account menu.</span></div></div><button class="btn-submit-green">Add user</button></form>
     ${card('Schedules', 'Checks run daily. Reminders run on each control’s cadence.', table(['Job', 'Cadence', 'Next run'], hl.schedules.map((s) => h`<tr><td>${s.kind}</td><td>${s.cadence}</td><td class="mono">${dt(s.next_run_at)}</td></tr>`), ['No schedules', 'Daily checks and digests appear here once set up.']))}</div>`;
   },
 };
@@ -1598,6 +1609,25 @@ const ACT = {
   caseTab(el) { caseClosed = !!el.dataset.v; caseSel.clear(); if (routeArg) location.hash = 'cases'; else refresh(); },
   caseDue(el) { caseSel.clear(); location.hash = el.dataset.v ? `cases/${el.dataset.v}` : 'cases'; },
   ovCases(el) { ovMine = !!el.dataset.v; refresh(); },
+  // Users: each action opens a short window that says what will happen before it happens.
+  userRole(el) {
+    openModal(`Change role for ${el.dataset.name}`, 'The new role applies straight away, also to sessions that are already open.', h`<form data-form="userRole" data-id="${el.dataset.id}"><div class="form-group"><label class="form-label" for="urRole">Role</label><select id="urRole" name="role" class="form-select">${ROLES.map(([k, l]) => h`<option value="${k}" ${k === el.dataset.role ? raw('selected') : ''}>${l}</option>`)}</select></div><button class="btn-submit-green">Save role</button></form>`);
+  },
+  userPassword(el) {
+    openModal(`Reset password for ${el.dataset.name}`, 'They are signed out everywhere and use this password next time. Tell them in person or by phone, never by email.', h`<form data-form="userPassword" data-id="${el.dataset.id}"><div class="form-group"><label class="form-label" for="upPw">New password</label><input id="upPw" name="password" type="password" minlength="12" maxlength="128" autocomplete="new-password" class="form-select" required><span class="subtext">${PW_HINT}</span></div><button class="btn-submit-green">Reset password</button></form>`);
+  },
+  userDeactivate(el) {
+    const n = +el.dataset.cases;
+    openModal(`Deactivate ${el.dataset.name}?`, 'They are signed out at once and cannot sign in or use the coworker in Slack. Their history stays, and you can reactivate them later.',
+      n ? h`<p class="alert-box">${el.dataset.name} still owns ${plural(n, 'open case')}. Assign ${n === 1 ? 'it' : 'them'} to someone else from Cases so nothing is missed.</p>` : '',
+      h`<button class="btn-cancel" data-act="closeModal">Cancel</button><button class="btn-danger" data-act="confirmDeactivate" data-id="${el.dataset.id}" data-name="${el.dataset.name}">Deactivate</button>`);
+  },
+  async confirmDeactivate(el) { await api(`/api/users/${el.dataset.id}/deactivate`, {}); closeModal(); toast(`${el.dataset.name} is deactivated and signed out.`, 'success'); refresh(); },
+  async userReactivate(el) { await api(`/api/users/${el.dataset.id}/reactivate`, {}); toast(`${el.dataset.name} can sign in again.`, 'success'); refresh(); },
+  changePassword() {
+    closeAllDirMenus();
+    openModal('Change your password', 'You stay signed in here. Other devices are signed out.', h`<form data-form="myPassword"><div class="form-group"><label class="form-label" for="mpCur">Current password</label><input id="mpCur" name="current" type="password" autocomplete="current-password" class="form-select" required></div><div class="form-group"><label class="form-label" for="mpNew">New password</label><input id="mpNew" name="password" type="password" minlength="12" maxlength="128" autocomplete="new-password" class="form-select" required><span class="subtext">${PW_HINT}</span></div><div class="form-group"><label class="form-label" for="mpAgain">New password again</label><input id="mpAgain" name="again" type="password" minlength="12" maxlength="128" autocomplete="new-password" class="form-select" required></div><button class="btn-submit-green">Change password</button></form>`);
+  },
   checkFilter(el) { checkFilter[el.dataset.k] = el.dataset.v; refresh(); },
   async workerDetail(el, ev) {
     ev?.stopPropagation();
@@ -1918,6 +1948,13 @@ const FORM = {
     refresh();
   },
   async user(d) { await api('/api/users', d); toast('User added.', 'success'); refresh(); },
+  async userRole(d, f) { await api(`/api/users/${f.dataset.id}/role`, d); closeModal(); toast('Role saved.', 'success'); refresh(); },
+  async userPassword(d, f) { await api(`/api/users/${f.dataset.id}/password`, d); closeModal(); toast('Password reset. They have been signed out everywhere.', 'success'); refresh(); },
+  async myPassword(d) {
+    if (d.password !== d.again) throw new Error('The two new passwords do not match.');
+    await api('/api/me/password', { current: d.current, password: d.password });
+    closeModal(); toast('Password changed. Other devices have been signed out.', 'success');
+  },
   async login(d) { await api('/api/login', d); location.reload(); },
 };
 const CHAT_LINKS = { checks: 'Open checks', cases: 'Open cases', evidence: 'Open evidence', approvals: 'Open approvals', workers: 'Open workers' };
@@ -1926,7 +1963,7 @@ function chatText(text, fromCoworker) {
   if (!fromCoworker) return escaped.replace(/\n/g, '<br>');
   return escaped
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/#(cases\/CASE-[A-F0-9]{6}|dashboards\/dash_[a-f0-9]{12}|checks|cases|workers|evidence|approvals)(?=[\s.,]|$)/g, (_, path) => {
+    .replace(/#(cases\/CASE-[A-F0-9]{6,8}|dashboards\/dash_[a-f0-9]{12}|checks|cases|workers|evidence|approvals)(?=[\s.,]|$)/g, (_, path) => {
       const label = CHAT_LINKS[path] || (path.startsWith('dashboards/') ? 'Open dashboard' : path.split('/')[1]);
       return '<a href="#' + path + '">' + label + '</a>';
     })

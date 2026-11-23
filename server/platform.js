@@ -52,9 +52,12 @@ async function runOne(force) {
   }
   return true;
 }
+// Runs queued jobs one at a time, pausing between jobs so waiting requests are answered. "while"
+// (not "if") makes a second caller wait its turn instead of starting a second loop alongside.
+const letRequestsThrough = () => new Promise((resolve) => setImmediate(resolve));
 async function loop(force = false) {
-  if (busy) await busy;
-  busy = (async () => { let n = 0; while (n++ < 5000 && await runOne(force)); })();
+  while (busy) await busy;
+  busy = (async () => { let n = 0; while (n++ < 5000 && await runOne(force)) await letRequestsThrough(); })();
   try { await busy; } finally { busy = null; }
 }
 const drain = () => loop(true);

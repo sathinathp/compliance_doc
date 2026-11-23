@@ -11,6 +11,8 @@ const int32 = new Int32Array(sab, 0, 4); // [state, length, status, reserved]
 const uint8 = new Uint8Array(sab, 16);
 
 let client = null, inTx = false, txBroken = false;
+// The one-server lock belongs to a connection. After a reconnect it is taken again.
+let lockSql = null;
 
 async function connect() {
   const c = new Client({ connectionString, statement_timeout: statementTimeoutMs, connectionTimeoutMillis: 10000 });
@@ -21,6 +23,7 @@ async function connect() {
   });
   await c.connect();
   client = c;
+  if (lockSql && !(await c.query(lockSql)).rows[0]?.ok) console.error('[db] Another Aegis server took the database lock while this one was reconnecting. Stop one of them.');
 }
 
 function answer(status, obj) {
@@ -71,6 +74,7 @@ parentPort.on('message', async (cmd) => {
       return answer(0, { data: { ok: true } });
     }
     const res = await client.query(sql, params);
+    if (/^SELECT pg_try_advisory_lock\(/.test(sql) && res.rows[0]?.ok) lockSql = sql;
     // pg returns bigint counts and sums as strings; the app expects numbers for these aliases.
     const rows = res.rows.map((row) => {
       const out = { ...row };

@@ -52,8 +52,20 @@ P.on('digest', async (t) => {
 });
 P.on('sync_connector', (t, p) => C.syncConnector(t, p.id));
 
+// One backup a day, made by a separate process (server/backup.js) so this server keeps answering
+// while it runs. Backups go to AEGIS_BACKUP_DIR (default data/backups); the newest 14 are kept.
+// Set AEGIS_BACKUPS=off to stop them, for example when the database is backed up another way.
+function dailyBackup() {
+  if (process.env.AEGIS_BACKUPS === 'off' || process.env.NODE_ENV === 'test' || sandbox.isActive()) return;
+  const day = new Date().toISOString().slice(0, 10);
+  if (db.get("SELECT v FROM meta WHERE k='backup:last'")?.v === day) return;
+  db.run("INSERT INTO meta(k,v) VALUES('backup:last',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", day);
+  const child = require('child_process').spawn(process.execPath, ['--no-warnings', path.join(__dirname, 'backup.js'), 'backup', '--auto'], { stdio: ['ignore', 'inherit', 'inherit'], env: process.env });
+  child.on('exit', (code) => { if (code) console.error(`[backup] The daily backup failed (exit code ${code}). Run "npm run backup" to see why.`); });
+}
 function tick() {
   const today = clock.today();
+  dailyBackup();
   db.run('DELETE FROM sessions WHERE expires_at<?', new Date().toISOString());
   CoworkerPolicy.pruneExpired();
   for (const tn of db.all('SELECT id FROM tenants')) {
@@ -121,7 +133,7 @@ const server = http.createServer(async (req, res) => {
     const ctx = { req, res, p, q: url.searchParams, body, raw, sid };
     if (!route.o.public) {
       const s = sid && db.get('SELECT * FROM sessions WHERE token_hash=? AND expires_at>?', U.sha256(sid), new Date().toISOString());
-      const u = s && db.get('SELECT * FROM users WHERE id=?', s.user_id);
+      const u = s && db.get('SELECT * FROM users WHERE id=? AND disabled_at IS NULL', s.user_id);
       if (!u) throw new P.HttpError(401, 'Please sign in.');
       if (req.method !== 'GET' && req.headers['x-aegis-client'] !== 'web') throw new P.HttpError(403, 'Missing client header.');
       ctx.user = { ...u, type: 'user' }; ctx.t = u.tenant_id;
@@ -136,6 +148,8 @@ const server = http.createServer(async (req, res) => {
   }
 });
 async function start(port = +(process.env.PORT || 4100), { loop = true } = {}) {
+  // One server per database: a second one would run the same background jobs and send messages twice.
+  if (!db.lockServer()) throw new Error('Another Aegis server is already running on this database. Stop it first, or point this one at a different database.');
   R.loadPacks(); P.recoverStale();
   require('./evidence').recheckAcceptedHolders();
   await new Promise((resolve, reject) => {

@@ -24,6 +24,8 @@ add('POST', '/api/login', ({ body, res }) => {
   attempts.set(key, a);
   const u = db.get('SELECT * FROM users WHERE lower(email)=lower(?)', String(body.email || ''));
   if (!u || !checkPassword(String(body.password || ''), u.password_hash)) throw new HttpError(401, 'Incorrect email or password.');
+  // Said only after the right password, so it never reveals which accounts exist.
+  if (u.disabled_at) throw new HttpError(403, 'This account has been deactivated. Ask your administrator.');
   res.setHeader('set-cookie', sessionCookie(createSession(u.id), 43200));
   attempts.delete(key);
   return { ok: true };
@@ -236,7 +238,7 @@ const setS = (t, patch) => { const tn = db.get('SELECT setup_json s FROM tenants
 add('POST', '/api/setup/facility/:id', ({ t, user, p, body }) => { P.assertAdmin(user); const f = db.get('SELECT * FROM facilities WHERE id=? AND tenant_id=?', p.id, t); if (!f) throw new HttpError(404, 'Facility not found.'); db.update('facilities', f.id, { requirements_json: JSON.stringify(body.requirements || []), requirements_confirmed: 1, requirement_source: body.source || 'Confirmed by administrator', state: body.state || f.state }); P.audit(t, 'CONTEXT_CONFIRMED', f.name, `Facility requirements confirmed: ${(body.requirements || []).join(', ') || 'none'}.`, user); P.enqueue(t, 'evaluate_tenant', { trigger: 'context_confirmed' }, { dedupe: `eval_tenant:${t}` }); return { ok: true }; });
 add('POST', '/api/setup/context', ({ t, user }) => { P.assertAdmin(user); db.run('UPDATE entities SET confirmed=1 WHERE tenant_id=?', t); setS(t, { context_confirmed: true }); P.audit(t, 'CONTEXT_CONFIRMED', 'Company profile', 'Administrator confirmed employing entities and work locations.', user); return { ok: true }; });
 add('POST', '/api/setup/channel', ({ t, user, body }) => { P.assertAdmin(user); if (body.type === 'slack') { W.requireVerified(t); if (!Slack.configured(t)) throw new HttpError(409, 'Connect Slack on the Integrations page first.'); } db.update('tenants', t, { channel_json: JSON.stringify({ type: body.type === 'slack' ? 'slack' : 'outbox', channel: body.channel || '#compliance-alerts' }) }); setS(t, { channel_confirmed: true }); P.audit(t, 'CHANNEL_SET', 'Reporting channel', `Reporting channel set to ${body.type || 'outbox'}.`, user); return { ok: true }; });
-add('POST', '/api/setup/assess', async ({ t, user }) => { P.assertAdmin(user); E.evaluateTenant(t, 'initial_assessment'); await P.drain(); return V.coverage(t); });
+add('POST', '/api/setup/assess', async ({ t, user }) => { P.assertAdmin(user); await E.evaluateTenant(t, 'initial_assessment'); await P.drain(); return V.coverage(t); });
 
 // ---- connectors
 // HRMS settings are described at the top of the HRMS section in connectors.js. Keys are write-only:
@@ -382,9 +384,93 @@ add('POST', '/api/coworker/settings', ({ t, user, body }) => {
   P.assertAdmin(user);
   return CoworkerPolicy.save(t, user, body);
 });
-add('GET', '/api/users', ({ t, user }) => { P.assertAdmin(user); return db.all('SELECT id,name,email,role,slack_id FROM users WHERE tenant_id=? ORDER BY name', t); });
-add('POST', '/api/users', ({ t, user, body }) => { P.assertAdmin(user); if (!P.ROLE_PACKS[body.role]) throw new HttpError(400, 'Invalid role.'); if (!body.email || String(body.password || '').length < 8) throw new HttpError(400, 'Email and an 8+ character password are required.'); const uid = id('usr'); try { db.insert('users', { id: uid, tenant_id: t, email: body.email, name: body.name || body.email, role: body.role, password_hash: hashPassword(body.password), slack_id: body.slack_id || null, created_at: clock.iso() }); } catch { throw new HttpError(409, 'That email is already in use.'); } P.audit(t, 'USER_ADDED', body.email, `Added with role ${body.role}.`, user); return { id: uid }; });
-add('GET', '/api/owners', ({ t }) => db.all('SELECT id,name,role FROM users WHERE tenant_id=? ORDER BY name', t));
+// ---- Users. Administrators manage the people in their own company. Nobody can lock the company
+// out: you cannot deactivate yourself or change your own role, and the last active administrator
+// stays an active administrator. Deactivating keeps the account and its history but ends every
+// session at once and blocks sign-in, Slack chat and new ownership.
+const PASSWORD_MIN = 12;
+const newPassword = (value) => {
+  const pw = typeof value === 'string' ? value : '';
+  if (pw.length < PASSWORD_MIN || pw.length > 128) throw new HttpError(400, `Use a password of ${PASSWORD_MIN} to 128 characters.`);
+  return pw;
+};
+const getUser = (t, uid) => { const u = db.get('SELECT * FROM users WHERE id=? AND tenant_id=?', uid, t); if (!u) throw new HttpError(404, 'User not found.'); return u; };
+const activeAdmins = (t) => db.get("SELECT COUNT(*) AS n FROM users WHERE tenant_id=? AND role='admin' AND disabled_at IS NULL", t).n;
+// Signs a person out everywhere, except (when given) the session making this change.
+const endSessions = (uid, keepSid) => (keepSid ? db.run('DELETE FROM sessions WHERE user_id=? AND token_hash<>?', uid, sha256(keepSid)) : db.run('DELETE FROM sessions WHERE user_id=?', uid));
+add('GET', '/api/users', ({ t, user }) => {
+  P.assertAdmin(user);
+  const owns = {};
+  for (const r of db.all('SELECT owner_user_id AS uid, COUNT(*) AS n FROM cases WHERE tenant_id=? AND closed_at IS NULL AND owner_user_id IS NOT NULL GROUP BY owner_user_id', t)) owns[r.uid] = Number(r.n);
+  return db.all('SELECT id,name,email,role,slack_id,disabled_at,created_at FROM users WHERE tenant_id=? ORDER BY disabled_at IS NOT NULL, name', t)
+    .map((u) => ({ ...u, open_cases: owns[u.id] || 0, is_you: u.id === user.id }));
+});
+add('POST', '/api/users', ({ t, user, body }) => {
+  P.assertAdmin(user);
+  if (!P.ROLE_PACKS[body.role]) throw new HttpError(400, 'Choose a role.');
+  const email = String(body.email || '').trim().toLowerCase();
+  if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new HttpError(400, 'Enter a valid work email.');
+  const password = newPassword(body.password), uid = id('usr');
+  if (db.get('SELECT 1 AS x FROM users WHERE lower(email)=?', email)) throw new HttpError(409, 'That email is already in use.');
+  db.insert('users', { id: uid, tenant_id: t, email, name: String(body.name || '').trim().slice(0, 120) || email, role: body.role, password_hash: hashPassword(password), slack_id: body.slack_id || null, created_at: clock.iso() });
+  P.audit(t, 'USER_ADDED', email, `Added with role ${P.ROLE_LABEL[body.role]}.`, user);
+  return { id: uid };
+});
+add('POST', '/api/users/:id/role', ({ t, user, p, body }) => {
+  P.assertAdmin(user);
+  const target = getUser(t, p.id);
+  if (!P.ROLE_PACKS[body.role]) throw new HttpError(400, 'Choose a role.');
+  if (target.id === user.id) throw new HttpError(409, 'You cannot change your own role. Ask another administrator.');
+  if (target.role === 'admin' && body.role !== 'admin' && !target.disabled_at && activeAdmins(t) <= 1) throw new HttpError(409, 'This is the last administrator. Make someone else an administrator first.');
+  if (target.role === body.role) return { ok: true };
+  db.update('users', target.id, { role: body.role });
+  P.audit(t, 'USER_ROLE_CHANGED', target.email, `Role changed from ${P.ROLE_LABEL[target.role]} to ${P.ROLE_LABEL[body.role]}.`, user);
+  return { ok: true };
+});
+add('POST', '/api/users/:id/deactivate', ({ t, user, p }) => {
+  P.assertAdmin(user);
+  const target = getUser(t, p.id);
+  if (target.id === user.id) throw new HttpError(409, 'You cannot deactivate your own account.');
+  if (target.disabled_at) return { ok: true, open_cases: 0 };
+  if (target.role === 'admin' && activeAdmins(t) <= 1) throw new HttpError(409, 'This is the last active administrator.');
+  db.tx(() => { db.update('users', target.id, { disabled_at: clock.iso() }); endSessions(target.id); });
+  const open = Number(db.get('SELECT COUNT(*) AS n FROM cases WHERE tenant_id=? AND owner_user_id=? AND closed_at IS NULL', t, target.id).n);
+  P.audit(t, 'USER_DEACTIVATED', target.email, `Account deactivated and signed out everywhere.${open ? ` Still named as owner of ${open} open case(s).` : ''}`, user);
+  return { ok: true, open_cases: open };
+});
+add('POST', '/api/users/:id/reactivate', ({ t, user, p }) => {
+  P.assertAdmin(user);
+  const target = getUser(t, p.id);
+  if (!target.disabled_at) return { ok: true };
+  db.update('users', target.id, { disabled_at: null });
+  P.audit(t, 'USER_REACTIVATED', target.email, 'Account reactivated.', user);
+  return { ok: true };
+});
+// An administrator sets a new password for someone, for example after "I forgot my password".
+// That person is signed out everywhere and uses the new password next time.
+add('POST', '/api/users/:id/password', ({ t, user, p, body, sid }) => {
+  P.assertAdmin(user);
+  const target = getUser(t, p.id), password = newPassword(body.password);
+  db.tx(() => { db.update('users', target.id, { password_hash: hashPassword(password) }); endSessions(target.id, target.id === user.id ? sid : null); });
+  P.audit(t, 'USER_PASSWORD_RESET', target.email, 'Password reset by an administrator. Signed out everywhere.', user);
+  return { ok: true };
+});
+// Anyone can change their own password. Their other sessions end; this one stays signed in.
+const passwordAttempts = new Map();
+add('POST', '/api/me/password', ({ t, user, body, sid }) => {
+  const a = passwordAttempts.get(user.id) || { n: 0, at: Date.now() };
+  if (Date.now() - a.at > 9e5) { a.n = 0; a.at = Date.now(); }
+  if (++a.n > 10) throw new HttpError(429, 'Too many attempts. Try again in 15 minutes.');
+  passwordAttempts.set(user.id, a);
+  if (!checkPassword(String(body.current || ''), user.password_hash)) throw new HttpError(400, 'Your current password is not right.');
+  const password = newPassword(body.password);
+  if (password === body.current) throw new HttpError(400, 'Choose a password different from the current one.');
+  db.tx(() => { db.update('users', user.id, { password_hash: hashPassword(password) }); endSessions(user.id, sid); });
+  passwordAttempts.delete(user.id);
+  P.audit(t, 'PASSWORD_CHANGED', user.email, 'Changed their own password. Signed out on other devices.', user);
+  return { ok: true };
+});
+add('GET', '/api/owners', ({ t }) => db.all('SELECT id,name,role FROM users WHERE tenant_id=? AND disabled_at IS NULL ORDER BY name', t));
 add('POST', '/api/digest/send', async ({ t, user }) => {
   P.assertAdmin(user);
   W.requireVerified(t);
@@ -455,6 +541,6 @@ add('POST', '/api/integrations/slack/remove', ({ t, user }) => {
 
 // ---- demo controls
 add('POST', '/api/demo/hrms-event', async ({ t, user, body }) => { P.assertAdmin(user); if (!demo()) throw new HttpError(404, 'Not found.'); const tn = db.get('SELECT * FROM tenants WHERE id=?', t); if (tn.slug !== 'bluebix') throw new HttpError(400, 'The mock HRMS is connected to Bluebix only.'); const r = await mock.emit(tn.slug, tn.webhook_secret, body.kind); await P.drain(); return { type: r.type, worker: r.worker, status: r.status }; });
-add('POST', '/api/demo/advance', async ({ t, user, body }) => { P.assertAdmin(user); if (!demo() || W.verification(t)) throw new HttpError(404, 'Not found.'); clock.advanceDays(Math.min(+body.days || 1, 60)); E.runReminders(t); E.evaluateTenant(t, 'scheduled_check'); await P.drain(); E.runReminders(t); await P.drain(); return { today: clock.today() }; });
+add('POST', '/api/demo/advance', async ({ t, user, body }) => { P.assertAdmin(user); if (!demo() || W.verification(t)) throw new HttpError(404, 'Not found.'); clock.advanceDays(Math.min(+body.days || 1, 60)); E.runReminders(t); await E.evaluateTenant(t, 'scheduled_check'); await P.drain(); E.runReminders(t); await P.drain(); return { today: clock.today() }; });
 add('POST', '/api/demo/reset', async ({ t, user }) => { P.assertAdmin(user); if (!sandbox.isActive() || W.verification(t)) throw new HttpError(404, 'Not found.'); clock.reset(); db.resetAll(); R.loadPacks(); await require('./seed').seed(); return { ok: true }; });
 module.exports = { routes };

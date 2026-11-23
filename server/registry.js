@@ -127,7 +127,7 @@ function activatePack(t, user, key, { owner_user_id, reviewed }) {
   const p = packDef(key);
   if (!p) throw new HttpError(404, 'Unknown pack.');
   if (!reviewed) throw new HttpError(400, 'Confirm that applicability, sources and deadlines were reviewed.');
-  const owner = db.get('SELECT * FROM users WHERE id=? AND tenant_id=?', owner_user_id, t);
+  const owner = db.get('SELECT * FROM users WHERE id=? AND tenant_id=? AND disabled_at IS NULL', owner_user_id, t);
   if (!owner) throw new HttpError(400, 'Choose a responsible owner.');
   if (!P.canPack(owner, key)) throw new HttpError(400, 'Choose an owner with permission to act on this pack.');
   if (p.validation.some((v) => !v.ok)) throw new HttpError(409, 'This pack version failed its validation tests.');

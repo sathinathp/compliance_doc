@@ -1,6 +1,7 @@
 'use strict';
 // Event-driven core: evaluate -> reconcile case -> plan action -> send once -> follow up -> escalate.
-const db = require('./lib/db'), { clock, id, shortId, addDays, j, sha256, token } = require('./lib/util');
+const crypto = require('node:crypto');
+const db = require('./lib/db'), { clock, id, addDays, j, sha256, token } = require('./lib/util');
 const P = require('./platform'), R = require('./registry'), { evaluate } = require('./evaluator'), channels = require('./channels');
 const W = require('./lib/workspace');
 const CoworkerPolicy = require('./coworker-policy');
@@ -35,7 +36,7 @@ function audience(t, cs) {
   if (cs.subject_type === 'worker') { const w = db.get('SELECT * FROM workers WHERE id=? AND tenant_id=?', cs.subject_id, t); return { worker: w }; }
   return { worker: null };
 }
-function owner(t, cs) { return cs.owner_user_id ? db.get('SELECT * FROM users WHERE id=? AND tenant_id=?', cs.owner_user_id, t) : null; }
+function owner(t, cs) { return cs.owner_user_id ? db.get('SELECT * FROM users WHERE id=? AND tenant_id=? AND disabled_at IS NULL', cs.owner_user_id, t) : null; }
 function newLink(t, cs) {
   const raw = token();
   db.insert('submission_tokens', { token_hash: sha256(raw), tenant_id: t, case_id: cs.id, expires_at: new Date(clock.now().getTime() + 14 * 864e5).toISOString(), created_at: clock.iso() });
@@ -122,7 +123,7 @@ function reconcile(t, type, s, c, r, prevStatus = null) {
   // the date it got when it opened, so it can become overdue instead of moving forward on every check.
   const due = r.due || open?.due_date || addDays(clock.today(), 7);
   if (!open) {
-    const cs = { id: shortId('CASE'), tenant_id: t, subject_type: type, subject_id: s.id, subject_name: s.name, pack_key: c.pack_key, control_key: c.key, control_name: c.name, state: 'identified', gap: r.reason, gap_kind: r.gap_kind, priority, owner_user_id: c.owner_user_id, owner_team: c.team, restricted: c.restricted ? 1 : 0, due_date: due, opened_at: clock.iso() };
+    const cs = { id: newCaseId(), tenant_id: t, subject_type: type, subject_id: s.id, subject_name: s.name, pack_key: c.pack_key, control_key: c.key, control_name: c.name, state: 'identified', gap: r.reason, gap_kind: r.gap_kind, priority, owner_user_id: c.owner_user_id, owner_team: c.team, restricted: c.restricted ? 1 : 0, due_date: due, opened_at: clock.iso() };
     db.insert('cases', cs);
     P.audit(t, 'CASE_OPENED', s.name, `${c.name}: gap identified. ${r.reason}`, SYSTEM, { case_id: cs.id });
     setState(t, cs, 'assigned', `Assigned to ${c.team}.`);
@@ -191,9 +192,32 @@ function reopenReadiness(t, wid, names) {
   db.update('workers', wid, { readiness: 'pending' });
   P.audit(t, 'READINESS_REOPENED', `Assignment readiness: ${w.name}`, `Back to pending. No longer passing: ${names.join(', ')}.`);
 }
-function evaluateTenant(t, trigger) {
-  for (const w of db.all('SELECT * FROM workers WHERE tenant_id=?', t)) evaluateSubject(t, 'worker', w, trigger);
-  for (const e of db.all('SELECT * FROM entities WHERE tenant_id=?', t)) evaluateSubject(t, 'entity', e, trigger);
+// Checks every worker and entity in small batches. Database calls block the server, so between
+// batches it pauses for a moment and lets waiting requests through; the app stays usable while
+// a large company is checked. Each record is re-read when its turn comes, so a change made during
+// the run is not overwritten with an older copy.
+// Case IDs are shown to people, so they stay short: CASE- and 8 characters (4 billion choices).
+// A new ID is checked against existing cases, so two cases can never share one.
+function newCaseId() {
+  for (;;) {
+    const cid = `CASE-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+    if (!db.get('SELECT 1 AS x FROM cases WHERE id=?', cid)) return cid;
+  }
+}
+// The pause comes after about 20 ms of work rather than after a fixed number of people, so the wait
+// stays short whatever the size of the company and however slow the database is.
+const WORK_MS = 20;
+const letRequestsThrough = () => new Promise((resolve) => setImmediate(resolve));
+async function evaluateTenant(t, trigger) {
+  const subjects = [
+    ...db.all('SELECT id FROM workers WHERE tenant_id=?', t).map((r) => ['worker', r.id]),
+    ...db.all('SELECT id FROM entities WHERE tenant_id=?', t).map((r) => ['entity', r.id]),
+  ];
+  let since = Date.now();
+  for (const [type, sid] of subjects) {
+    evaluateById(t, type, sid, trigger);
+    if (Date.now() - since >= WORK_MS) { await letRequestsThrough(); since = Date.now(); }
+  }
   const tn = db.get('SELECT * FROM tenants WHERE id=?', t);
   if (!tn.first_assessment_at && db.get('SELECT 1 x FROM evaluations WHERE tenant_id=? LIMIT 1', t)) db.update('tenants', t, { first_assessment_at: clock.iso() });
 }
@@ -205,7 +229,7 @@ function canDeliverConfirmedFollowUp(t, cs, confirmed) {
   if (!cs || cs.closed_at || cs.control_key !== confirmed.controlKey || cs.gap_kind !== 'evidence' || cs.finding_verdict === 'false_finding') return false;
   const policy = CoworkerPolicy.get(t);
   if (!policy.enabled || !policy.follow_ups || policy.follow_up_epoch !== (confirmed.policyEpoch ?? 0)) return false;
-  const user = db.get('SELECT id,role,coworker_epoch FROM users WHERE id=? AND tenant_id=?', confirmed.actorId, t);
+  const user = db.get('SELECT id,role,coworker_epoch FROM users WHERE id=? AND tenant_id=? AND disabled_at IS NULL', confirmed.actorId, t);
   if (!user || user.coworker_epoch !== (confirmed.actorEpoch ?? 0) || !P.canPack(user, cs.pack_key)
     || (cs.restricted && !P.canSeeRestricted(user))) return false;
   const control = R.effectiveControls(t).find((c) => c.key === cs.control_key);
