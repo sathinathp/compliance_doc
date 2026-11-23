@@ -54,6 +54,16 @@ test('the Integrations page starts disconnected, shows Teams as coming soon, and
   assert.equal(r.data.slack.connected, false);
   assert.equal(r.data.teams.available, false);
   assert.deepEqual(r.data.teams.needs, ['App ID', 'Client secret', 'Tenant ID']);
+  // Email shows as set up for SMTP as well as Resend, the two ways the server can send it.
+  const saved = { RESEND_API_KEY: process.env.RESEND_API_KEY, SMTP_HOST: process.env.SMTP_HOST };
+  try {
+    delete process.env.RESEND_API_KEY; delete process.env.SMTP_HOST;
+    assert.equal((await admin.get('/api/integrations')).data.email.configured, false);
+    process.env.SMTP_HOST = 'smtp.example.com';
+    assert.equal((await admin.get('/api/integrations')).data.email.configured, true);
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
   const hr = await login('hr@northstar.demo');
   assert.equal((await hr.get('/api/integrations')).status, 403);
   assert.equal((await hr.post('/api/integrations/slack', { bot_token: 'xoxb-1' })).status, 403);

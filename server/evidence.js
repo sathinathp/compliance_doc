@@ -40,7 +40,10 @@ async function extract(t, buf, mime, name) {
     const b64 = buf.toString('base64'), ask = { type: 'text', text: 'Extract the fields from this document.' };
     let content = null;
     if (text) content = [{ type: 'text', text }];
-    else if (/^image\/(jpeg|png|gif|webp)$/.test(mime)) content = [ask, { type: 'image', source: { type: 'base64', media_type: mime, data: b64 } }];
+    else if (/^image\/(jpeg|png|gif|webp)$/.test(mime)) {
+      if (llm.supportsImages(t)) content = [ask, { type: 'image', source: { type: 'base64', media_type: mime, data: b64 } }];
+      else aiNote = 'Document images are disabled for this AI model. A person needs to confirm the fields.';
+    }
     else if (/pdf/.test(mime) && llm.supportsPdf(t)) content = [ask, { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } }];
     else if (/pdf/.test(mime)) aiNote = 'This is a scanned PDF, which the selected AI provider cannot read. A person needs to confirm the fields.';
     else aiNote = 'This file type cannot be read by AI. A person needs to confirm the fields.';

@@ -33,6 +33,7 @@ if (!process.env.AEGIS_SECRET && !fs.existsSync(secretFile)) fs.writeFileSync(se
 U.setSecret(process.env.AEGIS_SECRET || fs.readFileSync(secretFile, 'utf8'));
 try { db.open(path.join(DATA, 'aegis.db')); } catch (e) { console.error(e.message); process.exit(1); }
 const P = require('./platform'), R = require('./registry'), E = require('./engine'), C = require('./connectors'), V = require('./views'), channels = require('./channels'), mock = require('./mock-hrms'), { routes } = require('./routes'), { seed } = require('./seed');
+const W = require('./lib/workspace');
 const { j, clock } = U;
 
 P.on('process_event', (t, p) => C.processHrmsEvent(t, p));
@@ -41,6 +42,7 @@ P.on('evaluate_tenant', (t, p) => E.evaluateTenant(t, p.trigger));
 P.on('send_action', (t, p) => E.sendAction(t, p));
 P.on('run_reminders', (t) => E.runReminders(t));
 P.on('digest', async (t) => {
+  if (W.pending(t)) return;
   const tenant = db.get('SELECT * FROM tenants WHERE id=?', t);
   const destination = j(tenant.channel_json, {}).channel || '#compliance-alerts';
   const via = await channels.post(tenant, destination, 'Compliance digest', V.digestText(t));
@@ -92,9 +94,6 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname.startsWith('/api/')) { const started = Date.now(); res.on('finish', () => logRequest(req, res.statusCode, started)); }
   try {
     if (sandbox.rejectsHost(req)) return send(res, 403, { error: 'The sandbox is available on localhost.' });
-    if (sandbox.blocksIntegration(req.method, url.pathname)) {
-      return send(res, 403, { error: 'The sandbox uses the sample HRMS and the local message outbox.' });
-    }
     // For load balancers and uptime checks. No sign-in needed, and it reveals nothing about tenants.
     if (url.pathname === '/healthz') {
       let dbOk = false;
@@ -124,7 +123,9 @@ const server = http.createServer(async (req, res) => {
       if (!u) throw new P.HttpError(401, 'Please sign in.');
       if (req.method !== 'GET' && req.headers['x-aegis-client'] !== 'web') throw new P.HttpError(403, 'Missing client header.');
       ctx.user = { ...u, type: 'user' }; ctx.t = u.tenant_id;
+      if (req.method !== 'GET' && /^\/api\/(?:connectors|integrations\/slack)(?:\/|$)/.test(url.pathname)) W.requireVerified(ctx.t);
     }
+    if (sandbox.blocksIntegration(req.method, url.pathname)) throw new P.HttpError(403, 'The sandbox uses the sample HRMS and the local message outbox.');
     const out = await route.fn(ctx);
     if (out !== res) send(res, 200, out);
   } catch (e) {

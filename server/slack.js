@@ -25,7 +25,11 @@ function fromEnv() {
   const e = process.env;
   return e.SLACK_BOT_TOKEN ? { bot_token: e.SLACK_BOT_TOKEN, app_token: e.SLACK_APP_TOKEN || null, signing_secret: e.SLACK_SIGNING_SECRET || null, source: 'environment' } : null;
 }
-const config = (t) => { const s = stored(t); return s ? { ...s, source: 'settings' } : fromEnv(); };
+const config = (t) => {
+  const s = stored(t);
+  if (s) return { ...s, source: 'settings' };
+  return t && db.get("SELECT 1 AS x FROM tenants WHERE id=? AND kind='customer'", t) ? null : fromEnv();
+};
 const configured = (t) => !!config(t)?.bot_token;
 const hint = (k) => (k ? `${k.slice(0, 5)}…${k.slice(-4)}` : null);
 

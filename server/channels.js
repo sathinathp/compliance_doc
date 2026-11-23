@@ -6,6 +6,9 @@ const hooks = { failNext: 0 };
 let nodemailer = null;
 try { nodemailer = require('nodemailer'); } catch {}
 
+// True when worker emails can actually go out: through Resend, or through SMTP.
+const emailConfigured = () => !!process.env.RESEND_API_KEY || (!!nodemailer && !!process.env.SMTP_HOST);
+
 let cachedTransporter = null;
 function getTransporter() {
   if (process.env.NODE_ENV === 'test') return null;
@@ -144,4 +147,4 @@ async function post(tenant, recipient, subject, body) {
   return channel;
 }
 
-module.exports = { deliver, post, verifySlack: slack.verify, hooks, sha256 };
+module.exports = { deliver, post, verifySlack: slack.verify, hooks, sha256, emailConfigured };

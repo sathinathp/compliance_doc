@@ -126,7 +126,7 @@ const NAV = [
   ['Reporting', [['dashboards', 'Dashboards'], ['reports', 'Reports'], ['metrics', 'Pilot metrics'], ['audit', 'Audit history']]],
   ['Organization', [['setup', 'Company setup'], ['integrations', 'Connections'], ['settings', 'Settings']]]
 ];
-const HEAD = { overview: ['Workspace', 'Overview', 'Current status across activated packs, accepted evidence and open remediation.'], setup: ['Organization', 'Company setup', 'Get your organisation ready: bring in your people, confirm requirements, and run the first check.'], cases: ['Workspace', 'Cases', 'Each gap moves from identified to closed. Only accepted evidence closes a case.'], approvals: ['Workspace', 'Approvals', 'Consequential actions wait here for an authorized person.'], evidence: ['Workspace', 'Evidence', 'AI proposes matches and fields. Uncertain documents go to a person.'], checks: ['Records', 'Checks', 'Every result has a reason, evidence references and a control version.'], workers: ['Records', 'Workers', 'Per-pack status for each worker. One pack never hides another.'], packs: ['Records', 'Compliance packs', 'Versioned packs reviewed and activated by an authorized person.'], controls: ['Records', 'Control rules', 'Draft, preview and approve changes before they take effect.'], integrations: ['Organization', 'Connections', 'Connectors, messages, background jobs and visible failures.'], dashboards: ['Reporting', 'Dashboards', 'Readiness, expirations and gaps, counted from current checks.'], reports: ['Reporting', 'Reports', 'Reports to share with clients, auditors and managers.'], notices: ['Workspace', 'Tax notices', 'Letters from tax agencies and the replies Finance approves.'], metrics: ['Reporting', 'Pilot metrics', 'How the pilot is going, measured from Aegis records.'], audit: ['Reporting', 'Audit history', 'Every check, request and decision, in order. Entries cannot be edited or deleted.'], settings: ['Organization', 'Settings', 'Users, roles, reporting channel and schedules.'] };
+const HEAD = { overview: ['Workspace', 'Overview', 'Current status across activated packs, accepted evidence and open remediation.'], setup: ['Organization', 'Company setup', 'Get your organisation ready: bring in your people, confirm requirements, and run the first check.'], cases: ['Workspace', 'Cases', 'Each gap moves from identified to closed. Only accepted evidence closes a case.'], approvals: ['Workspace', 'Approvals', 'Consequential actions wait here for an authorized person.'], evidence: ['Workspace', 'Evidence', 'AI proposes matches and fields. Uncertain documents go to a person.'], checks: ['Records', 'Checks', 'Every result has a reason, evidence references and a control version.'], workers: ['Records', 'Workers', 'Per-pack status for each worker. One pack never hides another.'], packs: ['Records', 'Compliance packs', 'Versioned packs reviewed and activated by an authorized person.'], controls: ['Records', 'Control rules', 'Draft, preview and approve changes before they take effect.'], integrations: ['Organization', 'Connections', 'Manage workforce sync, reporting channels, and message delivery.'], dashboards: ['Reporting', 'Dashboards', 'Readiness, expirations and gaps, counted from current checks.'], reports: ['Reporting', 'Reports', 'Reports to share with clients, auditors and managers.'], notices: ['Workspace', 'Tax notices', 'Letters from tax agencies and the replies Finance approves.'], metrics: ['Reporting', 'Pilot metrics', 'How the pilot is going, measured from Aegis records.'], audit: ['Reporting', 'Audit history', 'Every check, request and decision, in order. Entries cannot be edited or deleted.'], settings: ['Organization', 'Settings', 'Users, roles, reporting channel and schedules.'] };
 
 // Ticked cases on the Cases page (ids). Cleared when the tab or page changes.
 const caseSel = new Set();
@@ -147,9 +147,11 @@ async function boot() {
   const ls = $('#loginScreen'); if (ls) { ls.hidden = true; ls.style.display = 'none'; ls.innerHTML = ''; }
   const as = $('#appShell'); if (as) { as.hidden = false; as.style.display = 'block'; }
   const questions = ['What is missing for new workers?', 'Which credentials expire next month?', 'What needs my approval?', 'Show unresolved cases by team'];
-  if (canEdit()) questions.push('Request the missing documents.', 'Create a healthcare dashboard showing missing evidence by facility.');
+  if (canEdit() && !me.workspace_email?.pending) questions.push('Request the missing documents.');
+  if (canEdit()) questions.push('Create a healthcare dashboard showing missing evidence by facility.');
   $('#chatPrompts').innerHTML = render(questions.map((q) => h`<button class="prompt-pill" data-act="prompt" data-q="${q}">${q}</button>`));
   renderTop();
+  renderVerificationNotice();
   renderDemoRack();
   readHash();
 }
@@ -173,7 +175,7 @@ function renderTop() {
   const tenantAvatar = $('#tenantAvatar'); if (tenantAvatar) tenantAvatar.textContent = (me.tenant?.name || 'BH').slice(0, 2).toUpperCase();
   const tenantName = $('#tenantName'); if (tenantName) tenantName.textContent = me.tenant?.name || 'Aegis';
   const tenantStatus = $('#tenantStatus');
-  tenantStatus.hidden = !me.demo;
+  tenantStatus.hidden = !me.demo && !me.sandbox;
   tenantStatus.textContent = me.sandbox ? 'Sandbox' : 'Demo data';
   $('#meMenuDemoRole').hidden = !me.demo;
   $('#meMenuDemoControls').hidden = !me.demo || !me.user.is_admin;
@@ -214,9 +216,52 @@ function renderNav() {
 }
 
 function readHash() {
-  if (!me) return;
+  if (!me) {
+    if (location.hash === '#signup' && signupEnabled && $('#loginScreen .main-desk') && !$('#signup-form')) renderSignup();
+    else if (location.hash !== '#signup' && $('#signup-form')) showLogin();
+    return;
+  }
   const [page, argument] = location.hash.slice(1).split('/');
+  if (page === 'verify-email' && argument) {
+    history.replaceState(null, '', '#setup');
+    go('setup');
+    showVerifyEmail(argument);
+    return;
+  }
   go(Object.hasOwn(VIEWS, page) ? page : 'overview', argument || null);
+}
+
+function renderVerificationNotice() {
+  const banner = $('#workspaceVerification');
+  const verification = me.workspace_email;
+  banner.hidden = !verification?.pending;
+  banner.innerHTML = !verification?.pending ? '' : render(h`
+    <div><strong>Confirm your work email</strong>
+      <p>${verification.can_verify ? h`A verification email for <b>${me.user.email}</b> is in your sandbox inbox.` : 'Ask the first workspace administrator to confirm their work email.'}
+        You can add workers, import a roster, and run checks in validation mode. Connections and follow-ups require verification.</p>
+    </div>
+    ${verification.can_verify ? h`<div class="verification-actions"><button class="btn" data-act="openVerificationInbox">Open sandbox inbox</button><button class="btn-link-action" data-act="resendVerification">Resend email</button></div>` : ''}
+  `);
+}
+
+function showVerifyEmail(token) {
+  openModal('Confirm your work email', 'Verify the email for this workspace.', h`
+    <p>You’re signed in as <b>${me.user.email}</b>.</p>
+    <p id="verify-error" class="signup-error" role="alert"></p>
+  `, h`<button class="btn primary" id="confirm-verification">Confirm email</button>`);
+  const button = $('#confirm-verification');
+  button.onclick = async () => {
+    button.disabled = true;
+    try {
+      await api('/api/verify-email', { token });
+      closeModal();
+      await boot();
+      toast('Work email confirmed.', 'success');
+    } catch (err) {
+      const error = $('#verify-error');
+      if (error) error.textContent = err.message;
+    } finally { button.disabled = false; }
+  };
 }
 
 async function go(r, arg = null, keep) {
@@ -241,6 +286,7 @@ async function go(r, arg = null, keep) {
     if (version !== navigation) return;
     $('#view').innerHTML = render(out);
     labelTableCells($('#view'));
+    if (r === 'integrations') filterOutbox();
     fitInspector();
     if (!keep) window.scrollTo(0, 0);
     const q = $('#globalSearch')?.value; if (q) filterRows(q);
@@ -345,6 +391,7 @@ function confirmFollowUps(ids, scopeText) {
 // The five steps, each with whether it is done, locked (and why), a one-line summary and its content.
 function setupSteps(s) {
   const st = s.steps, gapsFor = (k) => s.gap_items.filter((g) => g.step === k);
+  const needsEmail = me.workspace_email?.pending;
   // Gaps on records and context are problems to fix; the packs note is guidance, so it reads as information.
   const gapNote = (k, info) => (gapsFor(k).length ? h`<div class="setup-note${info ? ' is-info' : ''}"><b>${info ? 'Good to know' : gapsFor(k).length === 1 ? 'One thing to fix' : `${gapsFor(k).length} things to fix`}</b><ul>${gapsFor(k).map((g) => h`<li>${g.text}</li>`)}</ul></div>` : '');
   const active = s.recommended.filter((p) => p.status === 'active');
@@ -358,13 +405,13 @@ function setupSteps(s) {
   return [
     {
       key: 'connect', title: 'Add your people and locations', done: st.connect, attention: gapsFor('records').length,
-      summary: st.connect ? `${plural(s.summary.workers, 'worker')}, ${plural(s.summary.facilities, 'location')} and ${plural(s.summary.entities, 'employing entity', 'employing entities')}${cons.length ? `, from ${cons.map((c) => c.name).join(' and ')}` : ''}.` : 'Connect your HR system, import a spreadsheet, or add people one by one.',
+      summary: st.connect ? `${plural(s.summary.workers, 'worker')}, ${plural(s.summary.facilities, 'location')} and ${plural(s.summary.entities, 'employing entity', 'employing entities')}${cons.length ? `, from ${cons.map((c) => c.name).join(' and ')}` : ''}.` : needsEmail ? 'Import a spreadsheet or add people one by one.' : 'Connect your HR system, import a spreadsheet, or add people one by one.',
       body: h`<dl class="report-figures setup-figures"><div><dt>Workers</dt><dd>${s.summary.workers}</dd></div><div><dt>Locations</dt><dd>${s.summary.facilities}</dd></div><div><dt>Employing entities</dt><dd>${s.summary.entities}</dd></div></dl>
         <h4 class="setup-sub">Where your records come from</h4>
-        ${cons.length ? h`<ul class="source-list">${cons.map((c) => { const [cls, label] = conState(c); return h`<li><span class="source-name">${c.name}<small>${words(c.type)} connection</small></span><span class="pill ${cls}">${label}</span><span class="source-meta">${c.last_sync_at ? `Last synced ${dt(c.last_sync_at)} UTC` : 'Not synced yet'}${c.records ? `, ${plural(c.records, 'record')}` : ''}</span></li>`; })}</ul>` : h`<p class="setup-text">No system is connected. ${s.summary.workers ? 'Records were added by spreadsheet or by hand.' : 'Connect your HR system to keep records up to date by themselves.'}</p>`}
+        ${cons.length ? h`<ul class="source-list">${cons.map((c) => { const [cls, label] = conState(c); return h`<li><span class="source-name">${c.name}<small>${words(c.type)} connection</small></span><span class="pill ${cls}">${label}</span><span class="source-meta">${c.last_sync_at ? `Last synced ${dt(c.last_sync_at)} UTC` : 'Not synced yet'}${c.records ? `, ${plural(c.records, 'record')}` : ''}</span></li>`; })}</ul>` : h`<p class="setup-text">No system is connected. ${needsEmail ? 'Confirm your work email before connecting your HR system.' : s.summary.workers ? 'Records were added by spreadsheet or by hand.' : 'Connect your HR system to keep records up to date automatically.'}</p>`}
         ${fromLine ? h`<p class="setup-text muted">Workers: ${fromLine}.</p>` : ''}
         ${gapNote('records')}
-        <div class="setup-actions"><a class="${!cons.length && !st.connect ? 'btn-submit-green' : 'btn-card-outline'}" href="#integrations">${cons.length ? 'Manage connections' : 'Connect a system'}</a><button class="btn-card-outline" data-act="importRoster">Import a spreadsheet</button><button class="btn-link-action" data-act="addWorker">Add a worker</button></div>`,
+        <div class="setup-actions">${needsEmail ? '' : h`<a class="${!cons.length && !st.connect ? 'btn-submit-green' : 'btn-card-outline'}" href="#integrations">${cons.length ? 'Manage connections' : 'Connect a system'}</a>`}<button class="${needsEmail ? 'btn-submit-green' : 'btn-card-outline'}" data-act="importRoster">Import a spreadsheet</button><button class="btn-link-action" data-act="addWorker">Add a worker</button></div>`,
     },
     {
       key: 'context', title: 'Confirm locations and requirements', done: st.context, attention: gapsFor('context').length, locked: !st.connect, why: 'Add people and locations first.',
@@ -386,7 +433,7 @@ function setupSteps(s) {
       body: h`<form data-form="channel" class="channel-form">
         <fieldset class="choice-group"><legend class="sr-only">Where updates go</legend>
           <label class="choice"><input type="radio" name="type" value="outbox" ${s.channel.type !== 'slack' ? raw('checked') : ''}><span><b>In-app outbox</b><small>Messages are kept in Aegis under Connections. Nothing leaves Aegis.</small></span></label>
-          <label class="choice${s.slack_ready ? '' : ' is-disabled'}"><input type="radio" name="type" value="slack" ${s.channel.type === 'slack' ? raw('checked') : ''} ${s.slack_ready ? '' : raw('disabled')}><span><b>Slack</b><small>${s.slack_ready ? 'Digests and alerts are posted to the channel below.' : h`Connect Slack first in <a href="#integrations">Connections</a>.`}</small></span></label>
+          <label class="choice${s.slack_ready ? '' : ' is-disabled'}"><input type="radio" name="type" value="slack" ${s.channel.type === 'slack' ? raw('checked') : ''} ${s.slack_ready ? '' : raw('disabled')}><span><b>Slack</b><small>${needsEmail ? 'Confirm your work email before connecting Slack.' : s.slack_ready ? 'Digests and alerts are posted to the channel below.' : h`Connect Slack first in <a href="#integrations">Connections</a>.`}</small></span></label>
         </fieldset>
         <div class="form-group channel-name"><label class="form-label" for="chName">Channel</label><input id="chName" name="channel" class="form-select" value="${s.channel.channel || '#compliance-alerts'}" autocomplete="off"></div>
         <div class="setup-actions"><button class="btn-submit-green">Save</button></div>
@@ -796,18 +843,23 @@ const VIEWS = {
     ${card('Change History', 'Drafts, approvals and superseded versions.', table(['Change', 'Control', 'Request', 'Status', 'By'], d.changes.map((c) => h`<tr><td>${c.kind}</td><td class="mono">${c.control_key}</td><td class="small">${c.source_text}</td><td>${statePill(c.status)}</td><td class="muted">${c.created_by}${c.approved_by ? ` → ${c.approved_by}` : ''}</td></tr>`), ['No rule changes yet', 'Drafted and approved changes to rules are listed here.']))}</div>`;
   },
   async integrations() {
-    const [health, messages, connections] = await Promise.all([api('/api/health'), api('/api/messages'), api('/api/integrations')]);
+    const [health, messages, connections, ai] = await Promise.all([api('/api/health'), api('/api/messages'), api('/api/integrations'), api('/api/ai').catch(() => null)]);
     const failures = [
-      ...health.connectors.filter((c) => c.last_error).map((c) => ['HRMS', c.name, c.last_error]),
-      ...health.jobs.dead.map((job) => ['Job', words(job.type), job.last_error]),
-      ...health.failed_actions.map((action) => ['Message', action.recipient, action.error]),
+      ...health.connectors.filter((c) => c.last_error).map((c) => ['HR system', c.name, c.last_error]),
+      ...health.jobs.dead.map((job) => ['Background job', words(job.type), job.last_error]),
+      ...health.failed_actions.map((action) => ['Message delivery', action.recipient, action.error]),
+      ...health.events.filter((event) => event.status === 'failed').map((event) => ['HR system update', words(event.type), event.error]),
     ];
-    if (health.ai_error) failures.push(['AI', 'AI engine', health.ai_error.message]);
+    if (connections.slack.receiving?.error) failures.push(['Slack', 'Incoming chat', connections.slack.receiving.error]);
+    if (health.ai_error) failures.push(['AI provider', 'AI engine', health.ai_error.message]);
+    const ready = !me.sandbox && !me.workspace_email?.pending;
     return h`<div class="stack">
-      ${me.sandbox ? h`<p class="alert-box">The sandbox uses the sample HRMS and records messages in the local outbox.</p>` : ''}
-      <div class="grid-2">${hrmsCard(health.connectors)}${slackCard(connections.slack)}</div>
-      ${card('Failures', 'Review failed jobs, deliveries and connections.', table(['Type', 'Item', 'Error'], failures.map(([kind, item, error]) => h`<tr><td>${kind}</td><td>${item}</td><td>${error}</td></tr>`), ['Everything is running', 'Failed syncs, messages or background jobs would show up here.']))}
-      ${card('Message Outbox', 'Delivery status and secure worker links.', table(['When', 'To', 'Subject', 'Delivery', ''], messages.map(outboxRow), ['No messages yet', 'Every message Aegis sends is kept here, including ones held in the outbox.']))}
+      ${connectionStatus(failures)}
+      ${me.sandbox ? h`<p class="setup-note is-info"><b>Sandbox</b>Workforce sync uses sample data, and messages stay in the outbox.</p>` : ''}
+      ${me.workspace_email?.pending ? h`<p class="setup-note"><b>Confirm your email first</b>Connections can be added once the workspace email is confirmed.</p>` : ''}
+      ${card('Connected tools', 'The systems this workspace uses. Keys are stored encrypted and never shown again.', h`<ul class="tool-list">${[...hrRows(health.connectors, ready), slackRow(connections.slack, ready), emailRow(connections.email), aiRow(ai)]}</ul>`, ready ? h`<button class="btn-card-outline" data-act="addConnector">Add HR system</button>` : '')}
+      ${failures.length ? card('Needs attention', 'Fix these to keep records and messages flowing.', table(['Item', 'Source', 'What happened'], failures.map(([kind, item, error]) => h`<tr><td><span class="row-title is-static">${item || 'Unnamed item'}</span></td><td class="nowrap">${kind}</td><td class="small">${error || 'The service did not say what went wrong.'}</td></tr>`), ''), '') : ''}
+      ${messageOutbox(messages)}
     </div>`;
   },
   async dashboards(arg) {
@@ -896,54 +948,177 @@ const VIEWS = {
     scope(null);
     if (!me.user.is_admin) return h`<div class="plain-card empty">Settings are available to administrators.</div>`;
     const users = await api('/api/users'), hl = await api('/api/health'), ai = await api('/api/ai');
-    return h`<div class="stack">${card('AI Engine', 'Reads photos and scanned documents, and helps chat understand free-form questions. It cannot accept evidence or set a result.', h`${ai.last_error ? h`<div class="alert-box"><strong>Last AI problem:</strong> ${ai.last_error.message}</div>` : ''}${ai.configured ? h`<dl class="kv mb"><dt>Status</dt><dd><span class="pill pill-pass">Connected</span></dd><dt>Provider</dt><dd>${ai.provider_label} (${ai.model})</dd><dt>Key</dt><dd class="mono">${ai.key_hint}</dd><dt>Set from</dt><dd>${ai.source}${ai.approved_by ? ` · approved by ${ai.approved_by}` : ''}</dd><dt>Scanned PDFs</dt><dd>${ai.reads_scanned_pdf ? 'Supported' : 'Not supported by this provider. They go to human review.'}</dd></dl><div class="row mb"><button class="btn-card-outline" data-act="aiTest">Test connection</button>${ai.source === 'settings' ? h`<button class="btn-danger" data-act="aiRemove">Remove key</button>` : ''}</div>` : ''}<form data-form="aiKey"><div class="form-grid"><div class="form-group"><label class="form-label">Provider</label><select name="provider" class="form-select">${ai.providers.slice().sort((a) => (a.key === 'deepseek' ? -1 : 1)).map((p) => h`<option value="${p.key}" ${(ai.provider || 'deepseek') === p.key ? raw('selected') : ''}>${p.label}</option>`)}</select></div><div class="form-group"><label class="form-label">API key</label><input name="api_key" type="password" class="form-select" autocomplete="off" required placeholder="${ai.configured ? 'Paste a new key to replace it' : 'Paste your key'}"></div></div><label class="row small mb"><input type="checkbox" name="approved" required> Our compliance owner approved sending worker documents to this provider.</label><button class="btn-submit-green">Test & save</button></form>`)}
+    return h`<div class="stack">${aiEnginePanel(ai)}
     ${card('Users & Roles', 'Roles limit which packs a person can act on. Immigration records are restricted.', table(['Name', 'Email', 'Role', 'Slack ID'], users.map((u) => h`<tr><td><strong>${u.name}</strong></td><td>${u.email}</td><td>${words(u.role)}</td><td class="mono">${u.slack_id}</td></tr>`), ''))}
     <form class="plain-card" data-form="user"><strong>Add user</strong><div class="form-grid mt"><div class="form-group"><label class="form-label">Name</label><input name="name" class="form-select" required></div><div class="form-group"><label class="form-label">Email</label><input name="email" type="email" class="form-select" required></div><div class="form-group"><label class="form-label">Role</label><select name="role" class="form-select"><option>hr</option><option>healthcare_compliance</option><option>immigration_owner</option><option>finance</option><option>viewer</option><option>admin</option></select></div><div class="form-group"><label class="form-label">Temporary password</label><input name="password" type="password" minlength="8" class="form-select" required></div></div><button class="btn-submit-green">Add user</button></form>
     ${card('Schedules', 'Checks run daily. Reminders run on each control’s cadence.', table(['Job', 'Cadence', 'Next run'], hl.schedules.map((s) => h`<tr><td>${s.kind}</td><td>${s.cadence}</td><td class="mono">${dt(s.next_run_at)}</td></tr>`), ['No schedules', 'Daily checks and digests appear here once set up.']))}</div>`;
   },
 };
 
-function hrmsCard(connectors) {
-  return card('Workforce records', 'Connect an HRMS or import your roster from Excel or CSV.', h`<div class="plain-card stack">
-    ${connectors.map((c) => h`<div class="tile">
-      <div class="between"><strong>${c.name}</strong>${statePill(c.status)}</div>
-      <p class="muted small mt">Last sync ${dt(c.last_sync_at)} · ${c.records} records processed</p>
-      <div class="row mt">
-        ${c.status !== 'disabled' ? h`<button class="btn-card-outline" data-act="syncConnector" data-id="${c.id}">Sync now</button>` : ''}
-        ${!me.sandbox ? h`<button class="btn-card-outline" data-act="testConnector" data-id="${c.id}">Test connection</button>
-          <button class="btn-card-outline" data-act="editConnector" data-id="${c.id}">Edit settings</button>
-          <button class="btn-card-outline" data-act="toggleConnector" data-id="${c.id}" data-next="${c.status === 'disabled' ? 'enable' : 'disable'}">${c.status === 'disabled' ? 'Enable' : 'Disable'}</button>` : ''}
+function aiEnginePanel(ai) {
+  const selected = ai.provider || 'deepseek';
+  const needsModel = !!ai.providers.find((p) => p.key === selected)?.requires_model;
+  const custom = selected === 'custom';
+  return card('AI Engine', 'Extracts document fields and helps the coworker understand questions. Aegis applies its own compliance checks.', h`
+    ${ai.last_error ? h`<div class="alert-box"><strong>Last AI problem</strong> ${ai.last_error.message}</div>` : ''}
+    ${ai.configured ? h`<dl class="kv mb">
+      <dt>Status</dt><dd><span class="pill ${ai.last_error ? 'pill-warn' : 'pill-pass'}">${ai.last_error ? 'Needs attention' : 'Connected'}</span></dd>
+      <dt>Provider</dt><dd>${ai.provider_label} (${ai.model})</dd>
+      ${ai.endpoint ? h`<dt>Endpoint</dt><dd class="ai-endpoint">${ai.endpoint}</dd>` : ''}
+      <dt>Key</dt><dd class="mono">${ai.key_hint}</dd>
+      <dt>Set from</dt><dd>${ai.source === 'settings' ? 'Settings' : 'Server configuration'}${ai.approved_by ? ` (approved by ${ai.approved_by})` : ''}</dd>
+      <dt>Document images</dt><dd>${ai.reads_images ? 'Enabled' : 'Human review'}</dd>
+      <dt>Scanned PDFs</dt><dd>${ai.reads_scanned_pdf ? 'Supported' : 'Human review'}</dd>
+    </dl>
+    ${!me.sandbox ? h`<div class="row mb"><button class="btn-card-outline" data-act="aiTest">Test connection</button>${ai.source === 'settings' ? h`<button class="btn-danger" data-act="aiRemove">Remove key</button>` : ''}</div>` : ''}` : ''}
+    ${me.sandbox ? h`<p class="ai-settings-note">Explore the provider options here. API keys and live connection tests are disabled in the sandbox.</p>` : ''}
+    <form data-form="aiKey" data-saved-provider="${ai.provider}" data-saved-model="${ai.model}" data-saved-images="${ai.reads_images}">
+      <div class="form-grid">
+        <div class="form-group"><label class="form-label" for="ai-provider">Provider</label>
+          <select id="ai-provider" name="provider" class="form-select">
+            ${ai.providers.map((p) => h`<option value="${p.key}" data-needs-model="${p.requires_model === true}" ${selected === p.key ? raw('selected') : ''}>${p.label}</option>`)}
+          </select>
+        </div>
+        <div class="form-group"><label class="form-label" for="ai-api-key">API key</label>
+          <input id="ai-api-key" name="api_key" type="password" class="form-select" autocomplete="off" maxlength="4096" required
+            placeholder="${me.sandbox ? 'Unavailable in the sandbox' : ai.configured ? 'Paste a new key to replace it' : 'Paste your key'}" ${me.sandbox ? raw('disabled') : ''}>
+        </div>
+        <div class="form-group" data-ai-model ${needsModel ? '' : raw('hidden')}>
+          <label class="form-label" for="ai-model">Model ID</label>
+          <input id="ai-model" name="model" class="form-select" type="text" autocomplete="off" maxlength="160" aria-describedby="ai-model-help"
+            value="${needsModel ? ai.model || '' : ''}" ${needsModel ? raw('required') : raw('disabled')}>
+          <p class="muted small" id="ai-model-help">Use a model ID from your provider that supports function calling.</p>
+        </div>
+        <div class="form-group" data-ai-endpoint ${custom ? '' : raw('hidden')}>
+          <label class="form-label" for="ai-endpoint">Chat Completions endpoint</label>
+          <input id="ai-endpoint" name="endpoint" class="form-select" type="url" autocomplete="off" maxlength="500"
+            value="${ai.endpoint || ''}" placeholder="https://provider.example/v1/chat/completions" aria-describedby="ai-endpoint-help" ${custom ? raw('required') : raw('disabled')}>
+          <p class="muted small" id="ai-endpoint-help">Use the full HTTPS endpoint approved by your Aegis server operator.</p>
+        </div>
       </div>
-    </div>`)}
-    <div class="row"><button class="btn-card-outline" data-act="importRoster">Upload roster</button>
-      ${!me.sandbox ? h`<button class="btn-submit-green" data-act="addConnector">Add HRMS connection</button>` : ''}
-    </div>
-  </div>`);
+      <label class="row small mb" data-ai-images ${needsModel ? '' : raw('hidden')}>
+        <input type="checkbox" name="reads_images" ${needsModel && ai.reads_images ? raw('checked') : ''} ${needsModel ? '' : raw('disabled')}> Enable document images if this model supports image input.
+      </label>
+      <label class="row small mb"><input type="checkbox" name="approved" required ${me.sandbox ? raw('disabled') : ''}> Our compliance owner approved sending worker documents to this provider.</label>
+      <button class="btn-submit-green" ${me.sandbox ? raw('disabled') : ''}>Test & save</button>
+    </form>
+  `);
 }
 
-function slackCard(slack) {
-  const receiving = slack.receiving;
-  const chat = receiving?.mode === 'socket' ? `Socket Mode · ${receiving.state}`
-    : receiving?.mode === 'events_url' ? 'Events URL' : 'Off';
-  return card('Slack', 'Send alerts and digests and ask the coworker questions in Slack.', h`<div class="plain-card stack">
-    ${slack.connected ? h`<dl class="kv"><dt>Workspace</dt><dd>${slack.workspace || 'Configured on server'}</dd>
-      <dt>Alerts channel</dt><dd>${slack.channel || 'Not selected'}</dd><dt>Incoming chat</dt><dd>${chat}</dd></dl>
-      ${receiving?.error ? h`<p class="alert-box">${receiving.error}</p>` : ''}` : h`<p>Slack is disconnected. Reporting messages stay in the outbox.</p>`}
-    ${!me.sandbox ? h`<div class="row">
-      <button class="btn-submit-green" data-act="slackConfig" data-channel="${slack.channel || '#compliance-alerts'}" data-replace="${slack.source === 'settings' ? 'yes' : ''}">${slack.connected ? 'Update Slack connection' : 'Connect Slack'}</button>
-      ${slack.connected ? h`<button class="btn-card-outline" data-act="slackTest">Send test message</button>` : ''}
-      ${slack.source === 'settings' ? h`<button class="btn-card-outline" data-act="slackDisconnect">Disconnect</button>` : ''}
-    </div>` : ''}
-  </div>`);
+function connectionIcon(key, size) {
+  return h`<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${raw(I[key])}</svg>`;
+}
+
+// One line that says whether everything is working, with a way to look again.
+function connectionStatus(failures) {
+  const n = failures.length;
+  return h`<div class="panel chain-panel ${n ? 'is-warn' : 'is-ok'}" role="status">
+    <span class="chain-icon" aria-hidden="true">${raw(n ? '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>' : '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5 9-10"/></svg>')}</span>
+    <div><b>${n ? `${plural(n, 'thing needs', 'things need')} attention` : 'All connections are working'}</b><p>${n ? 'See Needs attention below.' : 'Records sync and messages are delivered or kept in the outbox.'} Checked ${dt(new Date().toISOString())} UTC.</p></div>
+    <button class="btn-card-outline" data-act="refreshConnections">Refresh</button>
+  </div>`;
+}
+// A tool: what it is, what it does for this workspace, its state, and what you can do.
+const toolRow = ({ name, what, state, meta, actions }) => h`<li class="tool-row">
+  <div class="tool-main"><b>${name}</b><span>${what}</span></div>
+  <div class="tool-state"><span class="pill ${state[1]}">${state[0]}</span>${meta ? h`<small>${meta}</small>` : ''}</div>
+  <div class="tool-actions">${actions || ''}</div>
+</li>`;
+const manageMenu = (items) => (items.filter(Boolean).length ? h`<details class="row-menu"><summary class="btn-card-outline">Manage</summary><div class="row-menu-list" role="menu">${items}</div></details>` : '');
+function hrRows(connectors, ready) {
+  if (!connectors.length) return [toolRow({ name: 'HR system', what: 'Keeps workers, locations and assignments up to date from your HR system.', state: ['Not connected', 'pill-na'], meta: 'You can also import a spreadsheet.', actions: h`${ready ? h`<button class="btn-submit-green" data-act="addConnector">Connect</button>` : ''}<button class="btn-link-action" data-act="importRoster">Import a spreadsheet</button>` })];
+  return connectors.map((c) => {
+    const paused = c.status === 'disabled';
+    const state = paused ? ['Paused', 'pill-na'] : c.last_error || c.status === 'error' ? ['Needs attention', 'pill-warn'] : c.status === 'connected' ? ['Connected', 'pill-pass'] : [words(c.status), 'pill-na'];
+    return toolRow({
+      name: c.name, what: 'HR system. Workers, locations and assignments.', state,
+      meta: `${c.last_sync_at ? `Synced ${dt(c.last_sync_at)} UTC` : 'Not synced yet'}${c.records ? `, ${plural(c.records, 'record')}` : ''}`,
+      actions: h`${!paused && !me.workspace_email?.pending ? h`<button class="btn-card-outline" data-act="syncConnector" data-id="${c.id}">Sync now</button>` : ''}${ready ? manageMenu([
+        h`<button role="menuitem" data-act="testConnector" data-id="${c.id}">Test connection</button>`,
+        h`<button role="menuitem" data-act="editConnector" data-id="${c.id}">Edit settings</button>`,
+        h`<button role="menuitem" data-act="importRoster">Import a spreadsheet</button>`,
+        h`<button role="menuitem" class="${paused ? '' : 'is-danger'}" data-act="toggleConnector" data-id="${c.id}" data-next="${paused ? 'enable' : 'disable'}">${paused ? 'Resume sync' : 'Pause sync'}</button>`,
+      ]) : ''}`,
+    });
+  });
+}
+function slackRow(slack, ready) {
+  const r = slack.receiving;
+  const state = !slack.connected ? ['Not connected', 'pill-na'] : r?.error ? ['Needs attention', 'pill-warn'] : ['Connected', 'pill-pass'];
+  const chat = r?.mode === 'socket' ? 'chat on' : r?.mode === 'events_url' ? 'chat by events URL' : 'chat off';
+  return toolRow({
+    name: 'Slack', what: 'Posts digests and alerts, and lets people ask the coworker questions.', state,
+    meta: slack.connected ? `${slack.workspace || 'Workspace set on the server'}, ${slack.channel || 'no channel'}, ${chat}` : 'Until connected, messages stay in the outbox.',
+    actions: ready ? (slack.connected
+      ? manageMenu([
+        h`<button role="menuitem" data-act="slackTest">Send a test message</button>`,
+        h`<button role="menuitem" data-act="slackConfig" data-channel="${slack.channel || '#compliance-alerts'}" data-replace="${slack.source === 'settings' ? 'yes' : ''}">Update keys or channel</button>`,
+        slack.source === 'settings' ? h`<button role="menuitem" class="is-danger" data-act="slackDisconnect">Disconnect</button>` : '',
+      ])
+      : h`<button class="btn-submit-green" data-act="slackConfig" data-channel="${slack.channel || '#compliance-alerts'}" data-replace="">Connect</button>`) : '',
+  });
+}
+function emailRow(email) {
+  return toolRow({
+    name: 'Email', what: 'Sends document requests and reminders to workers.', state: email?.configured ? ['Set up', 'pill-pass'] : ['Not set up', 'pill-na'],
+    meta: email?.configured ? 'Delivered through the server’s email service.' : 'Requests stay in the outbox. Your Aegis administrator sets email up on the server.',
+  });
+}
+function aiRow(ai) {
+  return toolRow({
+    name: 'AI provider', what: 'Reads photos and scanned documents. It never accepts evidence by itself.',
+    state: !ai ? ['Unknown', 'pill-na'] : ai.last_error ? ['Needs attention', 'pill-warn'] : ai.configured ? ['Connected', 'pill-pass'] : ['Not connected', 'pill-na'],
+    meta: ai?.configured ? `${ai.provider_label}${ai.model ? `, ${ai.model}` : ''}` : 'Without it, unclear documents go to a person.',
+    actions: h`<a class="btn-link-action" href="#settings">${ai?.configured ? 'Manage in Settings' : 'Set up in Settings'}</a>`,
+  });
+}
+
+const outboxFilter = { query: '', channel: '' };
+const OUTBOX_PAGE = 10;
+let outboxLimit = OUTBOX_PAGE;
+function messageOutbox(messages) {
+  return h`<section class="panel connection-outbox" aria-labelledby="messageOutbox">
+    <div class="ph2"><div><h2 id="messageOutbox" tabindex="-1">Message outbox</h2><p>Every message Aegis sends or keeps. Times are UTC.</p></div></div>
+    ${messages.length ? h`<div class="outbox-tools">
+      <input type="search" class="form-select" id="outboxSearch" placeholder="Subject or recipient" aria-label="Search messages" value="${outboxFilter.query}">
+      <select class="form-select" id="outboxChannel" aria-label="Delivery">${[['', 'All deliveries'], ['outbox', 'Kept in outbox'], ['email', 'Email'], ['slack', 'Slack']].map(([key, label]) => h`<option value="${key}" ${outboxFilter.channel === key ? raw('selected') : ''}>${label}</option>`)}</select>
+      <p id="outboxCount" role="status"></p>
+    </div>
+    ${table(['Message', 'To', 'When', 'Delivery', ''], messages.map(outboxRow), '')}
+    <div class="load-more" id="outboxMore" hidden><button class="btn-card-outline" data-act="outboxMore">Show more</button></div>
+    <div id="outboxNoMatches" hidden>${emptyState(['No matching messages', 'Change the search or choose another delivery.'])}</div>` : emptyState(['No messages yet', 'Alerts and follow-ups will appear here as they are recorded.'])}
+  </section>`;
+}
+
+function filterOutbox() {
+  const rows = [...document.querySelectorAll('.connection-outbox tr[data-channel]')];
+  if (!rows.length) return;
+  const query = outboxFilter.query.trim().toLowerCase();
+  let matched = 0, shown = 0;
+  for (const row of rows) {
+    const match = (!outboxFilter.channel || row.dataset.channel === outboxFilter.channel)
+      && (!query || row.dataset.searchText.toLowerCase().includes(query));
+    if (match) matched++;
+    row.hidden = !match || matched > outboxLimit;
+    if (!row.hidden) shown++;
+  }
+  $('.connection-outbox .table-scroll-container').hidden = !shown;
+  $('#outboxNoMatches').hidden = !!matched;
+  $('#outboxMore').hidden = matched <= shown;
+  $('#outboxCount').textContent = matched ? `Showing ${shown} of ${matched}${matched < rows.length ? ` matching` : ''} ${matched === 1 ? 'message' : 'messages'}` : '';
 }
 
 function outboxRow(message) {
-  const token = /\/submit\/([\w-]+)/.exec(message.body)?.[1];
-  const body = message.body.replace(/https?:\/\/\S+/g, '[link]').slice(0, 130);
-  return h`<tr><td class="mono">${dt(message.created_at)}</td><td><strong>${message.recipient}</strong></td>
-    <td>${message.subject}<div class="muted small">${body}</div></td>
-    <td>${message.channel === 'outbox' ? 'Outbox only' : `${words(message.status)} · ${message.channel}`}</td>
-    <td>${token ? h`<a class="btn-link-action" href="/submit/${token}" target="_blank" rel="noopener">Open link</a>` : ''}</td></tr>`;
+  const content = message.body || '';
+  const token = /\/submit\/([\w-]+)/.exec(content)?.[1];
+  const body = content.replace(/https?:\/\/\S+/g, '[link]');
+  const label = { outbox: 'Outbox only', email: 'Email', slack: 'Slack' }[message.channel] || words(message.channel);
+  const [tone, delivery] = message.channel === 'outbox' ? ['na', 'Kept in outbox']
+    : message.status === 'sent' ? ['pass', `Sent by ${label.toLowerCase()}`] : ['warn', `${words(message.status)}, ${label.toLowerCase()}`];
+  return h`<tr data-channel="${message.channel}" data-search-text="${message.subject} ${message.recipient}"><td><strong>${message.subject}</strong><span class="outbox-preview">${body.length > 130 ? `${body.slice(0, 130).trimEnd()}…` : body}</span></td>
+    <td>${message.recipient}</td><td class="outbox-time"><time datetime="${message.created_at}">${dt(message.created_at)}</time></td>
+    <td class="nowrap"><span class="delivery tone-${tone}"><i aria-hidden="true"></i>${delivery}</span></td>
+    <td>${token ? h`<a class="btn-link-action" href="/submit/${token}" target="_blank" rel="noopener" aria-label="Open the upload link for ${message.subject} in a new tab">Upload link</a>` : ''}</td></tr>`;
 }
 
 function connectorDialog(connector) {
@@ -1051,6 +1226,23 @@ async function selectPersonaInWorkspace(p) {
 }
 
 const ACT = {
+  async openVerificationInbox() {
+    const { link } = await api('/api/verify-email/inbox');
+    openModal('Sandbox inbox', me.user.email, link ? h`
+      <h4>Confirm your Aegis work email</h4>
+      <p>Confirm this address to finish setting up your workspace. This link expires 30 minutes after it was requested.</p>
+    ` : h`<p>No current verification email. Request a fresh link to continue.</p>`, link
+      ? h`<a class="btn primary" href="${link}">Open verification link</a>`
+      : h`<button class="btn" data-act="resendVerification">Resend email</button>`);
+  },
+  async resendVerification(el) {
+    el.disabled = true;
+    try {
+      await api('/api/verify-email/resend', {});
+      toast('A new email is in your sandbox inbox.', 'success');
+      if ($('#modal').classList.contains('open')) await ACT.openVerificationInbox();
+    } finally { el.disabled = false; }
+  },
   toggleMenu: () => $('#sheet')?.classList.toggle('open'),
   openDemoRack: () => { renderDemoRack(); openDemoRack(); },
   closeDemoRack: () => { closeDemoRack(); },
@@ -1087,7 +1279,7 @@ const ACT = {
     }
   },
   closeModal, openChat: () => { $('#chatDrawer').classList.add('open'); loadChat(); setTimeout(() => $('#chatDrawer [name="text"]')?.focus(), 120); }, closeChat: () => closeChat(),
-  async logout() { await api('/api/logout', {}); location.hash = ''; location.reload(); },
+  async logout() { await api('/api/logout', {}); history.replaceState(null, '', location.pathname + location.search); location.reload(); },
   prompt: (el) => { $('#chatDrawer').classList.add('open'); sendChat(el.dataset.q); },
   async caseDetail(el) {
     const version = navigation;
@@ -1196,10 +1388,33 @@ const ACT = {
   facility(el) { openModal(`Requirements: ${el.dataset.name}`, 'These come from the client contract or facility policy.', h`<form data-form="facility" data-id="${el.dataset.id}"><div class="form-group"><label class="form-label">State</label><input name="state" class="form-select" maxlength="2" value="${el.dataset.state}"></div>${[['acls', 'ACLS card'], ['flu_vaccine', 'Flu vaccination'], ['facility_orientation', 'Facility orientation']].map(([k, l]) => h`<label class="row small mb"><input type="checkbox" name="req" value="${k}" ${el.dataset.req.split(',').includes(k) ? raw('checked') : ''}> ${l}</label>`)}<button class="btn-submit-green">Confirm requirements</button></form>`); },
   async confirmContext() { await api('/api/setup/context', {}); toast('Company profile confirmed.', 'success'); refresh(); },
   async assess() { const c = await api('/api/setup/assess', {}); toast(`${c.pass} pass, ${c.fail} fail, ${c.unknown} unknown.`, 'success'); after(); },
+  jumpConnections(el) {
+    const heading = document.getElementById(el.dataset.target);
+    heading?.focus();
+  },
+  async refreshConnections(el) {
+    el.disabled = true;
+    await refresh();
+    const button = $('[data-act="refreshConnections"]');
+    if (button) {
+      button.focus();
+      toast('Connections refreshed.', 'success');
+    }
+  },
   async syncConnector(el) {
-    const result = await api(`/api/connectors/${el.dataset.id}/sync`, {});
-    toast(`${result.records} records synced. ${result.skipped} skipped.`, result.skipped ? 'warning' : 'success');
-    refresh();
+    const id = el.dataset.id;
+    el.disabled = true;
+    el.textContent = 'Syncing…';
+    try {
+      const result = await api(`/api/connectors/${id}/sync`, {});
+      const outcome = result.records || result.skipped ? `${plural(result.records, 'record')} synced.` : 'No new records to sync.';
+      toast(`${outcome}${result.skipped ? ` ${result.skipped} skipped.` : ''}`, result.skipped ? 'warning' : 'success');
+    } finally {
+      if (route === 'integrations') {
+        await refresh();
+        $(`[data-act="syncConnector"][data-id="${CSS.escape(id)}"]`)?.focus();
+      }
+    }
   },
   addConnector() { connectorDialog(null); },
   async editConnector(el) {
@@ -1269,6 +1484,7 @@ const ACT = {
       <button class="btn-submit-green">Log notice</button></form>`);
   },
   retryView() { refresh(); },
+  outboxMore() { outboxLimit += OUTBOX_PAGE * 2; filterOutbox(); },
   openStep(el) {
     const d = document.getElementById(`step-${el.dataset.step}`); if (!d) return;
     d.open = true;
@@ -1400,7 +1616,12 @@ const FORM = {
   async notice(d) { await api('/api/notices', d); closeModal(); toast('Notice logged. The drafted reply is in Approvals.', 'success'); refresh(); },
   async baseline(d) { await api('/api/metrics/baseline', { key: 'minutes_per_chase', value: d.value }); closeModal(); toast('Baseline saved.', 'success'); refresh(); },
   async manualSupport(d) { await api('/api/metrics/manual-support', d); closeModal(); toast('Support time logged.', 'success'); refresh(); },
-  async aiKey(d) { const r = await api('/api/ai', { provider: d.provider, api_key: d.api_key, approved: !!d.approved }); toast(`${r.provider_label} connected.`, 'success'); refresh(); },
+  async aiKey(d) {
+    if (me.sandbox) return;
+    const r = await api('/api/ai', { ...d, approved: !!d.approved, reads_images: !!d.reads_images });
+    toast(`${r.provider_label} connected.`, 'success');
+    refresh();
+  },
   async user(d) { await api('/api/users', d); toast('User added.', 'success'); refresh(); },
   async login(d) { await api('/api/login', d); location.reload(); },
 };
@@ -1484,6 +1705,7 @@ const PERSONAS = [
 const BLANK_BADGE = { name: "Your name here", role: "Not signed in", email: "", color: "#0E8A5F", z: [0, 0, 0, 0, 0, 0] };
 let currentPersona = null;
 let demoEnabled = false;
+let signupEnabled = false;
 let demoPassword = 'demo1234';
 
 function badgeInitials(s) {
@@ -1663,6 +1885,7 @@ async function submitBadgeLogin() {
 }
 
 async function showLogin() {
+  navigation++;
   me = null;
   closeModal();
   const as = $('#appShell'); if (as) { as.hidden = true; as.style.display = 'none'; }
@@ -1671,6 +1894,7 @@ async function showLogin() {
 
   const info = await fetch('/api/public/info').then((r) => r.json()).catch(() => ({}));
   demoEnabled = info.demo === true;
+  signupEnabled = info.signup === true;
   demoPassword = info.demo_password || '';
 
   $('#loginScreen').innerHTML = `
@@ -1735,6 +1959,7 @@ async function showLogin() {
             </div>
             <button class="primary primary-badge-btn" id="submit" type="submit">Sign in</button>
           </form>
+          ${signupEnabled ? `<p class="auth-switch"><a href="#signup">Create a workspace</a></p>` : ''}
 
           ${demoEnabled ? `<div class="or or-divider">Sample workspaces</div>
           <button class="demo demo-trigger" type="button" data-act="quickLogin" data-e="sathinath@bluebix.demo">Open Bluebix sandbox</button>
@@ -1807,7 +2032,61 @@ async function showLogin() {
       if (e.target === overlayEl) closeDemoRack();
     });
   }
+  if (signupEnabled && location.hash === '#signup') renderSignup();
+}
 
+const SIGNUP_FIELDS = [
+  { name: 'org_name', label: 'Organisation name', autocomplete: 'organization', min: 2, max: 120, error: 'Enter an organisation name of 2 to 120 characters.' },
+  { name: 'admin_name', label: 'Your full name', autocomplete: 'name', min: 2, max: 120, error: 'Enter your full name of 2 to 120 characters.' },
+  { name: 'email', label: 'Work email', autocomplete: 'email', type: 'email', max: 254, error: 'Enter a valid work email.' },
+  { name: 'password', label: 'Password', autocomplete: 'new-password', type: 'password', min: 12, max: 128, error: 'Use a password of 12 to 128 characters.' },
+];
+
+function renderSignup() {
+  const desk = $('#loginScreen .main-desk');
+  desk.innerHTML = render(h`
+    <h1 tabindex="-1">Create a workspace</h1>
+    <p class="lead">Set up your organisation in Aegis. You’ll be the first administrator.</p>
+    <form id="signup-form" class="form-desk" novalidate>
+      ${SIGNUP_FIELDS.map((f) => h`<div>
+        <label for="new-${f.name}">${f.label}</label>
+        <input id="new-${f.name}" name="${f.name}" type="${f.type || 'text'}" autocomplete="${f.autocomplete}" maxlength="${f.max}"
+          aria-describedby="error-${f.name}${f.name === 'password' ? ' signup-password-hint' : ''}" required>
+        ${f.name === 'password' ? h`<p id="signup-password-hint" class="signup-hint">Use at least 12 characters.</p>` : ''}
+        <p id="error-${f.name}" class="signup-error" aria-live="polite"></p>
+      </div>`)}
+      <button class="primary primary-badge-btn" type="submit">Create workspace</button>
+      <p class="signup-error" id="signup-error" role="alert"></p>
+    </form>
+    <p class="auth-switch">Already have an account? <a href="#">Sign in</a></p>
+  `);
+  window.scrollTo(0, 0);
+  desk.querySelector('h1').focus({ preventScroll: true });
+  $('#signup-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget, values = Object.fromEntries(new FormData(form));
+    let firstInvalid = null;
+    for (const f of SIGNUP_FIELDS) {
+      const input = form.elements[f.name];
+      const value = f.name === 'password' ? values[f.name] : values[f.name].trim();
+      values[f.name] = value;
+      const valid = f.type === 'email' ? /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) : value.length >= f.min && value.length <= f.max;
+      $('#error-' + f.name).textContent = valid ? '' : f.error;
+      input.setAttribute('aria-invalid', String(!valid));
+      if (!valid && !firstInvalid) firstInvalid = input;
+    }
+    if (firstInvalid) { firstInvalid.focus(); return; }
+    const error = $('#signup-error'), submit = form.querySelector('button[type="submit"]');
+    error.textContent = '';
+    submit.disabled = true;
+    try {
+      await api('/api/signup', values);
+      history.replaceState(null, '', '#setup');
+      await boot();
+    } catch (err) {
+      error.textContent = err.message;
+    } finally { submit.disabled = false; }
+  });
 }
 
 ACT.quickLogin = async (el) => {
@@ -1951,6 +2230,13 @@ document.addEventListener('keydown', (e) => {
   }
 });
 $('#globalSearch')?.addEventListener('input', (e) => filterRows(e.target.value));
+document.addEventListener('input', (e) => {
+  if (e.target.id === 'outboxSearch') outboxFilter.query = e.target.value;
+  else if (e.target.id === 'outboxChannel') outboxFilter.channel = e.target.value;
+  else return;
+  outboxLimit = OUTBOX_PAGE;
+  filterOutbox();
+});
 // Evidence: the right panel is sized to the space left on screen, so its bottom (Accept / Reject)
 // is visible at every scroll position, not only once it starts to stick.
 let fitQueued = false;
@@ -1991,12 +2277,29 @@ document.addEventListener('change', (e) => {
   win.hidden = win.disabled = !on;
   if (on) group.value = 'window'; else if (group.value === 'window') group.value = 'facility';
 });
+document.addEventListener('change', (e) => {
+  const provider = e.target.id === 'ai-provider' && e.target;
+  if (!provider) return;
+  const needsModel = provider.selectedOptions[0]?.dataset.needsModel === 'true';
+  for (const [name, show] of [['model', needsModel], ['endpoint', provider.value === 'custom'], ['images', needsModel]]) {
+    const field = provider.form.querySelector(`[data-ai-${name}]`);
+    const input = field.querySelector('input');
+    field.hidden = input.disabled = !show;
+    if (name !== 'images') input.required = show;
+  }
+  const saved = provider.value === provider.form.dataset.savedProvider;
+  provider.form.elements.model.value = saved && needsModel ? provider.form.dataset.savedModel : '';
+  provider.form.elements.reads_images.checked = saved && needsModel && provider.form.dataset.savedImages === 'true';
+});
 let auditTimer;
 document.addEventListener('input', (e) => {
   const f = e.target.closest?.('[data-audit-field]'); if (!f) return;
   auditFilter[f.dataset.auditField] = f.value;
   clearTimeout(auditTimer);
   auditTimer = setTimeout(() => reloadAudit().catch((err) => toast(err.message, 'warning')), f.type === 'search' ? 300 : 0);
+});
+document.addEventListener('click', (e) => {
+  for (const m of document.querySelectorAll('details.row-menu[open]')) if (!m.contains(e.target) || e.target.closest('.row-menu-list button')) m.open = false;
 });
 window.addEventListener('hashchange', readHash);
 fetch('/api/me').then((r) => { if (r.ok) boot(); else showLogin(); });

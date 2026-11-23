@@ -1,6 +1,7 @@
 'use strict';
 const crypto = require('crypto');
 const sandbox = require('./lib/sandbox');
+const W = require('./lib/workspace');
 const db = require('./lib/db'), { clock, id, sha256, token, j, hashPassword, checkPassword } = require('./lib/util');
 const P = require('./platform'), R = require('./registry'), E = require('./engine'), Ev = require('./evidence'), C = require('./connectors'), V = require('./views'), Chat = require('./chat'), llm = require('./llm'), mock = require('./mock-hrms'), channels = require('./channels'), Slack = require('./slack');
 const { HttpError } = P;
@@ -13,7 +14,7 @@ const getCase = (t, cid) => { const c = db.get('SELECT * FROM cases WHERE id=? A
 const seen = (u, c) => { if (c.restricted && !P.canSeeRestricted(u)) throw new HttpError(403, 'This case is restricted.'); };
 
 // ---- public
-add('GET', '/api/public/info', () => ({ demo: demo(), accounts: demo() ? [['sathinath@bluebix.demo', 'Bluebix admin (populated pilot)'], ['admin@northstar.demo', 'Northstar admin (blank external test)'], ['health@bluebix.demo', 'Healthcare compliance'], ['hr@bluebix.demo', 'HR (cannot see immigration)'], ['immigration@bluebix.demo', 'Immigration owner'], ['finance@bluebix.demo', 'Finance'], ['viewer@bluebix.demo', 'Read only']] : [], demo_password: demo() ? 'demo1234' : null }), { public: true });
+add('GET', '/api/public/info', () => ({ signup: W.enabled(), demo: demo(), accounts: demo() ? [['sathinath@bluebix.demo', 'Bluebix admin (populated pilot)'], ['admin@northstar.demo', 'Northstar admin (blank external test)'], ['health@bluebix.demo', 'Healthcare compliance'], ['hr@bluebix.demo', 'HR (cannot see immigration)'], ['immigration@bluebix.demo', 'Immigration owner'], ['finance@bluebix.demo', 'Finance'], ['viewer@bluebix.demo', 'Read only']] : [], demo_password: demo() ? 'demo1234' : null }), { public: true });
 const attempts = new Map();
 add('POST', '/api/login', ({ body, res }) => {
   const key = String(body.email || '').toLowerCase(), a = attempts.get(key) || { n: 0, at: Date.now() };
@@ -22,18 +23,74 @@ add('POST', '/api/login', ({ body, res }) => {
   attempts.set(key, a);
   const u = db.get('SELECT * FROM users WHERE lower(email)=lower(?)', String(body.email || ''));
   if (!u || !checkPassword(String(body.password || ''), u.password_hash)) throw new HttpError(401, 'Incorrect email or password.');
-  const raw = token();
-  db.insert('sessions', { token_hash: sha256(raw), user_id: u.id, expires_at: new Date(Date.now() + 12 * 36e5).toISOString() });
-  res.setHeader('set-cookie', sessionCookie(raw, 43200));
+  res.setHeader('set-cookie', sessionCookie(createSession(u.id), 43200));
   attempts.delete(key);
   return { ok: true };
 }, { public: true });
+function createSession(userId) {
+  const raw = token();
+  db.insert('sessions', { token_hash: sha256(raw), user_id: userId, expires_at: new Date(Date.now() + 12 * 36e5).toISOString() });
+  return raw;
+}
+const signupAttempts = new Map();
+function requireSignup() {
+  if (!W.enabled()) throw new HttpError(404, 'Workspace sign-up is unavailable.');
+}
+add('POST', '/api/signup', ({ req, res, body }) => {
+  requireSignup();
+  if (req.headers['x-aegis-client'] !== 'web') throw new HttpError(403, 'Missing client header.');
+  const now = Date.now();
+  for (const [key, value] of signupAttempts) if (value.until <= now) signupAttempts.delete(key);
+  const address = req.socket.remoteAddress;
+  const attempt = signupAttempts.get(address) || { count: 0, until: now + 15 * 60e3 };
+  if (++attempt.count > 20) throw new HttpError(429, 'Too many sign-up attempts. Try again in 15 minutes.');
+  signupAttempts.set(address, attempt);
+  const field = (key) => typeof body?.[key] === 'string' ? body[key] : '';
+  const orgName = field('org_name').trim(), adminName = field('admin_name').trim();
+  const email = field('email').trim().toLowerCase(), password = field('password');
+  if (orgName.length < 2 || orgName.length > 120) throw new HttpError(400, 'Enter an organisation name of 2 to 120 characters.');
+  if (adminName.length < 2 || adminName.length > 120) throw new HttpError(400, 'Enter a full name of 2 to 120 characters.');
+  if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new HttpError(400, 'Enter a valid work email.');
+  if (password.length < 12 || password.length > 128) throw new HttpError(400, 'Use a password of 12 to 128 characters.');
+  const signup = db.tx(() => {
+    const { tenantId, userId } = W.createWorkspace({ orgName, adminName, email, password });
+    return { userId, session: createSession(userId), email: W.prepareEmail(tenantId, userId, { initial: true }) };
+  });
+  W.deliverTestEmail(signup.userId, signup.email);
+  res.setHeader('set-cookie', sessionCookie(signup.session, 43200));
+  return { ok: true };
+}, { public: true });
+add('GET', '/api/verify-email/inbox', ({ t, user, res }) => {
+  requireSignup();
+  res.setHeader('Cache-Control', 'no-store');
+  return W.testEmail(t, user.id);
+});
+add('POST', '/api/verify-email/resend', ({ t, user }) => {
+  requireSignup();
+  const state = W.verification(t);
+  if (!state || state.user_id !== user.id || state.verified_at) throw new HttpError(409, 'There is no email waiting for verification for this account.');
+  W.deliverTestEmail(user.id, W.prepareEmail(t, user.id));
+  return { ok: true };
+});
+add('POST', '/api/verify-email', ({ t, user, body }) => {
+  requireSignup();
+  W.verifyEmail(t, user, body?.token);
+  return { ok: true };
+});
 function sessionCookie(value, maxAge) {
   const secure = /^https:/.test(process.env.AEGIS_BASE_URL || '') ? '; Secure' : '';
   return `${sandbox.sessionCookie()}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${secure}`;
 }
 add('POST', '/api/logout', ({ sid, res }) => { db.run('DELETE FROM sessions WHERE token_hash=?', sha256(sid || '')); res.setHeader('set-cookie', sessionCookie('', 0)); return { ok: true }; });
-add('GET', '/api/me', ({ t, user }) => { const tn = db.get('SELECT name,slug,kind FROM tenants WHERE id=?', t); return { user: { id: user.id, name: user.name, email: user.email, role: user.role, role_label: P.ROLE_LABEL[user.role], can_restricted: P.canSeeRestricted(user), is_admin: P.isAdmin(user) }, tenant: tn, demo: demo(), sandbox: sandbox.isActive(), today: clock.today() }; });
+add('GET', '/api/me', ({ t, user }) => {
+  const tn = db.get('SELECT name,slug,kind FROM tenants WHERE id=?', t);
+  const verification = W.verification(t);
+  return {
+    user: { id: user.id, name: user.name, email: user.email, role: user.role, role_label: P.ROLE_LABEL[user.role], can_restricted: P.canSeeRestricted(user), is_admin: P.isAdmin(user) },
+    tenant: tn, demo: demo() && !verification, sandbox: sandbox.isActive(), today: clock.today(),
+    workspace_email: verification ? { pending: !verification.verified_at, can_verify: verification.user_id === user.id && W.enabled() } : null,
+  };
+});
 const tokenCase = (raw) => {
   const s = db.get('SELECT * FROM submission_tokens WHERE token_hash=?', sha256(raw));
   if (!s || s.expires_at < clock.iso()) throw new HttpError(410, 'This link has expired or is not valid.');
@@ -95,6 +152,7 @@ add('GET', '/api/cases', ({ t, user, q }) => V.listCases(t, user, { closed: q.ge
 add('GET', '/api/cases/:id', ({ t, user, p }) => V.caseDetail(t, user, p.id));
 add('POST', '/api/cases/chase-all', ({ t, user, body }) => {
   edit(user);
+  W.requireVerified(t);
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new HttpError(400, 'Choose cases to follow up on.');
   const { case_ids } = body;
   if (case_ids !== undefined && (!Array.isArray(case_ids) || case_ids.some((id) => typeof id !== 'string' || !id))) {
@@ -165,7 +223,7 @@ add('GET', '/api/setup', ({ t }) => V.setupState(t));
 const setS = (t, patch) => { const tn = db.get('SELECT setup_json s FROM tenants WHERE id=?', t); db.update('tenants', t, { setup_json: JSON.stringify({ ...j(tn.s, {}), ...patch }) }); };
 add('POST', '/api/setup/facility/:id', ({ t, user, p, body }) => { P.assertAdmin(user); const f = db.get('SELECT * FROM facilities WHERE id=? AND tenant_id=?', p.id, t); if (!f) throw new HttpError(404, 'Facility not found.'); db.update('facilities', f.id, { requirements_json: JSON.stringify(body.requirements || []), requirements_confirmed: 1, requirement_source: body.source || 'Confirmed by administrator', state: body.state || f.state }); P.audit(t, 'CONTEXT_CONFIRMED', f.name, `Facility requirements confirmed: ${(body.requirements || []).join(', ') || 'none'}.`, user); P.enqueue(t, 'evaluate_tenant', { trigger: 'context_confirmed' }, { dedupe: `eval_tenant:${t}` }); return { ok: true }; });
 add('POST', '/api/setup/context', ({ t, user }) => { P.assertAdmin(user); db.run('UPDATE entities SET confirmed=1 WHERE tenant_id=?', t); setS(t, { context_confirmed: true }); P.audit(t, 'CONTEXT_CONFIRMED', 'Company profile', 'Administrator confirmed employing entities and work locations.', user); return { ok: true }; });
-add('POST', '/api/setup/channel', ({ t, user, body }) => { P.assertAdmin(user); if (body.type === 'slack' && !Slack.configured(t)) throw new HttpError(409, 'Connect Slack on the Integrations page first.'); db.update('tenants', t, { channel_json: JSON.stringify({ type: body.type === 'slack' ? 'slack' : 'outbox', channel: body.channel || '#compliance-alerts' }) }); setS(t, { channel_confirmed: true }); P.audit(t, 'CHANNEL_SET', 'Reporting channel', `Reporting channel set to ${body.type || 'outbox'}.`, user); return { ok: true }; });
+add('POST', '/api/setup/channel', ({ t, user, body }) => { P.assertAdmin(user); if (body.type === 'slack') { W.requireVerified(t); if (!Slack.configured(t)) throw new HttpError(409, 'Connect Slack on the Integrations page first.'); } db.update('tenants', t, { channel_json: JSON.stringify({ type: body.type === 'slack' ? 'slack' : 'outbox', channel: body.channel || '#compliance-alerts' }) }); setS(t, { channel_confirmed: true }); P.audit(t, 'CHANNEL_SET', 'Reporting channel', `Reporting channel set to ${body.type || 'outbox'}.`, user); return { ok: true }; });
 add('POST', '/api/setup/assess', async ({ t, user }) => { P.assertAdmin(user); E.evaluateTenant(t, 'initial_assessment'); await P.drain(); return V.coverage(t); });
 
 // ---- connectors
@@ -233,7 +291,8 @@ add('GET', '/api/audit/search', ({ t, user, q }) => {
   if (kind === 'settings') { const known = Object.values(AUDIT_KINDS).flat(); where.push(`type NOT IN (${known.map(() => '?').join(',')})`); args.push(...known); }
   else if (AUDIT_KINDS[kind]) { where.push(`type IN (${AUDIT_KINDS[kind].map(() => '?').join(',')})`); args.push(...AUDIT_KINDS[kind]); }
   const text = String(q.get('q') || '').trim().slice(0, 100);
-  if (text) { where.push("(subject LIKE ? ESCAPE '!' OR action LIKE ? ESCAPE '!' OR actor LIKE ? ESCAPE '!')"); const like = `%${text.replace(/[!%_]/g, (c) => `!${c}`)}%`; args.push(like, like, like); }
+  // lower() on both sides: LIKE ignores case in SQLite but not in PostgreSQL.
+  if (text) { where.push("(lower(subject) LIKE ? ESCAPE '!' OR lower(action) LIKE ? ESCAPE '!' OR lower(actor) LIKE ? ESCAPE '!')"); const like = `%${text.toLowerCase().replace(/[!%_]/g, (c) => `!${c}`)}%`; args.push(like, like, like); }
   const day = (k) => (/^\d{4}-\d{2}-\d{2}$/.test(q.get(k) || '') ? q.get(k) : null);
   if (day('from')) { where.push('ts >= ?'); args.push(`${day('from')}T00:00:00`); }
   if (day('to')) { where.push('ts < ?'); args.push(`${V.addDays(day('to'), 1)}T00:00:00`); }
@@ -291,6 +350,7 @@ add('POST', '/api/users', ({ t, user, body }) => { P.assertAdmin(user); if (!P.R
 add('GET', '/api/owners', ({ t }) => db.all('SELECT id,name,role FROM users WHERE tenant_id=? ORDER BY name', t));
 add('POST', '/api/digest/send', async ({ t, user }) => {
   P.assertAdmin(user);
+  W.requireVerified(t);
   const tn = db.get('SELECT * FROM tenants WHERE id=?', t), body = V.digestText(t);
   let via;
   try { via = await channels.post(tn, j(tn.channel_json, {}).channel || '#compliance-alerts', 'Compliance digest', body); }
@@ -307,23 +367,25 @@ add('POST', '/api/digest/send', async ({ t, user }) => {
 add('GET', '/api/ai', ({ t, user }) => { P.assertAdmin(user); return llm.status(t); });
 add('POST', '/api/ai', async ({ t, user, body }) => {
   P.assertAdmin(user);
-  const key = String(body.api_key || '').trim();
-  if (!llm.PROVIDERS[body.provider]) throw new HttpError(400, 'Choose an AI provider.');
-  if (!key) throw new HttpError(400, 'Paste an API key.');
-  if (!body.approved) throw new HttpError(400, 'Confirm that sending documents to this provider is approved.');
-  const cfg = { provider: body.provider, key, approved_by: user.name, approved_at: clock.iso() };
+  const cfg = llm.providerConfig(body, user);
   try { await llm.test(t, cfg); } catch (e) { throw new HttpError(422, e.name === 'TimeoutError' ? 'The AI provider timed out.' : e.message); }
   llm.save(t, cfg);
-  P.audit(t, 'AI_CONFIGURED', 'AI engine', `AI provider set to ${llm.PROVIDERS[body.provider].label}. Document sharing approved by ${user.name}.`, user);
+  P.audit(t, 'AI_CONFIGURED', 'AI engine', `AI provider set to ${llm.PROVIDERS[cfg.provider].label}. Document sharing approved by ${user.name}.`, user);
   return llm.status(t);
 });
-add('POST', '/api/ai/test', async ({ t, user }) => { P.assertAdmin(user); const s = llm.status(t); if (!s.configured) throw new HttpError(400, 'No AI key is set.'); const r = await llm.callTool(t, 'Connection test. Call the tool with ok set to true.', [{ type: 'text', text: 'Connection test.' }], 'record_ping', { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] }); if (!r) throw new HttpError(502, llm.lastError(t)?.message || 'The AI provider did not return a result.'); return { ok: true, provider: s.provider_label }; });
+add('POST', '/api/ai/test', async ({ t, user }) => {
+  P.assertAdmin(user);
+  const s = llm.status(t);
+  if (!s.configured) throw new HttpError(400, 'No AI key is set.');
+  if (!await llm.testSaved(t)) throw new HttpError(502, llm.lastError(t)?.message || 'The provider did not confirm the connection.');
+  return { ok: true, provider: s.provider_label };
+});
 add('POST', '/api/ai/remove', ({ t, user }) => { P.assertAdmin(user); llm.remove(t); P.audit(t, 'AI_CONFIGURED', 'AI engine', 'AI key removed.', user); return llm.status(t); });
 
 // ---- Integrations page: chat connections. Keys are write-only, tested before saving and stored encrypted.
 const alertsChannel = (t) => j(db.get('SELECT channel_json FROM tenants WHERE id=?', t).channel_json, {});
 const TEAMS = { available: false, needs: ['App ID', 'Client secret', 'Tenant ID'], note: 'Teams is being built. Your Microsoft 365 administrator registers the Aegis bot in the Teams Developer Portal and gives you these three values.' };
-const integrations = (t) => { const ch = alertsChannel(t); return { slack: Slack.status(t, ch.type === 'slack' ? ch.channel : null), teams: TEAMS, events_url: `${(process.env.AEGIS_BASE_URL || '').replace(/\/+$/, '')}/api/webhooks/slack/${db.get('SELECT slug FROM tenants WHERE id=?', t).slug}` }; };
+const integrations = (t) => { const ch = alertsChannel(t); return { slack: Slack.status(t, ch.type === 'slack' ? ch.channel : null), email: { configured: channels.emailConfigured() }, teams: TEAMS, events_url: `${(process.env.AEGIS_BASE_URL || '').replace(/\/+$/, '')}/api/webhooks/slack/${db.get('SELECT slug FROM tenants WHERE id=?', t).slug}` }; };
 add('GET', '/api/integrations', ({ t, user }) => { P.assertAdmin(user); return integrations(t); });
 add('POST', '/api/integrations/slack', async ({ t, user, body }) => {
   P.assertAdmin(user);
@@ -356,6 +418,6 @@ add('POST', '/api/integrations/slack/remove', ({ t, user }) => {
 
 // ---- demo controls
 add('POST', '/api/demo/hrms-event', async ({ t, user, body }) => { P.assertAdmin(user); if (!demo()) throw new HttpError(404, 'Not found.'); const tn = db.get('SELECT * FROM tenants WHERE id=?', t); if (tn.slug !== 'bluebix') throw new HttpError(400, 'The mock HRMS is connected to Bluebix only.'); const r = await mock.emit(tn.slug, tn.webhook_secret, body.kind); await P.drain(); return { type: r.type, worker: r.worker, status: r.status }; });
-add('POST', '/api/demo/advance', async ({ t, user, body }) => { P.assertAdmin(user); if (!demo()) throw new HttpError(404, 'Not found.'); clock.advanceDays(Math.min(+body.days || 1, 60)); E.runReminders(t); E.evaluateTenant(t, 'scheduled_check'); await P.drain(); E.runReminders(t); await P.drain(); return { today: clock.today() }; });
-add('POST', '/api/demo/reset', async ({ user }) => { P.assertAdmin(user); if (!sandbox.isActive()) throw new HttpError(404, 'Not found.'); clock.reset(); db.resetAll(); R.loadPacks(); await require('./seed').seed(); return { ok: true }; });
+add('POST', '/api/demo/advance', async ({ t, user, body }) => { P.assertAdmin(user); if (!demo() || W.verification(t)) throw new HttpError(404, 'Not found.'); clock.advanceDays(Math.min(+body.days || 1, 60)); E.runReminders(t); E.evaluateTenant(t, 'scheduled_check'); await P.drain(); E.runReminders(t); await P.drain(); return { today: clock.today() }; });
+add('POST', '/api/demo/reset', async ({ t, user }) => { P.assertAdmin(user); if (!sandbox.isActive() || W.verification(t)) throw new HttpError(404, 'Not found.'); clock.reset(); db.resetAll(); R.loadPacks(); await require('./seed').seed(); return { ok: true }; });
 module.exports = { routes };

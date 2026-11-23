@@ -110,7 +110,7 @@ function metrics(t) {
   const closed = db.all('SELECT * FROM cases WHERE tenant_id=? AND closed_at IS NOT NULL', t), verified = closed.filter((c) => c.closure === 'verified');
   const hrs = verified.map((c) => (new Date(c.closed_at) - new Date(c.opened_at)) / 36e5).sort((a, b) => a - b);
   const auto = P.counter(t, 'automated_messages'), mins = base('minutes_per_chase');
-  const dupSent = db.get(`SELECT COUNT(*) n FROM (SELECT action_id FROM messages WHERE tenant_id=? AND action_id IS NOT NULL GROUP BY action_id HAVING COUNT(*)>1)`, t).n;
+  const dupSent = db.get(`SELECT COUNT(*) n FROM (SELECT action_id FROM messages WHERE tenant_id=? AND action_id IS NOT NULL GROUP BY action_id HAVING COUNT(*)>1) AS dup`, t).n;
   const reviewed = db.all('SELECT finding_verdict v FROM cases WHERE tenant_id=? AND finding_verdict IS NOT NULL', t);
   const cov = tally(allChecks(t)), tn = db.get('SELECT * FROM tenants WHERE id=?', t);
   const manual = db.get('SELECT COALESCE(SUM(minutes),0) m FROM manual_support WHERE tenant_id=?', t).m;

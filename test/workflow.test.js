@@ -9,7 +9,9 @@ let base;
 async function login(email) {
   const r = await fetch(`${base}/api/login`, { method: 'POST', body: JSON.stringify({ email, password: 'demo1234' }) });
   assert.equal(r.status, 200);
-  const cookie = r.headers.get('set-cookie').split(';')[0];
+  return client(r.headers.get('set-cookie').split(';')[0]);
+}
+function client(cookie) {
   const call = async (m, p, b) => { const x = await fetch(base + p, { method: m, headers: { cookie, 'x-aegis-client': 'web' }, body: b ? JSON.stringify(b) : undefined }); const t = await x.text(); let d; try { d = JSON.parse(t); } catch { d = t; } return { status: x.status, data: d }; };
   return { get: (p) => call('GET', p), post: (p, b = {}) => call('POST', p, b) };
 }
@@ -25,6 +27,95 @@ test.before(async () => {
   admin = await login('sathinath@bluebix.demo'); health = await login('health@bluebix.demo'); hr = await login('hr@bluebix.demo'); imm = await login('immigration@bluebix.demo'); fin = await login('finance@bluebix.demo');
 });
 test.after(() => { server.close(); try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 }); } catch {} setTimeout(() => process.exit(0), 50); });
+
+test('sandbox workspace sign-up, email verification and tenant isolation', async () => {
+  const payload = { org_name: 'Signup Test Care', admin_name: 'Casey Example', email: 'signup-owner@example.test', password: 'test only workspace signup password' };
+  const signup = (body, header = true) => fetch(base + '/api/signup', { method: 'POST', headers: header ? { 'x-aegis-client': 'web' } : {}, body: JSON.stringify(body) });
+  const info = async () => (await fetch(base + '/api/public/info')).json();
+  assert.equal((await info()).signup, false);
+  assert.equal((await signup(payload)).status, 404);
+  process.env.AEGIS_SIGNUP = '1';
+  try {
+    assert.equal((await info()).signup, true);
+    assert.equal((await signup(payload, false)).status, 403);
+    assert.equal((await signup({ ...payload, password: 'short' })).status, 400);
+    const response = await signup(payload);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('set-cookie'), /HttpOnly; SameSite=Strict/);
+    const owner = client(response.headers.get('set-cookie').split(';')[0]);
+    const me = (await owner.get('/api/me')).data;
+    const t = db.get('SELECT id FROM tenants WHERE slug=?', me.tenant.slug).id;
+    assert.equal(me.tenant.kind, 'customer');
+    assert.equal(me.user.role, 'admin');
+    assert.deepEqual(me.workspace_email, { pending: true, can_verify: true });
+    assert.deepEqual(Object.values((await owner.get('/api/setup')).data.steps), [false, false, false, false, false]);
+    assert.equal(db.get('SELECT kind FROM schedules WHERE tenant_id=?', t).kind, 'digest');
+    assert.deepEqual((await owner.get('/api/audit')).data.map((e) => e.type), ['WORKSPACE_CREATED']);
+    assert.notEqual(db.get('SELECT password_hash FROM users WHERE id=?', me.user.id).password_hash, payload.password);
+    assert.equal((await signup({ ...payload, email: payload.email.toUpperCase() })).status, 409);
+    for (const url of ['/api/workers', '/api/cases', '/api/evidence', '/api/messages']) {
+      assert.deepEqual((await owner.get(url)).data, []);
+    }
+    assert.equal((await owner.get('/api/reports/all/data')).data.tally.total, 0);
+    assert.ok((await owner.get('/api/dashboards')).data.every((d) => d.summary.total === 0));
+    assert.deepEqual((await admin.get('/api/verify-email/inbox')).data, { link: null });
+    assert.equal((await owner.post('/api/demo/advance', { days: 1 })).status, 404);
+    assert.equal((await owner.post('/api/demo/reset')).status, 404);
+
+    const signupAgain = await signup({ ...payload, email: 'signup-second@example.test' });
+    assert.equal(signupAgain.status, 200);
+    const second = client(signupAgain.headers.get('set-cookie').split(';')[0]);
+    assert.equal((await second.get('/api/me')).data.tenant.slug, me.tenant.slug + '-2');
+    const inbox = (await owner.get('/api/verify-email/inbox')).data;
+    const originalToken = inbox.link.split('/').at(-1);
+    assert.equal(db.get('SELECT token_hash FROM workspace_verifications WHERE tenant_id=?', t).token_hash,
+      crypto.createHash('sha256').update(originalToken).digest('hex'));
+    assert.equal((await second.post('/api/verify-email', { token: originalToken })).status, 410);
+    assert.equal((await owner.post('/api/verify-email/resend')).status, 429);
+    for (const url of ['/api/cases/chase-all', '/api/connectors', '/api/connectors/test', '/api/integrations/slack', '/api/integrations/slack/test', '/api/digest/send']) {
+      assert.deepEqual(await owner.post(url), { status: 403, data: { error: 'Confirm your work email first.' } });
+    }
+    const coworker = await owner.post('/api/chat', { text: 'Request the missing documents.' });
+    assert.equal(coworker.data.reply, 'Confirm your work email first.');
+    assert.equal((await owner.post('/api/setup/channel', { type: 'outbox' })).status, 200);
+    const worker = await owner.post('/api/workers', { name: 'Signup Fixture Worker', email: 'signup-worker@example.test', category: 'clinical', role: 'RN', license_type: 'RN', facility: 'Signup Fixture Clinic', facility_state: 'NJ' });
+    assert.equal(worker.status, 200);
+    assert.equal((await owner.get('/api/workers')).data[0].name, 'Signup Fixture Worker');
+    assert.ok(!(await admin.get('/api/workers')).data.some((w) => w.name === 'Signup Fixture Worker'));
+    assert.deepEqual((await second.get('/api/workers')).data, []);
+    assert.equal((await owner.post('/api/packs/healthcare/activate', { reviewed: true, owner_user_id: me.user.id })).status, 200);
+    assert.equal((await owner.post('/api/setup/assess')).status, 200);
+    const cases = (await owner.get('/api/cases')).data;
+    assert.ok(cases.length);
+    assert.equal((await owner.post(`/api/cases/${cases[0].id}/follow-up`)).status, 403);
+
+    db.run('UPDATE workspace_verifications SET expires_at=?, requested_at=? WHERE tenant_id=?', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z', t);
+    assert.equal((await owner.post('/api/verify-email', { token: originalToken })).status, 410);
+    assert.equal((await owner.post('/api/verify-email/resend')).status, 200);
+    const freshToken = (await owner.get('/api/verify-email/inbox')).data.link.split('/').at(-1);
+    assert.notEqual(freshToken, originalToken);
+    assert.equal((await owner.post('/api/verify-email', { token: originalToken })).status, 410);
+    assert.equal((await owner.post('/api/verify-email', { token: freshToken })).status, 200);
+    assert.equal((await owner.post('/api/verify-email', { token: freshToken })).status, 410);
+    assert.deepEqual((await owner.get('/api/verify-email/inbox')).data, { link: null });
+    assert.equal((await owner.get('/api/me')).data.workspace_email.pending, false);
+    assert.equal((await owner.post(`/api/cases/${cases[0].id}/follow-up`)).status, 200);
+    assert.equal((await owner.post('/api/digest/send')).status, 200);
+    assert.equal((await second.get('/api/me')).data.workspace_email.pending, true);
+    assert.ok(!(await admin.get('/api/audit')).data.some((entry) => entry.subject === payload.org_name));
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      assert.equal((await info()).signup, false);
+      assert.equal((await signup(payload)).status, 404);
+    } finally { process.env.NODE_ENV = previousNodeEnv; }
+    let last;
+    for (let n = 0; n < 21; n++) last = await signup({ ...payload, password: '' });
+    assert.equal(last.status, 429);
+  } finally {
+    delete process.env.AEGIS_SIGNUP;
+  }
+});
 
 test('pack validation suites pass and missing evidence never passes', async () => {
   const packs = (await admin.get('/api/packs')).data;
@@ -554,6 +645,10 @@ test('audit search filters by kind, text and date, pages without overlap, and is
   const name = all.rows.find((r) => r.subject && /\w{4,}/.test(r.subject)).subject.split(/[ ,]/)[0];
   const byName = (await admin.get(`/api/audit/search?q=${encodeURIComponent(name)}`)).data;
   assert.ok(byName.rows.every((r) => [r.subject, r.action, r.actor].some((x) => (x || '').toLowerCase().includes(name.toLowerCase()))));
+  // Case does not matter, on SQLite and on PostgreSQL.
+  for (const variant of [name.toLowerCase(), name.toUpperCase()]) {
+    assert.equal((await admin.get(`/api/audit/search?q=${encodeURIComponent(variant)}`)).data.total, byName.total, `search for ${variant}`);
+  }
   assert.equal((await admin.get('/api/audit/search?q=%25%25%25')).data.total, 0);
 
   // Pages follow on from each other.

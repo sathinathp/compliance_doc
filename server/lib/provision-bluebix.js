@@ -1,7 +1,6 @@
 'use strict';
 const db = require('./db');
-const { clock, hashPassword, id } = require('./util');
-const { audit } = require('../platform');
+const { createWorkspace } = require('./workspace');
 
 function provisionBluebix({ email, name, password }) {
   email = String(email || '').trim().toLowerCase();
@@ -22,11 +21,7 @@ function provisionBluebix({ email, name, password }) {
     if (account) throw new Error('The requested work email is already in use.');
     if (typeof password !== 'string' || password.length < 16) throw new Error('Set a generated pilot administrator password with at least 16 characters.');
 
-    const now = clock.iso(), tenantId = id('ten');
-    db.insert('tenants', { id: tenantId, slug: 'bluebix', name: 'Bluebix Healthcare', kind: 'internal_pilot', created_at: now });
-    db.insert('users', { id: id('usr'), tenant_id: tenantId, email, name, role: 'admin', password_hash: hashPassword(password), created_at: now });
-    db.insert('schedules', { id: id('sch'), tenant_id: tenantId, kind: 'digest', cadence: 'daily', next_run_at: new Date(clock.now().getTime() + 864e5).toISOString(), enabled: 1 });
-    audit(tenantId, 'WORKSPACE_CREATED', 'Bluebix Healthcare', 'Created the Bluebix pilot workspace and its initial administrator.');
+    createWorkspace({ orgName: 'Bluebix Healthcare', adminName: name, email, password, slug: 'bluebix', kind: 'internal_pilot' });
     return true;
   });
 }

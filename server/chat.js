@@ -2,6 +2,7 @@
 // Coworker orchestrator. Interprets a request, reads the same records as the dashboard,
 // and routes anything that changes state through the action service.
 const db = require('./lib/db'), { clock, id, j, addDays } = require('./lib/util');
+const W = require('./lib/workspace');
 const P = require('./platform'), V = require('./views'), E = require('./engine'), R = require('./registry'), llm = require('./llm');
 const READ_INTENTS = ['missing_new_workers', 'expiring', 'approvals', 'unresolved_by_team', 'coverage', 'help'];
 const CONFIRM_FOLLOW_UP = /^confirm follow-ups ([a-f0-9]{12})\.?$/;
@@ -22,6 +23,7 @@ function eligibleFollowUps(t, user) {
 const followUpKey = (t, user) => `chat_follow_ups:${t}:${user.id}`;
 function previewFollowUps(t, user) {
   if (user.role === 'viewer') return 'Your read-only role cannot queue follow-ups.';
+  if (W.pending(t)) return W.CONFIRM_EMAIL;
   const cases = eligibleFollowUps(t, user);
   if (!cases.length) return 'No open cases in your authorized automatic packs are ready for a follow-up.';
   const code = id('preview').slice('preview_'.length);
@@ -31,6 +33,7 @@ function previewFollowUps(t, user) {
 }
 function confirmFollowUps(t, user, code) {
   if (user.role === 'viewer') return 'Your read-only role cannot queue follow-ups.';
+  if (W.pending(t)) return W.CONFIRM_EMAIL;
   return db.tx(() => {
     const key = followUpKey(t, user), value = db.get('SELECT v FROM meta WHERE k=?', key)?.v;
     const proposal = j(value);

@@ -2,6 +2,7 @@
 // Event-driven core: evaluate -> reconcile case -> plan action -> send once -> follow up -> escalate.
 const db = require('./lib/db'), { clock, id, shortId, addDays, j, sha256, token } = require('./lib/util');
 const P = require('./platform'), R = require('./registry'), { evaluate } = require('./evaluator'), channels = require('./channels');
+const W = require('./lib/workspace');
 const { HttpError, SYSTEM } = P;
 const OPEN = "closed_at IS NULL";
 const BASE = () => process.env.AEGIS_BASE_URL || `http://localhost:${process.env.PORT || 4100}`;
@@ -149,6 +150,7 @@ function reconcile(t, type, s, c, r, prevStatus = null) {
   }
 }
 function notifyRejected(t, ev, reason) {
+  if (W.pending(t)) return;
   const cs = db.get(`SELECT * FROM cases WHERE tenant_id=? AND subject_type=? AND subject_id=? AND control_key=? AND ${OPEN}`, t, ev.subject_type, ev.subject_id, ev.control_key);
   const c = R.effectiveControls(t).find((x) => x.key === ev.control_key);
   if (!cs || !c || c.mode !== 'auto') return;
@@ -204,7 +206,7 @@ async function sendAction(t, { action_id }) {
     const pack = R.tenantPack(t, cs.pack_key);
     const target = db.get('SELECT closed_at,owner_user_id FROM cases WHERE id=? AND tenant_id=?', cs.id, t);
     const action = db.get('SELECT status,body,created_at FROM actions WHERE id=? AND tenant_id=?', a.id, t);
-    return pack?.status === 'active' && pack.mode === 'auto' && target && !target.closed_at && target.owner_user_id === cs.owner_user_id
+    return !W.pending(t) && pack?.status === 'active' && pack.mode === 'auto' && target && !target.closed_at && target.owner_user_id === cs.owner_user_id
       && action?.status === 'queued' && action.body === a.body && action.created_at === a.created_at;
   };
   if (!maySend()) { R.pausePackActions(t, cs.pack_key); return; }
@@ -237,6 +239,7 @@ async function sendAction(t, { action_id }) {
   } catch (e) { db.update('actions', a.id, { error: e.message }); throw e; }
 }
 function runReminders(t) {
+  if (W.pending(t)) return;
   const now = clock.iso(), controls = R.effectiveControls(t);
   for (const cs of db.all(`SELECT * FROM cases WHERE tenant_id=? AND ${OPEN} AND state IN ('requested','following_up') AND next_reminder_at IS NOT NULL AND next_reminder_at<=?`, t, now)) {
     const c = controls.find((x) => x.key === cs.control_key);
@@ -268,6 +271,7 @@ function setMode(t, user, pack, mode) {
   if (!['shadow', 'auto'].includes(mode)) throw new HttpError(400, 'Invalid mode.');
   if (R.tenantPack(t, pack)?.status !== 'active') throw new HttpError(404, 'Activate this pack before changing its mode.');
   if (mode === 'auto') {
+    W.requireVerified(t);
     const un = db.get(`SELECT COUNT(*) n FROM cases WHERE tenant_id=? AND pack_key=? AND ${OPEN} AND finding_verdict IS NULL`, t, pack).n;
     if (un) throw new HttpError(409, `${un} finding(s) still need owner validation before automatic requests can be turned on.`);
   }
@@ -283,6 +287,7 @@ function setMode(t, user, pack, mode) {
 }
 function followUp(t, user, cs) {
   P.assertPack(user, cs.pack_key);
+  W.requireVerified(t);
   if (cs.closed_at) throw new HttpError(409, 'Case is closed.');
   const c = R.effectiveControls(t).find((x) => x.key === cs.control_key);
   if (!c) throw new HttpError(409, 'Control is no longer active.');
@@ -315,6 +320,7 @@ function decide(t, user, apr, decision, note) {
   if (!['approved', 'rejected'].includes(decision)) throw new HttpError(400, 'Invalid decision.');
   if (apr.pack_key) P.assertPack(user, apr.pack_key); else P.assertAdmin(user);
   if (user.role === 'viewer') throw new HttpError(403, 'Read-only users cannot approve.');
+  if (apr.kind === 'action' && decision === 'approved') W.requireVerified(t);
   db.tx(() => {
     db.update('approvals', apr.id, { status: decision, decided_by: user.name, decided_at: clock.iso(), note: note || null });
     P.audit(t, 'APPROVAL_DECIDED', apr.title, `${decision}${note ? `: ${note}` : ''}`, user, { case_id: apr.case_id });
