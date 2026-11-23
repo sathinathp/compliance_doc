@@ -2029,18 +2029,6 @@ a.view-card-name:hover { color: var(--primary); }
   #outboxCount { margin-inline-start: 0; }
 }
 
-[data-form="aiKey"] .form-group p { margin: 4px 0 0; }
-#view .ai-settings-note {
-  margin: 0 0 14px;
-  padding: 10px 12px;
-  border: 1px solid var(--info-line);
-  border-radius: var(--radius);
-  background: var(--info-bg);
-  color: var(--info-fg);
-  font-size: var(--fs-13);
-}
-.ai-endpoint { overflow-wrap: anywhere; }
-
 /* ==========================================================================
    CONNECTIONS
    ========================================================================== */

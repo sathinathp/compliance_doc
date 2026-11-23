@@ -1087,7 +1087,7 @@ const VIEWS = {
     ${card('Change History', 'Drafts, approvals and superseded versions.', table(['Change', 'Control', 'Request', 'Status', 'By'], d.changes.map((c) => h`<tr><td>${c.kind}</td><td class="mono">${c.control_key}</td><td class="small">${c.source_text}</td><td>${statePill(c.status)}</td><td class="muted">${c.created_by}${c.approved_by ? ` → ${c.approved_by}` : ''}</td></tr>`), ['No rule changes yet', 'Drafted and approved changes to rules are listed here.']))}</div>`;
   },
   async integrations() {
-    const [health, messages, connections, ai] = await Promise.all([api('/api/health'), api('/api/messages'), api('/api/integrations'), api('/api/ai').catch(() => null)]);
+    const [health, messages, connections] = await Promise.all([api('/api/health'), api('/api/messages'), api('/api/integrations')]);
     const failures = [
       ...health.connectors.filter((c) => c.last_error).map((c) => ['HR system', c.name, c.last_error]),
       ...health.jobs.dead.map((job) => ['Background job', words(job.type), job.last_error]),
@@ -1095,13 +1095,12 @@ const VIEWS = {
       ...health.events.filter((event) => event.status === 'failed').map((event) => ['HR system update', words(event.type), event.error]),
     ];
     if (connections.slack.receiving?.error) failures.push(['Slack', 'Incoming chat', connections.slack.receiving.error]);
-    if (health.ai_error) failures.push(['AI provider', 'AI engine', health.ai_error.message]);
     const ready = !me.sandbox && !me.workspace_email?.pending;
     return h`<div class="stack">
       ${connectionStatus(failures)}
       ${me.sandbox ? h`<p class="setup-note is-info"><b>Sandbox</b>Workforce sync uses sample data, and messages stay in the outbox.</p>` : ''}
       ${me.workspace_email?.pending ? h`<p class="setup-note"><b>Confirm your email first</b>Connections can be added once the workspace email is confirmed.</p>` : ''}
-      ${card('Connected tools', 'The systems this workspace uses. Keys are stored encrypted and never shown again.', h`<ul class="tool-list">${[...hrRows(health.connectors, ready), slackRow(connections.slack, ready), emailRow(connections.email), aiRow(ai)]}</ul>`, ready ? h`<button class="btn-card-outline" data-act="addConnector">Add HR system</button>` : '')}
+      ${card('Connected tools', 'The systems this workspace uses. Keys are stored encrypted and never shown again.', h`<ul class="tool-list">${[...hrRows(health.connectors, ready), slackRow(connections.slack, ready), emailRow(connections.email)]}</ul>`, ready ? h`<button class="btn-card-outline" data-act="addConnector">Add HR system</button>` : '')}
       ${failures.length ? card('Needs attention', 'Fix these to keep records and messages flowing.', table(['Item', 'Source', 'What happened'], failures.map(([kind, item, error]) => h`<tr><td><span class="row-title is-static">${item || 'Unnamed item'}</span></td><td class="nowrap">${kind}</td><td class="small">${error || 'The service did not say what went wrong.'}</td></tr>`), ''), '') : ''}
       ${messageOutbox(messages)}
     </div>`;
@@ -1191,8 +1190,8 @@ const VIEWS = {
   async settings() {
     scope(null);
     if (!me.user.is_admin) return h`<div class="plain-card empty">Settings are available to administrators.</div>`;
-    const [users, hl, ai, coworker] = await Promise.all([api('/api/users'), api('/api/health'), api('/api/ai'), api('/api/coworker/settings')]);
-    return h`<div class="stack">${coworkerPolicyPanel(coworker)}${aiEnginePanel(ai)}
+    const [users, hl, coworker] = await Promise.all([api('/api/users'), api('/api/health'), api('/api/coworker/settings')]);
+    return h`<div class="stack">${coworkerPolicyPanel(coworker)}
     ${card('Users & Roles', 'Roles limit which packs a person can act on. Immigration records are restricted. Deactivated people keep their history but cannot sign in.', table(['Person', 'Role', 'Status', num('Open cases'), ''], users.map((u) => h`<tr class="${u.disabled_at ? 'is-muted-row' : ''}"><td><strong>${u.name}</strong>${u.is_you ? h` <span class="pill pill-na">You</span>` : ''}<div class="case-sub">${u.email}</div></td><td>${roleName(u.role)}</td><td>${u.disabled_at ? h`<span class="pill pill-na">Deactivated</span>` : h`<span class="pill pill-pass">Active</span>`}</td><td class="num">${u.open_cases}</td><td class="row-action">${u.is_you ? h`<button class="btn-link-action" data-act="changePassword">Change your password</button>` : manageMenu([
       !u.disabled_at && h`<button role="menuitem" data-act="userRole" data-id="${u.id}" data-name="${u.name}" data-role="${u.role}">Change role</button>`,
       !u.disabled_at && h`<button role="menuitem" data-act="userPassword" data-id="${u.id}" data-name="${u.name}">Reset password</button>`,
@@ -1234,56 +1233,6 @@ function coworkerPolicyPanel({ policy, ai_calls_today, limits }) {
       <div class="row"><button type="submit" class="btn-submit-green">Save coworker policy</button>
         ${policy.updated_at ? h`<span class="muted small">Last updated by ${policy.updated_by} on ${dt(policy.updated_at)} UTC</span>` : ''}
       </div>
-    </form>
-  `);
-}
-
-function aiEnginePanel(ai) {
-  const selected = ai.provider || 'deepseek';
-  const needsModel = !!ai.providers.find((p) => p.key === selected)?.requires_model;
-  const custom = selected === 'custom';
-  return card('AI Engine', 'Extracts document fields and helps the coworker understand questions. Aegis applies its own compliance checks.', h`
-    ${ai.last_error ? h`<div class="alert-box"><strong>Last AI problem</strong> ${ai.last_error.message}</div>` : ''}
-    ${ai.configured ? h`<dl class="kv mb">
-      <dt>Status</dt><dd><span class="pill ${ai.last_error ? 'pill-warn' : 'pill-pass'}">${ai.last_error ? 'Needs attention' : 'Connected'}</span></dd>
-      <dt>Provider</dt><dd>${ai.provider_label} (${ai.model})</dd>
-      ${ai.endpoint ? h`<dt>Endpoint</dt><dd class="ai-endpoint">${ai.endpoint}</dd>` : ''}
-      <dt>Key</dt><dd class="mono">${ai.key_hint}</dd>
-      <dt>Set from</dt><dd>${ai.source === 'settings' ? 'Settings' : 'Server configuration'}${ai.approved_by ? ` (approved by ${ai.approved_by})` : ''}</dd>
-      <dt>Document images</dt><dd>${ai.reads_images ? 'Enabled' : 'Human review'}</dd>
-      <dt>Scanned PDFs</dt><dd>${ai.reads_scanned_pdf ? 'Supported' : 'Human review'}</dd>
-    </dl>
-    ${!me.sandbox ? h`<div class="row mb"><button class="btn-card-outline" data-act="aiTest">Test connection</button>${ai.source === 'settings' ? h`<button class="btn-danger" data-act="aiRemove">Remove key</button>` : ''}</div>` : ''}` : ''}
-    ${me.sandbox ? h`<p class="ai-settings-note">Explore the provider options here. API keys and live connection tests are disabled in the sandbox.</p>` : ''}
-    <form data-form="aiKey" data-saved-provider="${ai.provider}" data-saved-model="${ai.model}" data-saved-images="${ai.reads_images}">
-      <div class="form-grid">
-        <div class="form-group"><label class="form-label" for="ai-provider">Provider</label>
-          <select id="ai-provider" name="provider" class="form-select">
-            ${ai.providers.map((p) => h`<option value="${p.key}" data-needs-model="${p.requires_model === true}" ${selected === p.key ? raw('selected') : ''}>${p.label}</option>`)}
-          </select>
-        </div>
-        <div class="form-group"><label class="form-label" for="ai-api-key">API key</label>
-          <input id="ai-api-key" name="api_key" type="password" class="form-select" autocomplete="off" maxlength="4096" required
-            placeholder="${me.sandbox ? 'Unavailable in the sandbox' : ai.configured ? 'Paste a new key to replace it' : 'Paste your key'}" ${me.sandbox ? raw('disabled') : ''}>
-        </div>
-        <div class="form-group" data-ai-model ${needsModel ? '' : raw('hidden')}>
-          <label class="form-label" for="ai-model">Model ID</label>
-          <input id="ai-model" name="model" class="form-select" type="text" autocomplete="off" maxlength="160" aria-describedby="ai-model-help"
-            value="${needsModel ? ai.model || '' : ''}" ${needsModel ? raw('required') : raw('disabled')}>
-          <p class="muted small" id="ai-model-help">Use a model ID from your provider that supports function calling.</p>
-        </div>
-        <div class="form-group" data-ai-endpoint ${custom ? '' : raw('hidden')}>
-          <label class="form-label" for="ai-endpoint">Chat Completions endpoint</label>
-          <input id="ai-endpoint" name="endpoint" class="form-select" type="url" autocomplete="off" maxlength="500"
-            value="${ai.endpoint || ''}" placeholder="https://provider.example/v1/chat/completions" aria-describedby="ai-endpoint-help" ${custom ? raw('required') : raw('disabled')}>
-          <p class="muted small" id="ai-endpoint-help">Use the full HTTPS endpoint approved by your Aegis server operator.</p>
-        </div>
-      </div>
-      <label class="row small mb" data-ai-images ${needsModel ? '' : raw('hidden')}>
-        <input type="checkbox" name="reads_images" ${needsModel && ai.reads_images ? raw('checked') : ''} ${needsModel ? '' : raw('disabled')}> Enable document images if this model supports image input.
-      </label>
-      <label class="row small mb"><input type="checkbox" name="approved" required ${me.sandbox ? raw('disabled') : ''}> Our compliance owner approved sending worker documents and coworker questions to this provider.</label>
-      <button class="btn-submit-green" ${me.sandbox ? raw('disabled') : ''}>Test & save</button>
     </form>
   `);
 }
@@ -1347,15 +1296,6 @@ function emailRow(email) {
     meta: email?.configured ? 'Delivered through the server’s email service.' : 'Requests stay in the outbox. Your Aegis administrator sets email up on the server.',
   });
 }
-function aiRow(ai) {
-  return toolRow({
-    name: 'AI provider', what: 'Reads photos and scanned documents. It never accepts evidence by itself.',
-    state: !ai ? ['Unknown', 'pill-na'] : ai.last_error ? ['Needs attention', 'pill-warn'] : ai.configured ? ['Connected', 'pill-pass'] : ['Not connected', 'pill-na'],
-    meta: ai?.configured ? `${ai.provider_label}${ai.model ? `, ${ai.model}` : ''}` : 'Without it, unclear documents go to a person.',
-    actions: h`<a class="btn-link-action" href="#settings">${ai?.configured ? 'Manage in Settings' : 'Set up in Settings'}</a>`,
-  });
-}
-
 const outboxFilter = { query: '', channel: '' };
 const OUTBOX_PAGE = 10;
 let outboxLimit = OUTBOX_PAGE;
@@ -1770,8 +1710,6 @@ const ACT = {
     closeModal();
     refresh();
   },
-  async aiTest() { const r = await api('/api/ai/test', {}); toast(`${r.provider} is responding.`, 'success'); refresh(); },
-  async aiRemove() { await api('/api/ai/remove', {}); toast('AI key removed.', 'success'); refresh(); },
   async sendDigest() {
     const { via } = await api('/api/digest/send', {});
     toast(via === 'slack' ? 'Digest posted.' : 'Digest saved to the outbox.', 'success');
@@ -1931,12 +1869,6 @@ const FORM = {
   async notice(d) { await api('/api/notices', d); closeModal(); toast('Notice logged. The drafted reply is in Approvals.', 'success'); refresh(); },
   async baseline(d) { await api('/api/metrics/baseline', { key: 'minutes_per_chase', value: d.value }); closeModal(); toast('Baseline saved.', 'success'); refresh(); },
   async manualSupport(d) { await api('/api/metrics/manual-support', d); closeModal(); toast('Support time logged.', 'success'); refresh(); },
-  async aiKey(d) {
-    if (me.sandbox) return;
-    const r = await api('/api/ai', { ...d, approved: !!d.approved, reads_images: !!d.reads_images });
-    toast(`${r.provider_label} connected.`, 'success');
-    refresh();
-  },
   async coworkerPolicy(d) {
     await api('/api/coworker/settings', {
       enabled: !!d.enabled, follow_ups: !!d.follow_ups, dashboards: !!d.dashboards, slack: !!d.slack,
@@ -2817,20 +2749,6 @@ document.addEventListener('change', (e) => {
   const group = metric.form.elements.group_by, win = group.querySelector('[value="window"]'), on = metric.value === 'expirations';
   win.hidden = win.disabled = !on;
   if (on) group.value = 'window'; else if (group.value === 'window') group.value = 'facility';
-});
-document.addEventListener('change', (e) => {
-  const provider = e.target.id === 'ai-provider' && e.target;
-  if (!provider) return;
-  const needsModel = provider.selectedOptions[0]?.dataset.needsModel === 'true';
-  for (const [name, show] of [['model', needsModel], ['endpoint', provider.value === 'custom'], ['images', needsModel]]) {
-    const field = provider.form.querySelector(`[data-ai-${name}]`);
-    const input = field.querySelector('input');
-    field.hidden = input.disabled = !show;
-    if (name !== 'images') input.required = show;
-  }
-  const saved = provider.value === provider.form.dataset.savedProvider;
-  provider.form.elements.model.value = saved && needsModel ? provider.form.dataset.savedModel : '';
-  provider.form.elements.reads_images.checked = saved && needsModel && provider.form.dataset.savedImages === 'true';
 });
 let auditTimer;
 document.addEventListener('input', (e) => {
