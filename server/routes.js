@@ -2,6 +2,7 @@
 const crypto = require('crypto');
 const sandbox = require('./lib/sandbox');
 const W = require('./lib/workspace');
+const CoworkerPolicy = require('./coworker-policy');
 const db = require('./lib/db'), { clock, id, sha256, token, j, hashPassword, checkPassword } = require('./lib/util');
 const P = require('./platform'), R = require('./registry'), E = require('./engine'), Ev = require('./evidence'), C = require('./connectors'), V = require('./views'), Chat = require('./chat'), llm = require('./llm'), mock = require('./mock-hrms'), channels = require('./channels'), Slack = require('./slack');
 const { HttpError } = P;
@@ -354,12 +355,32 @@ add('POST', '/api/notices', ({ t, user, body }) => {
   E.requestDecision(t, user, 'notice_response', null, `Notice response: ${n.agency} ${n.notice_type}`, `Respond by ${n.response_due || 'date not given'}. ${n.summary}`, 'payroll', n.id);
   return n;
 });
-add('GET', '/api/chat', ({ t, user }) => db.all('SELECT id,sender,author,text,created_at FROM (SELECT id,sender,author,text,created_at,rowid AS chat_order FROM chat_messages WHERE tenant_id=? AND user_id=? ORDER BY created_at DESC,rowid DESC LIMIT 200) recent ORDER BY created_at,chat_order', t, user.id));
-add('POST', '/api/chat', ({ t, user, body }) => {
+add('GET', '/api/chat', ({ t, user, q, res }) => {
+  res.setHeader('cache-control', 'no-store');
+  return Chat.history(t, user, q.get('chat_id') ?? undefined);
+});
+add('GET', '/api/chat/conversations', ({ t, user, res }) => {
+  res.setHeader('cache-control', 'no-store');
+  return Chat.conversations(t, user);
+});
+add('POST', '/api/chat', ({ t, user, body, res }) => {
+  res.setHeader('cache-control', 'no-store');
   if (typeof body?.text !== 'string' || !body.text.trim()) throw new HttpError(400, 'Message is required.');
   const text = body.text.trim();
   if (text.length > 1000) throw new HttpError(400, 'Keep the message to 1,000 characters or fewer.');
-  return Chat.handle(t, user, text);
+  const chatId = body.chat_id;
+  if (chatId !== undefined && chatId !== null && (typeof chatId !== 'string' || !/^conv_[a-f0-9]{12}$/.test(chatId))) {
+    throw new HttpError(400, 'Choose a conversation or start a new one.');
+  }
+  return Chat.handle(t, user, text, { requestedChatId: chatId });
+});
+add('GET', '/api/coworker/settings', ({ t, user }) => {
+  P.assertAdmin(user);
+  return CoworkerPolicy.settings(t);
+});
+add('POST', '/api/coworker/settings', ({ t, user, body }) => {
+  P.assertAdmin(user);
+  return CoworkerPolicy.save(t, user, body);
 });
 add('GET', '/api/users', ({ t, user }) => { P.assertAdmin(user); return db.all('SELECT id,name,email,role,slack_id FROM users WHERE tenant_id=? ORDER BY name', t); });
 add('POST', '/api/users', ({ t, user, body }) => { P.assertAdmin(user); if (!P.ROLE_PACKS[body.role]) throw new HttpError(400, 'Invalid role.'); if (!body.email || String(body.password || '').length < 8) throw new HttpError(400, 'Email and an 8+ character password are required.'); const uid = id('usr'); try { db.insert('users', { id: uid, tenant_id: t, email: body.email, name: body.name || body.email, role: body.role, password_hash: hashPassword(body.password), slack_id: body.slack_id || null, created_at: clock.iso() }); } catch { throw new HttpError(409, 'That email is already in use.'); } P.audit(t, 'USER_ADDED', body.email, `Added with role ${body.role}.`, user); return { id: uid }; });

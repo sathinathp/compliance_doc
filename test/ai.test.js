@@ -5,7 +5,8 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aegis-ai-'));
 process.env.NODE_ENV = 'test';
 process.env.AEGIS_DATA = dir; process.env.AEGIS_DEMO = '1';
 const KEY = 'sk-test-secret-1234';
-let calls = [], reply = null, down = false, incompatible = false, declined = false, redirects = false, classification = 'coverage';
+let calls = [], reply = null, down = false, incompatible = false, declined = false, redirects = false, classification = 'coverage', guidance = null;
+const classificationResult = () => ({ intent: classification, ...(guidance ? { guidance } : {}) });
 const fake = http.createServer((req, res) => {
   let b = ''; req.on('data', (d) => { b += d; }); req.on('end', () => {
     const body = JSON.parse(b);
@@ -21,7 +22,7 @@ const fake = http.createServer((req, res) => {
       }
       if (incompatible) return send(200, { choices: [{ message: { content: 'Plain text only' } }] });
       const fn = body.tools[0].function;
-      const input = fn.name === 'record_ping' ? { ok: !declined } : fn.name === 'classify' ? { intent: classification } : reply;
+      const input = fn.name === 'record_ping' ? { ok: !declined } : fn.name === 'classify' ? classificationResult() : reply;
       const tool = { type: 'function', function: { name: fn.name, arguments: JSON.stringify(input) } };
       const field = body.tool_choice === 'auto' ? 'toolCalls' : 'tool_calls';
       return send(200, { choices: [{ message: { [field]: [tool] } }], usage: { prompt_tokens: 10, completion_tokens: 5 } });
@@ -29,7 +30,7 @@ const fake = http.createServer((req, res) => {
     if (req.headers['x-api-key'] !== KEY) return send(401, { error: 'bad key' });
     if (body.tool_choice?.type === 'tool' && body.thinking?.type !== 'disabled') return send(400, { error: 'tool_choice tool not allowed in thinking mode' });
     if (body.messages[0].content.some((c) => c.type === 'document')) return send(400, { error: 'document not supported' });
-    const name = body.tools[0].name, input = name === 'record_ping' ? { ok: true } : name === 'classify' ? { intent: classification } : reply;
+    const name = body.tools[0].name, input = name === 'record_ping' ? { ok: true } : name === 'classify' ? classificationResult() : reply;
     send(200, { content: [{ type: 'tool_use', name, input }], usage: { input_tokens: 10, output_tokens: 5 } });
   });
 });
@@ -110,10 +111,54 @@ test('chat rejects an AI classification outside the read-only schema', async () 
     const before = db.get('SELECT COUNT(*) AS n FROM dashboards').n;
     const out = await admin.post('/api/chat', { text: 'Could you handle that for me?' });
     assert.equal(out.status, 200);
-    assert.match(out.data.reply, /Try “What is missing/);
+    assert.match(out.data.reply, /AI provider couldn’t answer/);
     assert.equal(db.get('SELECT COUNT(*) AS n FROM dashboards').n, before);
   } finally {
     classification = 'coverage';
+  }
+});
+
+test('the AI coworker uses recent user questions for guidance without sending record answers', async () => {
+  const start = await admin.post('/api/chat', { text: 'Which credentials expire next month?', chat_id: null });
+  classification = 'guidance';
+  guidance = 'Checks applies the requirement. Evidence holds the supporting document. Cases tracks the work to resolve a gap.';
+  calls = [];
+  try {
+    const message = 'Could you explain how those pieces fit together?';
+    const follow = await admin.post('/api/chat', { text: message, chat_id: start.data.chat_id });
+    assert.equal(follow.data.reply, guidance);
+    assert.equal(calls.length, 1);
+    const input = JSON.parse(calls[0].body.messages[0].content[0].text);
+    assert.equal(input.current_message, message);
+    assert.deepEqual(input.recent_questions, ['Which credentials expire next month?']);
+    assert.deepEqual(input.previous_topic, { intent: 'expiring', window: 'next_month' });
+  } finally {
+    classification = 'coverage';
+    guidance = null;
+  }
+});
+
+test('coworker limits count concurrent AI attempts while known questions stay local', async () => {
+  const route = '/api/coworker/settings';
+  const initial = (await admin.get(route)).data;
+  const dailyLimit = initial.ai_calls_today + 1;
+  assert.equal((await admin.post(route, { ...initial.policy, daily_ai_calls: dailyLimit })).status, 200);
+  calls = [];
+  try {
+    const results = await Promise.all([
+      admin.post('/api/chat', { text: 'where do we stand overall on the rules?', chat_id: null }),
+      hr.post('/api/chat', { text: 'could you puzzle that out for me?', chat_id: null }),
+    ]);
+    assert.equal(results.filter((r) => /under this workspace’s daily limit/.test(r.data.reply)).length, 1);
+    assert.equal(calls.length, 1);
+    assert.equal((await admin.get(route)).data.ai_calls_today, dailyLimit);
+    await admin.post('/api/chat', { text: 'What needs my approval?' });
+    assert.equal(calls.length, 1);
+    assert.equal((await admin.post(route, { ...initial.policy, daily_ai_calls: 0 })).status, 200);
+    assert.match((await admin.post('/api/chat', { text: 'where do we stand overall on the rules?' })).data.reply, /daily limit/);
+    assert.equal(calls.length, 1);
+  } finally {
+    assert.equal((await admin.post(route, initial.policy)).status, 200);
   }
 });
 

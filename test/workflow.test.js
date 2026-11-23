@@ -535,7 +535,21 @@ test('pilot chat keeps how-to questions read-only and confirmation is single-use
   assert.match((await query(hr, 'Create an immigration dashboard')).data.reply, /restricted immigration/);
   await query(admin, 'Make sure we have a dashboard');
   assert.equal(db.get('SELECT COUNT(*) AS n FROM dashboards WHERE tenant_id=?', t).n, dashboards);
-  const preview = await query(admin, 'Request the missing documents.');
+  const firstPreview = await query(admin, 'Request the missing documents.');
+  const origin = firstPreview.data.chat_id;
+  const inChat = (text) => admin.post('/api/chat', { text, chat_id: origin });
+  const firstCode = /Confirm follow-ups [a-f0-9]{12}/.exec(firstPreview.data.reply)?.[0];
+  assert.ok(firstCode);
+  assert.match((await admin.post('/api/chat', { text: firstCode, chat_id: null })).data.reply, /unavailable/);
+  const policyRoute = '/api/coworker/settings', prior = (await admin.get(policyRoute)).data.policy;
+  try {
+    await admin.post(policyRoute, { ...prior, follow_ups: false });
+    assert.match((await inChat(firstCode)).data.reply, /turned off/);
+  } finally {
+    await admin.post(policyRoute, prior);
+  }
+  assert.match((await inChat(firstCode)).data.reply, /unavailable/);
+  const preview = await inChat('Request the missing documents.');
   const instruction = /Confirm follow-ups [a-f0-9]{12}/.exec(preview.data.reply)?.[0];
   assert.ok(instruction);
   assert.match(preview.data.reply, /· to .+ \((worker|owner)\)/);
@@ -544,7 +558,7 @@ test('pilot chat keeps how-to questions read-only and confirmation is single-use
   assert.equal(count(), before);
   assert.match((await query(health, instruction)).data.reply, /unavailable/);
   assert.equal(count(), before);
-  assert.match((await query(admin, instruction)).data.reply, /Queued \*\*[1-9]/);
+  assert.match((await inChat(instruction)).data.reply, /Queued \*\*[1-9]/);
   assert.ok(count() > before);
   const audit = db.get("SELECT detail_json FROM audit_log WHERE tenant_id=? AND type='CHAT_COMMAND' AND action LIKE 'Confirmed evidence follow-ups.%' ORDER BY seq DESC LIMIT 1", t);
   const detail = JSON.parse(audit.detail_json);
@@ -580,6 +594,101 @@ test('coworker answers from the caller’s visible checks and handles specific w
   assert.doesNotMatch(worker.data.reply, /I-9|work authorization/i);
   assert.match((await ask('What expires in 999999999999999999999999 days?')).data.reply, /between 1 and 365 days/);
   assert.equal((await ask('   ')).status, 400);
+});
+
+test('coworker carries a check or worker across turns and suggests the next question', async () => {
+  const viewer = await login('viewer@bluebix.demo');
+  const ask = (text, chat_id) => viewer.post('/api/chat', { text, chat_id });
+  const hello = await ask('Hey', null);
+  const chat = hello.data.chat_id;
+  assert.match(hello.data.reply, /^Hi,/);
+  const about = await ask('Tell me about yourself', chat);
+  assert.match(about.data.reply, /I’m the Aegis coworker/);
+  assert.notEqual(about.data.reply, hello.data.reply);
+  const health = await ask('Which healthcare checks need attention?', chat);
+  assert.match(health.data.reply, /in Healthcare/);
+  const narrow = await ask('Which of these are unknown?', chat);
+  assert.match(narrow.data.reply, /unknown checks?\b(?:\(s\))? in Healthcare/);
+  const transcript = (await viewer.get('/api/chat?chat_id=' + chat)).data;
+  assert.ok(transcript.at(-1).suggestions.includes('Which healthcare checks failed?'));
+  assert.ok(transcript.at(-1).suggestions.includes('What should I do next?'));
+  assert.doesNotMatch(transcript.at(-1).suggestions.join(' '), /Request the missing documents/);
+  assert.match((await ask('What should I do next?', chat)).data.reply, /priority and due date|no open cases/);
+
+  const named = await ask('What is blocking Chloe Dubois?', null);
+  const evidence = await ask('What evidence are they missing?', named.data.chat_id);
+  assert.match(evidence.data.reply, /Chloe Dubois/);
+  assert.doesNotMatch(evidence.data.reply, /I-9|work authorization/i);
+  assert.match((await ask('What evidence are they missing?', null)).data.reply, /what would you like/i);
+});
+
+test('coworker conversations are private and each role change starts a fresh history', async () => {
+  const t = bid().id;
+  const account = db.get("SELECT id,role,coworker_epoch FROM users WHERE tenant_id=? AND email='viewer@bluebix.demo'", t);
+  const viewer = await login('viewer@bluebix.demo');
+  const send = (text, chat_id) => viewer.post('/api/chat', { text, chat_id });
+  const history = (id) => viewer.get('/api/chat?chat_id=' + id);
+  const first = (await send('What needs my approval?', null)).data.chat_id;
+  const second = (await send('What is our coverage?', null)).data.chat_id;
+  assert.notEqual(first, second);
+  assert.equal((await send('Which credentials expire next month?', first)).data.chat_id, first);
+  assert.equal((await history(first)).data.length, 4);
+  assert.equal((await history(second)).data.length, 2);
+  const index = (await viewer.get('/api/chat/conversations')).data.chats;
+  assert.ok(index.some((chat) => chat.id === first && chat.title === 'What needs my approval?'));
+  assert.equal((await admin.get('/api/chat?chat_id=' + first)).status, 404);
+  assert.equal((await admin.post('/api/chat', { text: 'What needs my approval?', chat_id: first })).status, 404);
+  const legacyId = 'chat_legacy_governance';
+  db.insert('chat_messages', { id: legacyId, tenant_id: t, user_id: account.id, sender: 'bot', author: 'Aegis', text: 'Legacy access rules unknown', created_at: new Date().toISOString() });
+  assert.ok(!(await viewer.get('/api/chat')).data.some((message) => message.id === legacyId));
+  try {
+    db.update('users', account.id, { role: 'hr' });
+    assert.equal((await history(first)).status, 404);
+    assert.deepEqual((await viewer.get('/api/chat/conversations')).data.chats, []);
+    assert.equal((await send('What is our coverage?', first)).status, 404);
+    const newer = (await send('What is our coverage?', null)).data.chat_id;
+    db.update('users', account.id, { role: account.role });
+    assert.equal((await history(first)).status, 404);
+    assert.equal((await history(newer)).status, 404);
+    assert.deepEqual((await viewer.get('/api/chat/conversations')).data.chats, []);
+    assert.equal(db.get('SELECT coworker_epoch AS epoch FROM users WHERE id=?', account.id).epoch, account.coworker_epoch + 2);
+  } finally {
+    db.update('users', account.id, { role: account.role });
+  }
+});
+
+test('coworker settings limit workspace actions and purge expired chat content', async () => {
+  const t = bid().id, path = '/api/coworker/settings';
+  const saved = (await admin.get(path)).data.policy;
+  const initial = { enabled: true, follow_ups: false, dashboards: false, slack: false, retention_days: 7, daily_ai_calls: null };
+  assert.equal((await hr.get(path)).status, 403);
+  assert.equal((await hr.post(path, initial)).status, 403);
+  assert.equal((await admin.post(path, { ...initial, retention_days: 0 })).status, 400);
+  const old = (await admin.post('/api/chat', { text: 'What needs my approval?', chat_id: null })).data.chat_id;
+  const keep = (await admin.post('/api/chat', { text: 'Which credentials expire next month?', chat_id: null })).data.chat_id;
+  const expired = new Date(Date.now() - 8 * 864e5).toISOString();
+  db.run('UPDATE chat_messages SET created_at=? WHERE coworker_chat_id=? OR (coworker_chat_id=? AND sender=?)', expired, old, keep, 'user');
+  db.update('coworker_chats', old, { updated_at: expired });
+  try {
+    const result = await admin.post(path, initial);
+    assert.equal(result.status, 200);
+    assert.equal(result.data.policy.retention_days, 7);
+    assert.equal((await admin.get('/api/chat?chat_id=' + old)).status, 404);
+    assert.equal(db.get('SELECT id FROM coworker_chats WHERE id=?', old), undefined);
+    assert.equal(db.get('SELECT count(*) AS n FROM chat_messages WHERE coworker_chat_id=?', old).n, 0);
+    const index = (await admin.get('/api/chat/conversations')).data;
+    assert.equal(index.chats.find((chat) => chat.id === keep).title, 'Conversation');
+    assert.equal(index.capabilities.follow_ups, false);
+    assert.equal(index.capabilities.dashboards, false);
+    assert.match((await admin.post('/api/chat', { text: 'Request the missing documents.', chat_id: keep })).data.reply, /turned off/);
+    assert.match((await admin.post('/api/chat', { text: 'Create a dashboard', chat_id: keep })).data.reply, /turned off/);
+    assert.equal((await admin.post(path, { ...initial, enabled: false })).status, 200);
+    assert.equal((await admin.post('/api/chat', { text: 'What needs my approval?' })).status, 403);
+    assert.equal((await admin.get('/api/chat?chat_id=' + keep)).status, 200);
+    assert.ok(db.get("SELECT 1 AS ok FROM audit_log WHERE tenant_id=? AND type='COWORKER_POLICY_UPDATED'", t));
+  } finally {
+    assert.equal((await admin.post(path, saved)).status, 200);
+  }
 });
 
 test('pilot queued delivery resolves stable case identities and stops when the pack returns to validation', async () => {
@@ -639,6 +748,25 @@ test('dashboards: built-in views match the checks, saved views are validated and
     const kpi = (await who.get('/api/overview')).data.kpi.expiring;
     assert.equal(kpi, (await who.get('/api/dashboards/builtin-expiring')).data.data.total);
   }
+
+  // Every Overview figure adds up to the record it summarises.
+  for (const who of [admin, hr]) {
+    const o = (await who.get('/api/overview')).data;
+    const why = o.unknown_reasons;
+    assert.equal(why.document + why.review + why.details + why.other, o.coverage.unknown, 'unknown reasons add up to Unknown');
+    const groups = (await who.get('/api/dashboards/builtin-readiness')).data.data.groups;
+    const n = (k) => groups.find((g) => g.name === k)?.count || 0;
+    assert.deepEqual([o.readiness.approved, o.readiness.pending, o.readiness.blocked], [n('approved'), n('pending'), n('blocked')]);
+    assert.ok(o.readiness.closest.length <= 3);
+    const e = o.expiring_detail;
+    assert.equal(e.expired + e.d30 + e.d60 + e.d90, o.kpi.expiring, 'renewal groups add up to credentials to renew');
+    assert.ok(e.next.length <= 3 && e.next.every((x, i) => i === 0 || e.next[i - 1].days_left <= x.days_left), 'soonest first');
+    assert.equal(o.trend.points.length, 7);
+    assert.equal(o.trend.points.at(-1).pct, Math.round((o.coverage.pass / o.coverage.total) * 1000) / 10, "today's trend point is today's pass rate");
+    assert.ok(o.fail_people <= o.coverage.fail);
+  }
+  assert.ok((await admin.get('/api/overview')).data.feed.every((e) => 'subject' in e && 'actor' in e));
+  assert.deepEqual((await hr.get('/api/overview')).data.feed, [], 'activity is for administrators only');
 
   // Open gaps equal the failing and unknown checks the Checks page shows.
   const checks = (await admin.get('/api/checks')).data.rows.filter((c) => c.status !== 'not_applicable');

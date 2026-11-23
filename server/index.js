@@ -34,6 +34,7 @@ U.setSecret(process.env.AEGIS_SECRET || fs.readFileSync(secretFile, 'utf8'));
 try { db.open(path.join(DATA, 'aegis.db')); } catch (e) { console.error(e.message); process.exit(1); }
 const P = require('./platform'), R = require('./registry'), E = require('./engine'), C = require('./connectors'), V = require('./views'), channels = require('./channels'), mock = require('./mock-hrms'), { routes } = require('./routes'), { seed } = require('./seed');
 const W = require('./lib/workspace');
+const CoworkerPolicy = require('./coworker-policy');
 const { j, clock } = U;
 
 P.on('process_event', (t, p) => C.processHrmsEvent(t, p));
@@ -54,6 +55,7 @@ P.on('sync_connector', (t, p) => C.syncConnector(t, p.id));
 function tick() {
   const today = clock.today();
   db.run('DELETE FROM sessions WHERE expires_at<?', new Date().toISOString());
+  CoworkerPolicy.pruneExpired();
   for (const tn of db.all('SELECT id FROM tenants')) {
     // Daily jobs: `once` stops them from running again every minute after they finish.
     P.enqueue(tn.id, 'evaluate_tenant', { trigger: 'scheduled_check' }, { dedupe: `daily:${tn.id}:${today}`, once: true });

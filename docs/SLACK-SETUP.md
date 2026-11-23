@@ -58,7 +58,7 @@ settings:
 
 - **Alerts and digests** go to the alerts channel.
 - **Requests and reminders** go to each person as a direct message. Aegis finds them by their work email, so nobody copies Slack IDs. Someone who is not in Slack gets email, or the message stays in the outbox.
-- **Chat:** direct-message Aegis to ask a read-only question such as "What needs my approval?". Aegis matches the Slack account to an Aegis user and applies that user's permissions. A channel mention points people to a private conversation. Open **Ask coworker** in the Aegis workspace to preview and confirm follow-ups or save dashboards.
+- **Chat:** direct-message Aegis to ask a read-only question such as "What needs my approval?". Aegis matches the Slack account to an Aegis user and applies that user's permissions. A channel mention points people to a private conversation. Open **Ask coworker** in the Aegis top bar to preview and confirm follow-ups or save dashboards.
 
 ## Two ways for Slack to reach Aegis
 

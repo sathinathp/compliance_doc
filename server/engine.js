@@ -3,6 +3,7 @@
 const db = require('./lib/db'), { clock, id, shortId, addDays, j, sha256, token } = require('./lib/util');
 const P = require('./platform'), R = require('./registry'), { evaluate } = require('./evaluator'), channels = require('./channels');
 const W = require('./lib/workspace');
+const CoworkerPolicy = require('./coworker-policy');
 const { HttpError, SYSTEM } = P;
 const OPEN = "closed_at IS NULL";
 const BASE = () => process.env.AEGIS_BASE_URL || `http://localhost:${process.env.PORT || 4100}`;
@@ -202,8 +203,11 @@ const evaluateById = (t, type, sid, trigger) => {
 };
 function canDeliverConfirmedFollowUp(t, cs, confirmed) {
   if (!cs || cs.closed_at || cs.control_key !== confirmed.controlKey || cs.gap_kind !== 'evidence' || cs.finding_verdict === 'false_finding') return false;
-  const user = db.get('SELECT id,role FROM users WHERE id=? AND tenant_id=?', confirmed.actorId, t);
-  if (!user || !P.canPack(user, cs.pack_key) || (cs.restricted && !P.canSeeRestricted(user))) return false;
+  const policy = CoworkerPolicy.get(t);
+  if (!policy.enabled || !policy.follow_ups || policy.follow_up_epoch !== (confirmed.policyEpoch ?? 0)) return false;
+  const user = db.get('SELECT id,role,coworker_epoch FROM users WHERE id=? AND tenant_id=?', confirmed.actorId, t);
+  if (!user || user.coworker_epoch !== (confirmed.actorEpoch ?? 0) || !P.canPack(user, cs.pack_key)
+    || (cs.restricted && !P.canSeeRestricted(user))) return false;
   const control = R.effectiveControls(t).find((c) => c.key === cs.control_key);
   if (!control || control.mode !== 'auto') return false;
   const { person, type } = followUpRecipient(t, cs, control);
@@ -218,7 +222,7 @@ async function sendAction(t, { action_id, confirmed_follow_up }) {
   if (!cs || cs.closed_at) { db.update('actions', a.id, { status: 'cancelled' }); return; }
   const stillConfirmed = (target) => !confirmed_follow_up || canDeliverConfirmedFollowUp(t, target, confirmed_follow_up);
   const cancelConfirmed = () => {
-    const error = 'The case, recipient or requester’s access changed after confirmation.';
+    const error = 'The case, recipient, requester’s access or coworker policy changed after confirmation.';
     db.tx(() => {
       const cancelled = db.run("UPDATE actions SET status='cancelled',error=? WHERE id=? AND tenant_id=? AND status='queued'", error, a.id, t);
       if (!cancelled.changes) return;
@@ -326,7 +330,10 @@ function followUp(t, user, cs, confirmedRecipient = null) {
     : toW
       ? `Hi ${firstName(person.name)}, a follow-up from your compliance team about your ${c.name}. ${gap} Please upload it using your secure link: ${newLink(t, cs)}`
       : `${cs.subject_name}: ${gap}${cs.gap_kind !== 'data' ? ` Upload: ${newLink(t, cs)}` : ''}`;
-  const confirmed_follow_up = confirmedRecipient && { actorId: user.id, controlKey: c.key, recipientId: confirmedRecipient.recipientId, recipientType: confirmedRecipient.recipientType };
+  const confirmed_follow_up = confirmedRecipient && {
+    actorId: user.id, actorEpoch: user.coworker_epoch, policyEpoch: confirmedRecipient.policyEpoch,
+    controlKey: c.key, recipientId: confirmedRecipient.recipientId, recipientType: confirmedRecipient.recipientType,
+  };
   const a = enqueueAction(t, { case_id: cs.id, pack_key: cs.pack_key, type: 'follow_up', idempotency_key: `${cs.id}:manual:${clock.today()}`, recipient: person?.name, recipient_type: type, subject: `Follow-up: ${c.name}`, body, confirmed_follow_up }, user);
   return a.duplicate ? { sent: false, message: 'A follow-up was already sent today.' } : { sent: true, message: `Follow-up queued for ${person?.name}.` };
 }

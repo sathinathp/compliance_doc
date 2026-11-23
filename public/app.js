@@ -73,7 +73,8 @@ function setNavigationOpen(open) {
   if (open) {
     closeAllDirMenus();
     sheet.showModal();
-    (sheet.querySelector('[aria-current="page"]') || $('#closeNavigation')).focus();
+    const current = sheet.querySelector('[aria-current="page"]');
+    (current?.getClientRects().length ? current : sheet.querySelector('.rail-link.is-section') || $('#closeNavigation')).focus();
   } else {
     sheet.close();
   }
@@ -183,10 +184,7 @@ async function boot() {
   document.body.style.background = '';
   const ls = $('#loginScreen'); if (ls) { ls.hidden = true; ls.style.display = 'none'; ls.innerHTML = ''; }
   const as = $('#appShell'); if (as) { as.hidden = false; as.style.display = 'block'; }
-  const questions = ['What is missing for new workers?', 'Which credentials expire next month?', 'What needs my approval?', 'Show unresolved cases by team'];
-  if (canEdit() && !me.workspace_email?.pending) questions.push('Request the missing documents.');
-  if (canEdit()) questions.push('Create a healthcare dashboard showing missing evidence by facility.');
-  $('#chatPrompts').innerHTML = render(questions.map((q) => h`<button class="prompt-pill" data-act="prompt" data-q="${q}">${q}</button>`));
+  resetChat();
   renderTop();
   renderNav();
   renderVerificationNotice();
@@ -251,6 +249,7 @@ function renderTop() {
 // this person get a tinted badge; plain totals are grey numbers; Company setup gets a dot when
 // something needs fixing.
 let navCounts = {}, navCountsLoading = false;
+let dashboardViewsOpen = false;
 const NAV_COUNT_WORDS = { cases: 'open', approvals: 'waiting for you', evidence: 'to review', notices: 'waiting' };
 const navIcon = (key) => raw(`<svg class="rail-icon" aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${I[key]}</svg>`);
 const caretSvg = '<svg class="rail-caret" aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
@@ -261,39 +260,50 @@ function navMeta(key) {
   return h`<span class="rail-count${key === 'approvals' ? ' is-yours' : ''}" aria-hidden="true">${n}</span><span class="visually-hidden">, ${n} ${NAV_COUNT_WORDS[key]}</span>`;
 }
 const canOpen = (key) => (me.user.is_admin || !adminRoutes.has(key)) && (key !== 'notices' || canFinance());
-const navLink = (key, label) => h`<a class="rail-link" href="#${key}" data-key="${key}" data-label="${label}">${navIcon(key)}<span class="rail-label">${label}</span><span class="rail-meta">${navMeta(key)}</span>${key === 'dashboards' ? raw(caretSvg) : ''}</a>`;
+const navLink = (key, label) => h`<a class="rail-link" href="#${key}" data-key="${key}" data-label="${label}">${navIcon(key)}<span class="rail-label">${label}</span><span class="rail-meta">${navMeta(key)}</span></a>`;
+function setDashboardViewsOpen(open) {
+  dashboardViewsOpen = open;
+  for (const tree of document.querySelectorAll('.rail-tree')) {
+    const toggle = tree.querySelector('.rail-disclosure');
+    toggle.setAttribute('aria-expanded', String(open));
+    toggle.setAttribute('aria-label', open ? 'Collapse dashboard views' : 'Expand dashboard views');
+    tree.querySelector('.rail-sub').hidden = !open;
+  }
+}
 function renderNav() {
   setRailCollapsed(document.documentElement.classList.contains('rail-collapsed'), false);
-  const groups = NAV.map(([group, items]) => {
+  const groups = (navId) => NAV.map(([group, items]) => {
     const visible = items.filter(([key]) => canOpen(key));
     if (!visible.length) return '';
+    const viewId = navId + '-dashboard-views';
     const links = visible.map(([key, label]) => (key === 'dashboards'
-      ? h`<div class="rail-tree">${navLink(key, label)}<div class="rail-sub" role="group" aria-label="Dashboards">${DASH_VIEWS.map(([id, name]) => h`<a class="rail-sublink" href="#dashboards/${id}">${name}</a>`)}</div></div>`
+      ? h`<div class="rail-tree"><div class="rail-tree-head">${navLink(key, label)}<button type="button" class="rail-disclosure" aria-controls="${viewId}">${raw(caretSvg)}</button></div><div class="rail-sub" id="${viewId}" role="group" aria-label="Dashboard views" hidden>${DASH_VIEWS.map(([id, name]) => h`<a class="rail-sublink" href="#dashboards/${id}">${name}</a>`)}</div></div>`
       : navLink(key, label)));
+    const titleId = group ? navId + '-' + group.toLowerCase() : '';
     return group
-      ? h`<section class="rail-group" aria-labelledby="nav-${group.toLowerCase()}"><h2 class="rail-group-title" id="nav-${group.toLowerCase()}">${group}</h2>${links}</section>`
+      ? h`<section class="rail-group" aria-labelledby="${titleId}"><h2 class="rail-group-title" id="${titleId}">${group}</h2>${links}</section>`
       : h`<section class="rail-group" aria-label="Daily work">${links}</section>`;
   });
   const org = NAV_ORG.filter(([key]) => canOpen(key)).map(([key, label]) => navLink(key, label));
-  $('#tabs').innerHTML = render(groups);
+  $('#tabs').innerHTML = render(groups('tabs'));
   $('#tabsOrg').innerHTML = render(org);
   // The phone menu is one list: daily work, records, reporting, then the organisation pages.
-  $('#sheetIn').innerHTML = render(h`${groups}${org.length ? h`<section class="rail-group rail-group-org" aria-label="Organisation">${org}</section>` : ''}`);
+  $('#sheetIn').innerHTML = render(h`${groups('sheetIn')}${org.length ? h`<section class="rail-group rail-group-org" aria-label="Organisation">${org}</section>` : ''}`);
+  setDashboardViewsOpen(dashboardViewsOpen);
   syncNav();
 }
-// Marks the current page. A dashboard view marks its sub-item and keeps Dashboards open.
+// Marks the current page without changing the dashboard disclosure.
 function syncNav() {
   for (const nav of document.querySelectorAll('.rail-nav, .rail-org')) {
     for (const a of nav.querySelectorAll('[aria-current]')) a.removeAttribute('aria-current');
     for (const a of nav.querySelectorAll('.is-section')) a.classList.remove('is-section');
     const main = nav.querySelector(`.rail-link[href="#${route}"]`);
     const sub = route === 'dashboards' && routeArg ? nav.querySelector(`.rail-sublink[href="#dashboards/${CSS.escape(routeArg)}"]`) : null;
-    nav.querySelector('.rail-tree')?.classList.toggle('is-open', route === 'dashboards');
     const current = sub || main;
     if (!current) continue;
     current.setAttribute('aria-current', 'page');
     if (sub) main?.classList.add('is-section');
-    if (nav.clientHeight) current.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    if (nav.clientHeight) (current.getClientRects().length ? current : main)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
 }
 // Refreshes the counts in place, so keyboard focus in the menu is never lost.
@@ -307,35 +317,6 @@ async function loadNavCounts() {
       if (slot) slot.innerHTML = render(navMeta(a.dataset.key));
     }
   } catch { /* the counts are a convenience; the page itself still loads */ } finally { navCountsLoading = false; }
-  renderFresh();
-}
-// ---------- Top bar ----------
-// Breadcrumb after the company name: section, then page, then a detail view. A part given as
-// [label, href] is a link back up; the last part is the current page.
-function setTrail(parts) {
-  const ol = $('#barTrail'); if (!ol) return;
-  const last = parts.length - 1;
-  ol.innerHTML = render(parts.map((p, i) => {
-    const [label, href] = Array.isArray(p) ? p : [p, null];
-    return h`<li class="${i === 0 && last > 0 ? 'is-section' : ''}">${href ? h`<a href="${href}">${label}</a>` : i === last ? h`<span aria-current="page">${label}</span>` : h`<span>${label}</span>`}</li>`;
-  }));
-}
-// When the checks last ran, in the same UTC wording as the rest of the app. Green while it is from
-// today or yesterday, amber once it is older. Opens the Checks page.
-const TIME = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' });
-function renderFresh() {
-  const el = $('#barFresh'), at = navCounts.checked_at;
-  if (!el) return;
-  if (!at || !parse(at)) { el.hidden = true; return; }
-  // A run dated after "today" (the demo clock can be moved forward) counts as today.
-  const day = String(at).slice(0, 10), age = daysFromToday(day), time = TIME.format(parse(at));
-  const recent = age !== null && age >= -1, today = age !== null && age >= 0;
-  const short = today ? `${time} UTC` : age === -1 ? 'yesterday' : date(day);
-  const long = today ? `today at ${time} UTC` : age === -1 ? `yesterday at ${time} UTC` : `on ${date(day)}`;
-  el.innerHTML = render(h`<i class="${recent ? 'is-fresh' : 'is-stale'}" aria-hidden="true"></i><span>Checked ${short}</span>`);
-  el.title = `Aegis last ran the checks ${long}.`;
-  el.setAttribute('aria-label', `Checks last ran ${long}. Open Checks.`);
-  el.hidden = false;
 }
 // Collapsed sidebar: a 60 px icon rail. The choice is remembered on this device only.
 const RAIL_KEY = 'aegis.sidebar.collapsed';
@@ -422,6 +403,7 @@ const CASE_DUE = { overdue: ['Overdue', isOverdue], week: ['Due this week', isDu
 async function go(r, arg = null, keep) {
   const version = ++navigation;
   if (!keep && r !== route) { $('#globalSearch').value = ''; caseSel.clear(); closeChat(false); }
+  if (!keep && r === 'dashboards' && (r !== route || arg !== routeArg)) setDashboardViewsOpen(true);
   route = r; routeArg = arg;
   closeAllDirMenus();
   setNavigationOpen(false);
@@ -430,9 +412,8 @@ async function go(r, arg = null, keep) {
     const alertEl = $('#alert');
     if (alertEl) { alertEl.hidden = true; alertEl.innerHTML = ''; }
   }
-  const [c, t, d] = HEAD[r] || ['Workspace', words(r), ''];
-  const crumb = $('#crumb'); if (crumb) crumb.textContent = c;
-  setTrail([c, t]);
+  const [, t, d] = HEAD[r] || ['', words(r), ''];
+  $('#crumb').hidden = true;
   const heading = $('#heading'); if (heading) heading.textContent = t;
   const scopeEl = $('#scope'); if (scopeEl) scopeEl.textContent = d;
   syncTools();
@@ -641,7 +622,7 @@ const AUDIT_LABEL = {
   CHECK_RESULT: 'Check result', CASE_OPENED: 'Case opened', CASE_STATE: 'Case moved', CASE_NOTE: 'Note added', CASE_ESCALATED: 'Case escalated', CASE_CLOSED: 'Case closed',
   FINDING_REVIEWED: 'Finding reviewed', EVIDENCE_MATCHED: 'Evidence matched', EVIDENCE_ACCEPTED: 'Evidence accepted', EVIDENCE_REJECTED: 'Evidence rejected', EVIDENCE_REVIEW: 'Sent to review', EVIDENCE_VIEWED: 'Evidence opened',
   APPROVAL_REQUESTED: 'Approval requested', APPROVAL_DECIDED: 'Decision made', APPROVAL_UPDATED: 'Approval updated', READINESS_REOPENED: 'Readiness reopened',
-  MESSAGE_SENT: 'Message', DIGEST_SENT: 'Digest posted', DIGEST_OUTBOX: 'Digest saved', DIGEST_FAILED: 'Digest failed', CHAT_COMMAND: 'Coworker request',
+  MESSAGE_SENT: 'Message', DIGEST_SENT: 'Digest posted', DIGEST_OUTBOX: 'Digest saved', DIGEST_FAILED: 'Digest failed', CHAT_COMMAND: 'Coworker request', COWORKER_POLICY_UPDATED: 'Coworker policy updated',
   WORKER_ADDED: 'Worker added', ROSTER_IMPORT: 'Roster imported', ASSIGNMENT_CHANGED: 'Assignment changed', HRMS_EVENT: 'HRMS update', HRMS_SYNC: 'HRMS sync',
   PACK_ACTIVATED: 'Pack activated', PACK_MODE: 'Pack mode changed', CONTROL_DRAFTED: 'Rule drafted', DASHBOARD_CREATED: 'View saved', DASHBOARD_DELETED: 'View deleted', USER_ADDED: 'User added',
 };
@@ -681,8 +662,9 @@ async function reloadAudit() {
 
 // Detail pages carry their own title; the crumb links back to the list they came from.
 function pageHead(crumb, href, title, sub) {
-  const c = $('#crumb'); if (c) c.innerHTML = render(h`<a href="${href}">${crumb}</a>`);
-  setTrail([(HEAD[route] || [])[0] || 'Workspace', [crumb, href], title]);
+  const c = $('#crumb');
+  c.innerHTML = render(h`<a href="${href}">Back to ${crumb}</a>`);
+  c.hidden = false;
   const t = $('#heading'); if (t) t.textContent = title;
   const d = $('#scope'); if (d) d.textContent = sub || '';
 }
@@ -847,20 +829,34 @@ function workerFoot(w, openN, total) {
   return h`${move}<button class="btn-cancel" data-act="readiness" data-id="${w.id}" data-open="${openN || 1}">Request decision anyway</button>${upload('btn-submit-green')}`;
 }
 function openCaseCell(c) { return h`<button class="btn-link-action" data-act="caseDetail" data-id="${c.id}">Open</button>`; }
+// ---------- Overview ----------
+// Priority cases on the Overview: everyone's (false) or only the signed-in person's (true).
+let ovMine = false;
+// Approval types in plain words, for the "Approvals waiting for you" line. Each pluralises with an s.
+const APPROVAL_KIND = { action: 'outgoing message', assignment_review: 'assignment review', readiness_decision: 'readiness decision', notice_response: 'notice reply', control_activation: 'rule change' };
+// The sentence under the Overview title: what fails, what cannot be proven yet and why, who can start.
+const WHY_PHRASE = { document: 'mostly because documents haven’t arrived', review: 'mostly because documents are waiting for review', details: 'mostly because worker or location details are missing' };
+function ovSummary({ coverage: c, fail_people: people, unknown_reasons: why, readiness: rd }) {
+  if (!c.total) return h`No checks have run yet. Activate a compliance pack in Company setup to start.`;
+  const top = Object.entries(why).filter(([k]) => k !== 'other').sort((a, b) => b[1] - a[1])[0];
+  const reason = top && top[1] > c.unknown / 2 ? `, ${WHY_PHRASE[top[0]]}` : '';
+  const ready = rd.total ? h` <b>${rd.approved} of ${rd.total}</b> ${rd.total === 1 ? 'worker is' : 'workers are'} cleared to start.` : '';
+  if (!c.fail && !c.unknown) return h`<b class="ovx-t-pass">All ${plural(c.total, 'applicable check')} pass.</b>${ready}`;
+  const fail = c.fail ? h`<b class="ovx-t-fail">${plural(c.fail, 'check')} ${c.fail === 1 ? 'fails' : 'fail'}</b> for ${plural(people, 'person', 'people')}` : '';
+  const unknown = c.unknown ? h`<b class="ovx-t-warn">${c.unknown} can’t be proven yet</b>${reason}` : '';
+  return h`${fail}${c.fail && c.unknown ? ', and ' : ''}${unknown}.${ready}`;
+}
 const VIEWS = {
+  // Overview: one answer at the top, then what needs you, readiness, coverage with its reasons,
+  // priority cases, renewals, packs and (for administrators) recent activity. Every number links to
+  // the list it was counted from, and no number is shown twice.
   async overview() {
     const [report, health, openCases] = await Promise.all([
       api('/api/overview'),
       me.user.is_admin ? api('/api/health') : null,
-      api('/api/cases')
+      api('/api/cases'),
     ]);
-    const { coverage, kpi, urgent, packs } = report;
-    const percent = (count) => coverage.total ? 100 * count / coverage.total : 0;
-    const counts = [
-      { label: 'Pass', value: coverage.pass, kind: 'pass' },
-      { label: 'Fail', value: coverage.fail, kind: 'fail' },
-      { label: 'Unknown', value: coverage.unknown, kind: 'unknown' }
-    ];
+    const { coverage: cov, kpi, packs, readiness: rd, unknown_reasons: why, trend, expiring_detail: exp, attention, feed } = report;
     const failedConnector = health?.connectors?.find((connector) => connector.last_error);
     const alert = $('#alert');
     if (alert) {
@@ -868,57 +864,125 @@ const VIEWS = {
       alert.innerHTML = failedConnector ? render(h`<p><b>${failedConnector.name}</b> needs attention. ${failedConnector.last_error}</p><a class="btn" href="#integrations">Review connection</a>`) : '';
     }
     const subtitle = $('#scope');
-    if (subtitle) subtitle.textContent = `Last checked ${dt(coverage.as_of)} UTC · ${packs.length} active pack${packs.length === 1 ? '' : 's'}`;
-    // "Today": what needs attention now, each part a link to the list behind it.
-    const overdue = openCases.filter(isOverdue).length;
-    const dueSoon = openCases.filter(isDueThisWeek).length;
-    const today = [
-      { n: overdue, one: 'case overdue', many: 'cases overdue', tone: 'late', href: '#cases/overdue' },
-      { n: dueSoon, one: 'case due this week', many: 'cases due this week', tone: 'soon', href: '#cases/week' },
-      { n: kpi.expiring, one: 'credential to renew', many: 'credentials to renew', tone: 'soon', href: '#dashboards/builtin-expiring' },
-      { n: kpi.pending_approvals, one: 'approval waiting for you', many: 'approvals waiting for you', tone: 'soon', href: '#approvals' }
-    ];
-    const allClear = today.every((t) => !t.n);
-    const workload = [
-      { label: 'Open cases', count: kpi.open_cases, destination: 'cases' },
-      { label: 'Pending approvals', count: kpi.pending_approvals, destination: 'approvals' },
-      { label: 'Active workers', count: kpi.workers, destination: 'workers' }
-    ];
-    const fmtDate = (iso) => iso ? new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(new Date(iso)) : 'No deadline';
-    return h`<div class="ov-workspace">
-      <nav class="today-strip${allClear ? ' all-clear' : ''}" aria-label="Needs attention today">
-        <span class="today-label">Today</span>
-        ${allClear ? h`<span class="today-item"><i class="tone-ok"></i>Nothing needs attention right now</span>`
-          : today.map((t) => h`<a class="today-item${t.n ? '' : ' is-zero'}" href="${t.href}"><i class="tone-${t.n ? t.tone : 'zero'}"></i><b>${t.n}</b> ${t.n === 1 ? t.one : t.many}</a>`)}
-      </nav>
-      <section class="ov-snapshot" aria-label="Assessment summary">
-        <div class="ov-coverage">
-          <div class="ov-heading"><h2>Verification coverage</h2><a href="#checks">View checks <span aria-hidden="true">↗</span></a></div>
-          <p class="ov-metric"><strong>${coverage.pass}</strong><span>of ${coverage.total} applicable checks pass</span></p>
-          <div class="ov-bar" aria-hidden="true">${counts.filter((s) => s.value).map((s) => h`<i class="ov-band-${s.kind}" style="width:${percent(s.value)}%"></i>`)}</div>
-          <div class="ov-legend">${counts.map((s) => h`<span><i class="ov-band-${s.kind}"></i>${s.label} <b>${s.value}</b></span>`)}</div>
+    if (subtitle) subtitle.innerHTML = render(ovSummary(report));
+    const go = raw('<svg class="ovx-go" aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>');
+    const head = (title, sub, tools) => h`<header class="ovx-head"><div><h2>${title}</h2><p>${sub}</p></div>${tools || ''}</header>`;
+    const more = (href, label) => h`<a class="ovx-link" href="${href}">${label} <span aria-hidden="true">→</span></a>`;
+
+    // Needs your attention: only rows with something in them, most urgent first.
+    const overdue = openCases.filter(isOverdue).sort((a, b) => (a.due_date < b.due_date ? -1 : 1));
+    const thisWeek = openCases.filter(isDueThisWeek).sort((a, b) => (a.due_date < b.due_date ? -1 : 1));
+    const kinds = Object.entries(attention.approvals_by_kind).map(([k, n]) => plural(n, APPROVAL_KIND[k] || words(k).toLowerCase()));
+    const dayWord = (d) => { const n = daysFromToday(d); return n === 0 ? 'today' : n === 1 ? 'tomorrow' : date(d); };
+    const rows = [
+      { n: overdue.length, tone: 'fail', what: overdue.length === 1 ? 'Case overdue' : 'Cases overdue', href: '#cases/overdue',
+        why: overdue[0] && `Oldest: ${overdue[0].control_name}, ${plural(-daysFromToday(overdue[0].due_date), 'day')} late` },
+      { n: kpi.pending_approvals, tone: 'warn', what: kpi.pending_approvals === 1 ? 'Approval waiting for you' : 'Approvals waiting for you', href: '#approvals', why: kinds.join(', ') },
+      { n: kpi.expiring, tone: 'warn', what: kpi.expiring === 1 ? 'Credential to renew' : 'Credentials to renew', href: '#dashboards/builtin-expiring',
+        why: [exp.expired && `${exp.expired} already expired`, exp.d30 && `${exp.expired ? `${exp.d30} more` : exp.d30} within 30 days`].filter(Boolean).join(', ') || 'Within the next 90 days' },
+      { n: attention.review, tone: 'info', what: attention.review === 1 ? 'Document to review' : 'Documents to review', href: '#evidence',
+        why: attention.review_oldest && `Waiting since ${date(attention.review_oldest)}` },
+      { n: thisWeek.length, tone: 'na', what: thisWeek.length === 1 ? 'Case due this week' : 'Cases due this week', href: '#cases/week',
+        why: thisWeek[0] && `Next one due ${dayWord(thisWeek[0].due_date)}` },
+    ].filter((r) => r.n);
+    const attentionPanel = h`<section class="ovx-panel ovx-7" aria-labelledby="ovxAttention">
+      ${head(h`<span id="ovxAttention">Needs your attention</span>`, rows.length ? 'Waiting on you, most urgent first' : 'Nothing is waiting on you')}
+      ${rows.length ? h`<ul class="ovx-att">${rows.map((r, i) => h`<li><a href="${r.href}" class="${i === 0 && r.tone === 'fail' ? 'is-urgent' : ''}"><i class="ovx-dot is-${r.tone}" aria-hidden="true"></i><b class="ovx-n">${r.n}</b><span class="ovx-what"><b>${r.what}</b>${r.why ? h`<span>${r.why}</span>` : ''}</span>${go}</a></li>`)}</ul>`
+        : h`<p class="ovx-clear"><i class="ovx-dot is-pass" aria-hidden="true"></i>No overdue cases, approvals, renewals or documents waiting.</p>`}
+    </section>`;
+
+    // Readiness: the Readiness dashboard's numbers, and who is closest to being cleared.
+    const seg = (n, cls) => (n ? h`<i class="${cls}" style="flex:${n}"></i>` : '');
+    const readinessPanel = h`<section class="ovx-panel ovx-5" aria-labelledby="ovxReady">
+      ${head(h`<span id="ovxReady">Assignment readiness</span>`, 'Who can start work', more('#dashboards/builtin-readiness', 'Open readiness'))}
+      ${rd.total ? h`<div class="ovx-ready">
+        <p class="ovx-headline">${rd.approved} cleared <span>of ${plural(rd.total, 'active worker')}</span></p>
+        <div class="ovx-stack" role="img" aria-label="${`${rd.approved} cleared, ${rd.pending} waiting, ${rd.blocked} blocked`}">${seg(rd.approved, 'is-pass')}${seg(rd.pending, 'is-warn')}${seg(rd.blocked, 'is-fail')}</div>
+        <ul class="ovx-legend-rows">
+          <li><i class="ovx-dot is-pass" aria-hidden="true"></i>Cleared to start<b>${rd.approved}</b></li>
+          <li><i class="ovx-dot is-warn" aria-hidden="true"></i>Waiting<b>${rd.pending}</b></li>
+          <li><i class="ovx-dot is-fail" aria-hidden="true"></i>Blocked by an owner<b>${rd.blocked}</b></li>
+        </ul>
+        ${rd.closest.length ? h`<div class="ovx-closest"><h3>Closest to clearing</h3>${rd.closest.map((w) => h`<p><span><button type="button" class="ovx-name" data-act="workerDetail" data-id="${w.subject_id}">${w.subject}</button> ${w.open ? `needs ${w.control || 'a document'}${w.open > 1 ? ` and ${w.open - 1} more` : ''}` : 'is ready for a decision'}</span>${w.open && w.control_key && canEdit() ? h`<button type="button" class="ovx-act" data-act="uploadEvidence" data-subject="worker:${w.subject_id}" data-control="${w.control_key}" data-name="${w.subject}">Upload</button>` : !w.open ? h`<button type="button" class="ovx-act" data-act="workerDetail" data-id="${w.subject_id}">Review</button>` : ''}</p>`)}</div>` : ''}
+      </div>` : h`<p class="ovx-clear">No active workers yet. Add people in Company setup.</p>`}
+    </section>`;
+
+    // Coverage: the share that passes, how it has moved, and why the unknown checks are unknown.
+    const pct = cov.total ? Math.round((cov.pass / cov.total) * 100) : 0;
+    const known = trend.points.filter((p) => p.pct !== null);
+    const spark = () => {
+      const lo = Math.min(...known.map((p) => p.pct)), hi = Math.max(...known.map((p) => p.pct)), span = hi - lo || 1;
+      const pts = trend.points.map((p, i) => (p.pct === null ? null : [2 + (i * 92) / (trend.points.length - 1), 22 - ((p.pct - lo) / span) * 16])).filter(Boolean);
+      const last = pts.at(-1);
+      return raw(`<svg class="ovx-spark is-${trend.change > 0 ? 'up' : trend.change < 0 ? 'down' : 'flat'}" aria-hidden="true" width="96" height="26" viewBox="0 0 96 26" fill="none"><polyline points="${pts.map((p) => p.map((v) => v.toFixed(1)).join(',')).join(' ')}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2.6" fill="currentColor"/></svg>`);
+    };
+    const trendNote = known.length > 1 && trend.change !== null
+      ? h`<div class="ovx-trend">${spark()}<div><b class="${trend.change > 0 ? 'is-up' : trend.change < 0 ? 'is-down' : ''}">${trend.change > 0 ? '+' : ''}${trend.change === 0 ? 'No change' : `${trend.change} points`}</b><span>${trend.since === trend.points[0].date ? 'in the last 30 days' : `since ${date(trend.since)}`}</span></div></div>`
+      : h`<p class="ovx-trend-wait">The trend appears once checks have run on more than one day.</p>`;
+    const WHY = [
+      ['document', 'Waiting for a document', '#dashboards/builtin-missing', 'Missing documents'],
+      ['review', 'Need a person to review', '#evidence', 'Review evidence'],
+      ['details', 'Missing worker or location details', me.user.is_admin ? '#setup' : '#workers', me.user.is_admin ? 'Company setup' : 'Workers'],
+      ['other', 'Other reasons', '#checks', 'View checks'],
+    ].filter(([k]) => why[k]);
+    const coveragePanel = h`<section class="ovx-panel ovx-12" aria-labelledby="ovxCov">
+      ${head(h`<span id="ovxCov">Verification coverage</span>`, `Every applicable check across ${plural(packs.length, 'active pack')}`, more('#checks', 'View checks'))}
+      ${cov.total ? h`<div class="ovx-cov">
+        <div class="ovx-score"><p class="ovx-pct">${pct}%<small>of ${plural(cov.total, 'check')} pass</small></p>${trendNote}</div>
+        <div>
+          <div class="ovx-bar" role="img" aria-label="${`${cov.pass} pass, ${cov.fail} fail, ${cov.unknown} unknown`}">${seg(cov.pass, 'is-pass')}${seg(cov.fail, 'is-fail')}${seg(cov.unknown, 'is-warn')}</div>
+          <div class="ovx-legend"><span><i class="ovx-dot is-pass" aria-hidden="true"></i>Pass <b>${cov.pass}</b></span><span><i class="ovx-dot is-fail" aria-hidden="true"></i>Fail <b>${cov.fail}</b></span><span><i class="ovx-dot is-warn" aria-hidden="true"></i>Unknown <b>${cov.unknown}</b></span></div>
+          ${WHY.length ? h`<h3 class="ovx-why-title">Why ${plural(cov.unknown, 'check is', 'checks are')} unknown</h3><div class="ovx-why">${WHY.map(([k, label, href, link]) => h`<a href="${href}"><b>${why[k]}</b><span>${label}</span><small>${link} →</small></a>`)}</div>`
+            : h`<p class="ovx-clear"><i class="ovx-dot is-pass" aria-hidden="true"></i>Every check has a clear result.</p>`}
         </div>
-        <div class="ov-workload">
-          <h2>Workspace activity</h2>
-          <div class="ov-counter-list">${workload.map((item) => h`<a href="#${item.destination}"><strong>${item.count}</strong><span>${item.label}</span></a>`)}</div>
-          <p><a href="#dashboards/builtin-expiring">${plural(kpi.expiring, 'credential')} expired or expiring within 90 days</a></p>
+      </div>` : h`<p class="ovx-clear">No checks yet. Activate a compliance pack and run the first assessment in Company setup.</p>`}
+    </section>`;
+
+    // Priority cases, with All / Mine. Mine means cases the signed-in person owns.
+    const mineCount = openCases.filter((c) => c.owner_user_id === me.user.id).length;
+    const caseRows = (ovMine ? openCases.filter((c) => c.owner_user_id === me.user.id) : openCases).slice(0, 5);
+    const toggle = h`<div class="ovx-tools"><div class="ovx-seg" role="group" aria-label="Whose cases"><button type="button" data-act="ovCases" data-v="" aria-pressed="${!ovMine}" class="${ovMine ? '' : 'on'}">All</button><button type="button" data-act="ovCases" data-v="1" aria-pressed="${ovMine}" class="${ovMine ? 'on' : ''}">Mine${mineCount ? ` (${mineCount})` : ''}</button></div>${more('#cases', 'All cases')}</div>`;
+    const casesPanel = h`<section class="ovx-panel ovx-7 ovx-flush" aria-labelledby="ovxCases">
+      ${head(h`<span id="ovxCases">Priority cases</span>`, 'By priority, then due date', toggle)}
+      ${table(['Case', 'Pack', 'Owner', 'Due'], caseRows.map((c) => h`<tr><td><a class="row-title" href="#cases/${encodeURIComponent(c.id)}">${c.control_name}</a><div class="case-sub">${c.subject_name} · ${words(c.state)}</div></td><td>${packTag(c.pack_key)}</td><td>${c.owner_name || c.owner_team || 'Unassigned'}</td><td class="nowrap">${date(c.due_date)}${dueNote(c.due_date)}</td></tr>`), ovMine ? ['No cases assigned to you', 'Cases you own appear here.'] : ['No open cases', 'Every check in scope passes, or its gap is already closed.'])}
+    </section>`;
+
+    // Credentials to renew: the Expiring soon dashboard in brief.
+    const left = (d) => (d < 0 ? 'Expired' : d === 0 ? 'Today' : plural(d, 'day'));
+    const renewPanel = h`<section class="ovx-panel ovx-5" aria-labelledby="ovxRenew">
+      ${head(h`<span id="ovxRenew">Credentials to renew</span>`, 'Expired or expiring within 90 days', more('#dashboards/builtin-expiring', 'Expiring soon'))}
+      ${kpi.expiring ? h`<div class="ovx-buckets">
+          <div class="${exp.expired ? 'is-hot' : ''}"><b>${exp.expired}</b><span><i class="ovx-dot is-fail" aria-hidden="true"></i>Expired</span></div>
+          <div><b>${exp.d30}</b><span><i class="ovx-dot is-warn" aria-hidden="true"></i>30 days</span></div>
+          <div><b>${exp.d60}</b><span><i class="ovx-dot is-warn" aria-hidden="true"></i>60 days</span></div>
+          <div><b>${exp.d90}</b><span><i class="ovx-dot is-na" aria-hidden="true"></i>90 days</span></div>
         </div>
-      </section>
-      <div class="ov-detail-grid">
-        <section class="ov-panel ov-queue" aria-labelledby="ov-queue-title">
-          <header class="ov-panel-head"><div><h2 id="ov-queue-title">Priority cases</h2><p>Ordered by priority and due date</p></div><a href="#cases">All cases <span aria-hidden="true">→</span></a></header>
-          ${urgent.length ? h`<div class="ov-table-scroll" tabindex="0" role="region" aria-label="Priority cases table"><table class="ov-table"><thead><tr><th scope="col">Case</th><th scope="col">Owner</th><th scope="col">Due</th></tr></thead><tbody>
-            ${urgent.map((c) => h`<tr><td><a class="ov-case-title" href="#cases/${encodeURIComponent(c.id)}">${c.control_name}</a><small>${c.subject_name} <span aria-hidden="true">·</span> ${words(c.state)}</small></td>
-            <td>${c.owner_name || c.owner_team || 'Unassigned'}</td>
-            <td><time datetime="${c.due_date || ''}">${fmtDate(c.due_date)}</time>${dueNote(c.due_date) || (c.priority === 'high' ? h`<small class="ov-urgent">High priority</small>` : '')}</td></tr>`)}
-          </tbody></table></div>` : h`<div class="ov-empty"><h3>No open cases in your queue</h3><p>${coverage.total ? 'See Checks for individual assessment results.' : 'Cases appear after the first assessment finds a gap.'}</p><a href="#checks">View checks →</a></div>`}
-        </section>
-        <section class="ov-panel ov-packs" aria-labelledby="ov-packs-title">
-          <header class="ov-panel-head"><div><h2 id="ov-packs-title">Active packs</h2><p>Assessment scope by workflow</p></div><a href="#packs">View packs <span aria-hidden="true">→</span></a></header>
-          ${packs.length ? h`<ul class="ov-pack-list">${packs.map((p) => h`<li><div class="ov-pack-heading"><h3>${p.name}</h3><span class="ov-pack-score"><b>${p.total ? Math.round(100 * p.pass / p.total) : 0}%</b> ${p.pass} of ${p.total} pass</span></div><div class="ov-pack-bar" role="img" aria-label="${`${p.pass} pass, ${p.fail} fail, ${p.unknown} unknown`}">${['pass','fail','unknown'].map((s) => p[s] && p.total ? h`<i class="ov-band-${s}" style="width:${100*p[s]/p.total}%"></i>` : '')}</div><p class="ov-pack-meta">${p.fail ? h`<span class="ov-count ov-count-fail"><i></i>${p.fail} fail</span>` : ''}${p.unknown ? h`<span class="ov-count ov-count-unknown"><i></i>${p.unknown} unknown</span>` : ''}${!p.fail && !p.unknown ? h`<span class="ov-count ov-count-pass"><i></i>All pass</span>` : ''}<span class="ov-mode">${p.mode === 'auto' ? 'Automatic' : 'Validation only'}</span></p></li>`)}</ul>` : h`<div class="ov-empty"><h3>No active packs</h3><p>An administrator can review and activate packs in Company setup.</p></div>`}
-        </section>
-      </div>
-      <div class="ov-scope-note">${coverage.scope_statement}</div>
+        <ul class="ovx-exp">${exp.next.map((x) => h`<li><span><button type="button" class="ovx-name" data-act="workerDetail" data-id="${x.subject_id}">${x.subject}</button><small>${x.control}${x.facility ? ` · ${x.facility}` : ''}</small></span><span class="ovx-when ${x.days_left < 0 ? 'is-late' : ''}">${left(x.days_left)}<small>${date(x.expires_on)}</small></span></li>`)}</ul>`
+        : h`<p class="ovx-clear"><i class="ovx-dot is-pass" aria-hidden="true"></i>No credentials expire in the next 90 days.</p>`}
+    </section>`;
+
+    // Active packs: one colour per result everywhere, and what stands between validation and automatic requests.
+    const packPct = (p) => (p.total ? Math.round((100 * p.pass) / p.total) : 0);
+    const packsPanel = h`<section class="ovx-panel ${feed.length ? 'ovx-7' : 'ovx-12'}" aria-labelledby="ovxPacks">
+      ${head(h`<span id="ovxPacks">Active packs</span>`, 'Results by compliance area', more('#packs', 'View packs'))}
+      ${packs.length ? h`<ul class="ovx-packs">${packs.map((p) => h`<li>${packIcon(p.key)}<h3>${p.name}<span class="ovx-mode ${p.mode === 'auto' ? 'is-auto' : ''}">${p.mode === 'auto' ? 'Automatic' : 'Validation only'}</span></h3><span class="ovx-pscore"><b>${packPct(p)}%</b>${p.pass} of ${p.total} pass</span>
+        <div class="ovx-pbar" role="img" aria-label="${`${p.pass} pass, ${p.fail} fail, ${p.unknown} unknown`}">${seg(p.pass, 'is-pass')}${seg(p.fail, 'is-fail')}${seg(p.unknown, 'is-warn')}</div>
+        <div class="ovx-meta">${p.fail ? h`<span><i class="ovx-dot is-fail" aria-hidden="true"></i>${p.fail} fail</span>` : ''}${p.unknown ? h`<span><i class="ovx-dot is-warn" aria-hidden="true"></i>${p.unknown} unknown</span>` : ''}${!p.fail && !p.unknown ? h`<span><i class="ovx-dot is-pass" aria-hidden="true"></i>All pass</span>` : ''}${p.mode !== 'auto' && p.unvalidated ? h`<a href="#cases">${plural(p.unvalidated, 'finding')} to review before automatic requests</a>` : ''}</div></li>`)}</ul>`
+        : h`<p class="ovx-clear">No active packs. Activate one in Company setup.</p>`}
+    </section>`;
+
+    // Recent activity, for administrators: the latest audit entries in plain words.
+    // Today's entries show the time; older ones the day, without the year, so the column stays narrow.
+    const SHORT_DAY = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+    const when = (ts) => (String(ts).slice(0, 10) === me.today ? timeUtc(ts) : SHORT_DAY.format(new Date(ts)));
+    const activityPanel = feed.length ? h`<section class="ovx-panel ovx-5" aria-labelledby="ovxAct">
+      ${head(h`<span id="ovxAct">Recent activity</span>`, 'The latest entries in the audit history', more('#audit', 'Audit history'))}
+      <ul class="ovx-act">${feed.slice(0, 6).map((e) => h`<li><time datetime="${e.ts}">${when(e.ts)}</time><i class="ovx-dot is-${AUDIT_TONE[e.type] || 'na'}" aria-hidden="true"></i><span><b>${auditLabel(e.type)}</b>${e.subject ? ` · ${e.subject}` : ''}<small>${e.action}</small></span></li>`)}</ul>
+    </section>` : '';
+
+    return h`<div class="ovx">
+      ${attentionPanel}${readinessPanel}${coveragePanel}${casesPanel}${renewPanel}${packsPanel}${activityPanel}
+      <p class="ovx-foot">${cov.scope_statement} Only accepted evidence counts as a pass.</p>
     </div>`;
   },
   async setup() {
@@ -1121,13 +1185,47 @@ const VIEWS = {
   async settings() {
     scope(null);
     if (!me.user.is_admin) return h`<div class="plain-card empty">Settings are available to administrators.</div>`;
-    const users = await api('/api/users'), hl = await api('/api/health'), ai = await api('/api/ai');
-    return h`<div class="stack">${aiEnginePanel(ai)}
+    const [users, hl, ai, coworker] = await Promise.all([api('/api/users'), api('/api/health'), api('/api/ai'), api('/api/coworker/settings')]);
+    return h`<div class="stack">${coworkerPolicyPanel(coworker)}${aiEnginePanel(ai)}
     ${card('Users & Roles', 'Roles limit which packs a person can act on. Immigration records are restricted.', table(['Name', 'Email', 'Role', 'Slack ID'], users.map((u) => h`<tr><td><strong>${u.name}</strong></td><td>${u.email}</td><td>${words(u.role)}</td><td class="mono">${u.slack_id}</td></tr>`), ''))}
     <form class="plain-card" data-form="user"><strong>Add user</strong><div class="form-grid mt"><div class="form-group"><label class="form-label">Name</label><input name="name" class="form-select" required></div><div class="form-group"><label class="form-label">Email</label><input name="email" type="email" class="form-select" required></div><div class="form-group"><label class="form-label">Role</label><select name="role" class="form-select"><option>hr</option><option>healthcare_compliance</option><option>immigration_owner</option><option>finance</option><option>viewer</option><option>admin</option></select></div><div class="form-group"><label class="form-label">Temporary password</label><input name="password" type="password" minlength="8" class="form-select" required></div></div><button class="btn-submit-green">Add user</button></form>
     ${card('Schedules', 'Checks run daily. Reminders run on each control’s cadence.', table(['Job', 'Cadence', 'Next run'], hl.schedules.map((s) => h`<tr><td>${s.kind}</td><td>${s.cadence}</td><td class="mono">${dt(s.next_run_at)}</td></tr>`), ['No schedules', 'Daily checks and digests appear here once set up.']))}</div>`;
   },
 };
+
+function coworkerPolicyPanel({ policy, ai_calls_today, limits }) {
+  const choices = [
+    ['enabled', 'Answer new questions'],
+    ['follow_ups', 'Preview and queue evidence follow-ups'],
+    ['dashboards', 'Save dashboards from chat'],
+    ['slack', 'Answer questions in Slack direct messages'],
+  ];
+  return card('Coworker policy', 'Choose what Ask coworker can do in this workspace.', h`
+    <form data-form="coworkerPolicy" class="coworker-policy-form">
+      <fieldset>
+        <legend>Capabilities</legend>
+        <div class="coworker-policy-options">${choices.map(([key, label]) => h`
+          <label><input type="checkbox" name="${key}" ${policy[key] ? raw('checked') : ''}><span>${label}</span></label>
+        `)}</div>
+      </fieldset>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label" for="coworker-retention">Chat retention in days</label>
+          <input id="coworker-retention" name="retention_days" type="number" class="form-select" min="1" max="${limits.retention_days}" step="1" placeholder="Keep indefinitely" value="${policy.retention_days ?? ''}" aria-describedby="coworker-retention-help">
+          <p id="coworker-retention-help" class="muted small">Leave blank to keep chats indefinitely. Saving a retention window removes messages older than that window.</p>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="coworker-daily-limit">Daily coworker AI request limit</label>
+          <input id="coworker-daily-limit" name="daily_ai_calls" type="number" class="form-select" min="0" max="${limits.daily_ai_calls}" step="1" placeholder="No daily limit" value="${policy.daily_ai_calls ?? ''}" aria-describedby="coworker-ai-help">
+          <p id="coworker-ai-help" class="muted small">${ai_calls_today} attempted today. Resets at midnight UTC. Enter 0 to turn off AI interpretation. Known questions still use Aegis records.</p>
+        </div>
+      </div>
+      <div class="row"><button type="submit" class="btn-submit-green">Save coworker policy</button>
+        ${policy.updated_at ? h`<span class="muted small">Last updated by ${policy.updated_by} on ${dt(policy.updated_at)} UTC</span>` : ''}
+      </div>
+    </form>
+  `);
+}
 
 function aiEnginePanel(ai) {
   const selected = ai.provider || 'deepseek';
@@ -1173,7 +1271,7 @@ function aiEnginePanel(ai) {
       <label class="row small mb" data-ai-images ${needsModel ? '' : raw('hidden')}>
         <input type="checkbox" name="reads_images" ${needsModel && ai.reads_images ? raw('checked') : ''} ${needsModel ? '' : raw('disabled')}> Enable document images if this model supports image input.
       </label>
-      <label class="row small mb"><input type="checkbox" name="approved" required ${me.sandbox ? raw('disabled') : ''}> Our compliance owner approved sending worker documents to this provider.</label>
+      <label class="row small mb"><input type="checkbox" name="approved" required ${me.sandbox ? raw('disabled') : ''}> Our compliance owner approved sending worker documents and coworker questions to this provider.</label>
       <button class="btn-submit-green" ${me.sandbox ? raw('disabled') : ''}>Test & save</button>
     </form>
   `);
@@ -1452,7 +1550,7 @@ const ACT = {
       go(VIEWS[r] ? r : 'overview', a || null);
     }
   },
-  closeModal, openChat, closeChat: () => closeChat(),
+  closeModal, openChat, closeChat: () => closeChat(), newChat, toggleChatHistory, selectChat,
   toggleRail: () => setRailCollapsed(!document.documentElement.classList.contains('rail-collapsed')),
   async logout() { await api('/api/logout', {}); history.replaceState(null, '', location.pathname + location.search); location.reload(); },
   prompt: (el) => sendChat(el.dataset.q),
@@ -1499,6 +1597,7 @@ const ACT = {
   async decide(el) { await api(`/api/approvals/${el.dataset.id}/decide`, { decision: el.dataset.d }); toast(`Marked ${el.dataset.d}.`, 'success'); after(); },
   caseTab(el) { caseClosed = !!el.dataset.v; caseSel.clear(); if (routeArg) location.hash = 'cases'; else refresh(); },
   caseDue(el) { caseSel.clear(); location.hash = el.dataset.v ? `cases/${el.dataset.v}` : 'cases'; },
+  ovCases(el) { ovMine = !!el.dataset.v; refresh(); },
   checkFilter(el) { checkFilter[el.dataset.k] = el.dataset.v; refresh(); },
   async workerDetail(el, ev) {
     ev?.stopPropagation();
@@ -1808,6 +1907,16 @@ const FORM = {
     toast(`${r.provider_label} connected.`, 'success');
     refresh();
   },
+  async coworkerPolicy(d) {
+    await api('/api/coworker/settings', {
+      enabled: !!d.enabled, follow_ups: !!d.follow_ups, dashboards: !!d.dashboards, slack: !!d.slack,
+      retention_days: d.retention_days === '' ? null : Number(d.retention_days),
+      daily_ai_calls: d.daily_ai_calls === '' ? null : Number(d.daily_ai_calls),
+    });
+    if ($('#chatDrawer').classList.contains('open')) await refreshChatView().catch(() => {});
+    toast('Coworker policy saved.', 'success');
+    refresh();
+  },
   async user(d) { await api('/api/users', d); toast('User added.', 'success'); refresh(); },
   async login(d) { await api('/api/login', d); location.reload(); },
 };
@@ -1826,17 +1935,121 @@ function chatText(text, fromCoworker) {
 let chatOpener;
 let chatBusy = false;
 let chatHistoryVersion = 0;
-function openChat(opener) {
+let chatIndexVersion = 0;
+let chatId, chatCapabilities = null, chatConversations = [];
+let chatSuggestions = null;
+
+function resetChat() {
+  chatId = undefined;
+  chatCapabilities = null;
+  chatConversations = [];
+  chatSuggestions = null;
+  chatHistoryVersion++;
+  chatIndexVersion++;
+  $('#chatMessages').replaceChildren();
+  $('#chatHistoryList').replaceChildren();
+  $('#chatComposer form').reset();
+  showChatHistory(false);
+  syncChatControls();
+}
+
+function showChatHistory(open) {
+  $('#chatHistoryButton').setAttribute('aria-expanded', String(open));
+  $('#chatHistory').hidden = !open;
+  $('#chatThread').hidden = open;
+}
+
+function syncChatControls() {
+  const slackChat = chatConversations.some((chat) => chat.id === chatId && chat.source === 'slack');
+  const enabled = chatCapabilities?.enabled === true;
+  const canWrite = enabled && !slackChat;
+  $('#chatNewButton').disabled = !enabled || chatBusy;
+  $('#chatHistoryButton').disabled = chatBusy;
+  $('#chatComposer').hidden = !canWrite;
+  const reason = $('#chatUnavailable');
+  reason.hidden = !chatCapabilities || canWrite;
+  reason.textContent = slackChat ? 'Open a new chat to ask a question in Aegis.' : 'Ask coworker is turned off for this workspace.';
+  const pack = route === 'checks' && checkFilter.pack ? checkFilter.pack + ' ' : '';
+  const starters = ['Which ' + pack + 'checks need attention?', 'Which credentials expire next month?', 'What needs my approval?'];
+  const questions = canWrite ? chatSuggestions ?? starters : [];
+  $('#chatPromptsBar').hidden = questions.length === 0;
+  $('#chatPromptsBar').classList.toggle('has-follow-ups', chatSuggestions !== null);
+  $('#chatPromptLabel').textContent = chatSuggestions !== null ? 'Ask next' : 'Try asking';
+  $('#chatPrompts').innerHTML = render(questions.map((q) => h`<button type="button" class="prompt-pill" data-act="prompt" data-q="${q}" ${chatBusy ? raw('disabled') : ''}>${q}</button>`));
+  $('#chatNote').textContent = chatCapabilities?.follow_ups ? 'Follow-ups are queued after you confirm.' : 'Answers come from your Aegis records.';
+}
+
+function renderChatIndex() {
+  $('#chatHistoryList').innerHTML = chatConversations.length ? render(h`<ul>${chatConversations.map((chat) => h`
+    <li><button type="button" data-act="selectChat" data-chat-id="${chat.id}" aria-current="${chat.id === chatId}">
+      <span>${chat.title}</span><span>${date(chat.updated_at)}</span>
+    </button></li>`)}</ul>`) : '<p class="muted small">No previous chats. Conversations you start appear here.</p>';
+}
+
+async function loadChatIndex() {
+  const version = ++chatIndexVersion;
+  const result = await api('/api/chat/conversations');
+  if (version !== chatIndexVersion) return false;
+  chatCapabilities = result.capabilities;
+  chatConversations = result.chats;
+  if (chatId === undefined) chatId = chatConversations.find((chat) => chat.source === 'web')?.id ?? null;
+  if (chatId && !chatConversations.some((chat) => chat.id === chatId)) {
+    chatId = null;
+    chatSuggestions = null;
+    chatHistoryVersion++;
+    $('#chatMessages').replaceChildren();
+  }
+  syncChatControls();
+  renderChatIndex();
+  return true;
+}
+
+async function refreshChatView() {
+  if (await loadChatIndex() && $('#chatHistory').hidden) await loadChat();
+}
+
+function newChat() {
+  if (chatBusy || !chatCapabilities?.enabled) return;
+  chatId = null;
+  $('#chatComposer form').reset();
+  showChatHistory(false);
+  syncChatControls();
+  loadChat();
+  $('#chatComposer input').focus({ preventScroll: true });
+}
+
+async function toggleChatHistory() {
+  if (chatBusy) return;
+  const open = $('#chatHistory').hidden;
+  showChatHistory(open);
+  if (!open) return refreshChatView();
+  $('#chatHistoryList').textContent = 'Loading chats…';
+  await loadChatIndex();
+}
+
+async function selectChat(button) {
+  if (chatBusy || !chatConversations.some((chat) => chat.id === button.dataset.chatId)) return;
+  chatId = button.dataset.chatId;
+  $('#chatComposer form').reset();
+  showChatHistory(false);
+  syncChatControls();
+  $('#chatHistoryButton').focus({ preventScroll: true });
+  await loadChat();
+}
+
+async function openChat(opener) {
   const d = $('#chatDrawer');
   if (d.classList.contains('open')) return closeChat();
   chatOpener = opener;
+  chatCapabilities = null;
+  syncChatControls();
   d.classList.add('open');
   setChatExpanded(true);
-  const focusTarget = opener.classList.contains('mobile-assistant') ? '.btn-close-drawer' : '[name="text"]';
-  requestAnimationFrame(() => {
-    if (chatOpener === opener) d.querySelector(focusTarget).focus({ preventScroll: true });
-  });
-  return loadChat();
+  const close = d.querySelector('.btn-close-drawer');
+  close.focus({ preventScroll: true });
+  await refreshChatView();
+  if (chatOpener === opener && !matchMedia('(pointer: coarse)').matches && !$('#chatComposer').hidden
+    && (document.activeElement === close || document.activeElement === opener)) $('#chatComposer input').focus({ preventScroll: true });
 }
 function setChatExpanded(expanded) {
   for (const button of document.querySelectorAll('[aria-controls="chatDrawer"]')) {
@@ -1847,6 +2060,12 @@ function closeChat(restoreFocus = true) {
   const d = $('#chatDrawer'); if (!d.classList.contains('open')) return false;
   d.classList.remove('open');
   setChatExpanded(false);
+  chatHistoryVersion++;
+  chatIndexVersion++;
+  chatSuggestions = null;
+  $('#chatMessages').replaceChildren();
+  $('#chatHistoryList').replaceChildren();
+  showChatHistory(false);
   if (restoreFocus) {
     const button = chatOpener?.getClientRects().length
       ? chatOpener
@@ -1858,32 +2077,47 @@ function closeChat(restoreFocus = true) {
 }
 async function loadChat() {
   const version = ++chatHistoryVersion;
-  const list = await api('/api/chat'), m = $('#chatMessages');
+  const selected = chatId, m = $('#chatMessages');
+  m.replaceChildren();
+  let list = [];
+  if (selected) {
+    try { list = await api('/api/chat?' + new URLSearchParams({ chat_id: selected })); }
+    catch (error) {
+      if (version !== chatHistoryVersion) return;
+      if (error.status !== 404) throw error;
+      chatId = null;
+      syncChatControls();
+    }
+  }
   if (version !== chatHistoryVersion) return;
-  m.innerHTML = list.length ? render(list.map((message, index) => {
+  chatSuggestions = list.at(-1)?.suggestions ?? null;
+  m.innerHTML = list.length ? render(list.map((message) => {
     const fromCoworker = message.sender === 'bot';
-    const confirmation = fromCoworker && index === list.length - 1
-      ? /\nTo queue these follow-ups, reply within five minutes with: (Confirm follow-ups [a-f0-9]{12})$/.exec(message.text)?.[1] : null;
-    return h`<div class="chat-bubble ${fromCoworker ? 'bot' : 'user'}"><span class="chat-bubble-author">${message.author}</span><div class="chat-bubble-content">${raw(chatText(message.text, fromCoworker))}</div>${confirmation ? h`<button type="button" class="prompt-pill chat-confirm" data-act="prompt" data-q="${confirmation}">Confirm follow-ups</button>` : ''}</div>`;
-  })) : '<div class="empty chat-empty">Ask about gaps, expirations or approvals.</div>';
+    return h`<div class="chat-bubble ${fromCoworker ? 'bot' : 'user'}"><span class="chat-bubble-author">${message.author}</span><div class="chat-bubble-content">${raw(chatText(message.text, fromCoworker))}</div>${message.confirmation ? h`<button type="button" class="prompt-pill chat-confirm" data-act="prompt" data-q="${message.confirmation}">Confirm follow-ups</button>` : ''}</div>`;
+  })) : chatCapabilities?.enabled ? '<div class="empty chat-empty">Ask about gaps, expirations or approvals.</div>' : '';
+  syncChatControls();
   m.scrollTop = m.scrollHeight;
 }
 async function sendChat(text) {
-  if (!text?.trim() || chatBusy) return false;
+  if (!text?.trim() || chatBusy || $('#chatComposer').hidden) return false;
   chatBusy = true;
+  syncChatControls();
   const status = $('#chatStatus');
   status.textContent = 'Working on your request…';
   try {
-    const result = await api('/api/chat', { text });
-    await loadChat().catch(() => toast('Your reply was saved. Reopen Ask coworker to see it.', 'warning'));
+    const result = await api('/api/chat', { text, chat_id: chatId ?? null });
+    chatId = result.chat_id;
+    if ($('#chatDrawer').classList.contains('open')) await loadChat().catch(() => toast('Your reply was saved. Reopen Ask coworker to see it.', 'warning'));
     if (result.updated) refresh();
     return true;
   } catch (error) {
     toast(error.message, 'warning');
+    if ([403, 404, 409].includes(error.status)) await refreshChatView().catch(() => {});
     return false;
   } finally {
     status.textContent = '';
     chatBusy = false;
+    syncChatControls();
   }
 }
 /* ==========================================================================
@@ -2399,7 +2633,19 @@ document.addEventListener('click', async (ev) => {
     setNavigationOpen(false);
     return;
   }
-  if (ev.target.closest('#sheet :is(.rail-link, .rail-sublink)') && !ev.ctrlKey && !ev.metaKey && !ev.shiftKey && !ev.altKey) {
+  if (ev.target.closest('.rail-disclosure')) {
+    setDashboardViewsOpen(!dashboardViewsOpen);
+    return;
+  }
+  const dashboardLink = ev.target.closest('.rail-tree .rail-link');
+  const plainClick = !ev.ctrlKey && !ev.metaKey && !ev.shiftKey && !ev.altKey;
+  const iconOnly = dashboardLink?.closest('.workspace-rail') && document.documentElement.classList.contains('rail-collapsed');
+  if (dashboardLink && plainClick && !iconOnly && route === 'dashboards' && !routeArg) {
+    ev.preventDefault();
+    setDashboardViewsOpen(!dashboardViewsOpen);
+    return;
+  }
+  if (plainClick && ev.target.closest('#sheet :is(.rail-link, .rail-sublink)')) {
     setNavigationOpen(false);
     return;
   }

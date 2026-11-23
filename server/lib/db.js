@@ -44,6 +44,11 @@ CREATE TABLE IF NOT EXISTS coworker_policies(
   dashboards INT NOT NULL, slack INT NOT NULL, retention_days INT, daily_ai_calls INT,
   follow_up_epoch INT NOT NULL DEFAULT 0, updated_at TEXT, updated_by TEXT
 );
+CREATE TABLE IF NOT EXISTS coworker_chats(
+  id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), user_id TEXT NOT NULL REFERENCES users(id),
+  coworker_epoch INT NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_coworker_chats ON coworker_chats(tenant_id,user_id,coworker_epoch,updated_at);
 CREATE TABLE IF NOT EXISTS baselines(tenant_id TEXT, key TEXT, value REAL, note TEXT, updated_at TEXT, PRIMARY KEY(tenant_id,key));
 CREATE TABLE IF NOT EXISTS manual_support(id TEXT PRIMARY KEY, tenant_id TEXT, minutes REAL, note TEXT, created_by TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS counters(tenant_id TEXT, key TEXT, value REAL DEFAULT 0, PRIMARY KEY(tenant_id,key));
@@ -66,7 +71,7 @@ CREATE TRIGGER audit_no_change BEFORE UPDATE OR DELETE ON audit_log FOR EACH ROW
 `;
 
 const COWORKER_HISTORY_INDEXES = `
-CREATE INDEX IF NOT EXISTS ix_chat_access ON chat_messages(tenant_id,user_id,coworker_epoch,created_at);
+CREATE INDEX IF NOT EXISTS ix_chat_thread ON chat_messages(coworker_chat_id,created_at);
 CREATE INDEX IF NOT EXISTS ix_chat_retention ON chat_messages(tenant_id,created_at);
 `;
 
@@ -75,6 +80,8 @@ function migrateCoworkerAccess() {
     exec(`
       ALTER TABLE users ADD COLUMN IF NOT EXISTS coworker_epoch INT NOT NULL DEFAULT 0;
       ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS coworker_epoch INT;
+      ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS coworker_chat_id TEXT REFERENCES coworker_chats(id) ON DELETE CASCADE;
+      ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS context_json TEXT;
       CREATE OR REPLACE FUNCTION aegis_coworker_access_changed() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN
         IF OLD.role IS DISTINCT FROM NEW.role OR OLD.tenant_id IS DISTINCT FROM NEW.tenant_id THEN
@@ -93,8 +100,15 @@ function migrateCoworkerAccess() {
     if (!all('PRAGMA table_info(users)').some((column) => column.name === 'coworker_epoch')) {
       exec('ALTER TABLE users ADD COLUMN coworker_epoch INT NOT NULL DEFAULT 0');
     }
-    if (!all('PRAGMA table_info(chat_messages)').some((column) => column.name === 'coworker_epoch')) {
+    const messageColumns = new Set(all('PRAGMA table_info(chat_messages)').map((column) => column.name));
+    if (!messageColumns.has('coworker_epoch')) {
       exec('ALTER TABLE chat_messages ADD COLUMN coworker_epoch INT');
+    }
+    if (!messageColumns.has('coworker_chat_id')) {
+      exec('ALTER TABLE chat_messages ADD COLUMN coworker_chat_id TEXT REFERENCES coworker_chats(id) ON DELETE CASCADE');
+    }
+    if (!messageColumns.has('context_json')) {
+      exec('ALTER TABLE chat_messages ADD COLUMN context_json TEXT');
     }
     exec(`
       CREATE TRIGGER IF NOT EXISTS coworker_access_changed AFTER UPDATE OF role,tenant_id ON users
@@ -333,6 +347,7 @@ function resetAll() {
       exec(`DROP TABLE IF EXISTS "${t.name}" CASCADE`);
     }
     exec(PG_SCHEMA);
+    migrateCoworkerAccess();
     return;
   }
   sqliteDb.exec('PRAGMA foreign_keys=OFF');
@@ -341,6 +356,7 @@ function resetAll() {
   }
   sqliteDb.exec('PRAGMA foreign_keys=ON');
   sqliteDb.exec(SCHEMA);
+  migrateCoworkerAccess();
 }
 
 function close() {

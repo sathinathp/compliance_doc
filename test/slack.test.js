@@ -144,6 +144,14 @@ test('chat: Slack channel mentions stay private and direct messages are read-onl
   assert.doesNotMatch(posts()[2].body.text, /Confirm follow-ups/);
   await Slack.handleEvent(t, ev('E5', { type: 'message', channel_type: 'im', text: 'hello', user: 'U_STRANGER' }), Chat.handle);
   assert.match(posts()[3].body.text, /do not know who you are/);
+  const route = '/api/coworker/settings', previous = (await admin.get(route)).data.policy;
+  try {
+    assert.equal((await admin.post(route, { ...previous, slack: false })).status, 200);
+    await Slack.handleEvent(t, ev('E7', { type: 'message', channel_type: 'im', text: 'What needs my approval?' }), Chat.handle);
+    assert.match(posts()[4].body.text, /Coworker chat in Slack is turned off/);
+  } finally {
+    assert.equal((await admin.post(route, previous)).status, 200);
+  }
 });
 
 test('Events URL: per-company signing secret, and the URL check Slack sends', async () => {

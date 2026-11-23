@@ -105,10 +105,71 @@ function listApprovals(t, user, status = 'pending') {
 function overview(t, user) {
   const cov = coverage(t), open = listCases(t, user), m = metrics(t);
   const workers = listWorkers(t, user);
-  const feed = P.isAdmin(user) ? db.all('SELECT seq,ts,type,action FROM audit_log WHERE tenant_id=? ORDER BY seq DESC LIMIT 8', t) : [];
+  const feed = P.isAdmin(user) ? db.all("SELECT seq,ts,type,subject,action,actor FROM audit_log WHERE tenant_id=? AND type NOT IN ('CHECK_RESULT','CASE_STATE','EVIDENCE_VIEWED') ORDER BY seq DESC LIMIT 8", t) : [];
   // "Expiring" is counted exactly as the Expiring soon dashboard it links to: same window, same role limits.
-  const expiring = dashboardData(t, user, BUILT_IN.find((d) => d.id === 'builtin-expiring').definition).total;
-  return { coverage: cov, packs: packRows(t).filter((p) => p.status === 'active'), urgent: open.slice(0, 6), feed, kpi: { open_cases: open.length, expiring, missing_onboarding: open.filter((c) => c.pack_key === 'onboarding').length, specialist: open.filter((c) => ['immigration', 'payroll'].includes(c.pack_key)).length, workers: workers.filter((w) => w.status === 'active').length, clinical: workers.filter((w) => w.category === 'clinical' && w.status === 'active').length, corporate: workers.filter((w) => w.category !== 'clinical' && w.status === 'active').length, with_gaps: workers.filter((w) => ['fail', 'unknown'].includes(w.overall)).length, pending_approvals: listApprovals(t, user).length, ...m } };
+  const exp = dashboardData(t, user, BUILT_IN.find((d) => d.id === 'builtin-expiring').definition), expiring = exp.total;
+  const ready = dashboardData(t, user, BUILT_IN.find((d) => d.id === 'builtin-readiness').definition);
+  return { coverage: cov, packs: packRows(t).filter((p) => p.status === 'active'), urgent: open.slice(0, 6), feed,
+    readiness: readinessSummary(t, user, ready), unknown_reasons: unknownReasons(t), trend: coverageTrend(t),
+    fail_people: new Set(allChecks(t).filter((c) => c.status === 'fail').map((c) => `${c.subject_type}:${c.subject_id}`)).size,
+    expiring_detail: expiringSummary(exp), attention: attentionDetail(t, user, open),
+    kpi: { open_cases: open.length, expiring, missing_onboarding: open.filter((c) => c.pack_key === 'onboarding').length, specialist: open.filter((c) => ['immigration', 'payroll'].includes(c.pack_key)).length, workers: workers.filter((w) => w.status === 'active').length, clinical: workers.filter((w) => w.category === 'clinical' && w.status === 'active').length, corporate: workers.filter((w) => w.category !== 'clinical' && w.status === 'active').length, with_gaps: workers.filter((w) => ['fail', 'unknown'].includes(w.overall)).length, pending_approvals: listApprovals(t, user).length, ...m } };
+}
+// ---- Overview details. Each part is counted the same way as the page or dashboard it links to.
+// Readiness: the Readiness dashboard's groups, plus the waiting people closest to being cleared
+// (fewest open checks), so the Overview can say who to help next.
+function readinessSummary(t, user, data) {
+  const count = (k) => data.groups.find((g) => g.name === k)?.count || 0;
+  const waiting = data.groups.find((g) => g.name === 'pending')?.items || [];
+  const open = checks(t, user).filter((c) => c.subject_type === 'worker' && ['fail', 'unknown'].includes(c.status));
+  const closest = waiting.slice().sort((a, b) => a.open - b.open || a.subject.localeCompare(b.subject)).slice(0, 3).map((w) => {
+    const first = open.find((c) => c.subject_id === w.subject_id);
+    return { subject_id: w.subject_id, subject: w.subject, open: w.open, control_key: first?.control_key || null, control: first?.control_name || null };
+  });
+  return { approved: count('approved'), pending: count('pending'), blocked: count('blocked'), total: data.total, closest };
+}
+// Why checks are unknown, in the groups people act on. Counted over the same checks as the coverage
+// figures, so the groups add up to the Unknown total.
+const UNKNOWN_GROUP = { missing_evidence: 'document', not_yet_received: 'document', missing_filing_evidence: 'document', evidence_incomplete: 'document', awaiting_review: 'review', missing_context: 'details', missing_data: 'details', state_mismatch: 'details' };
+function unknownReasons(t) {
+  const out = { document: 0, review: 0, details: 0, other: 0 };
+  for (const c of allChecks(t)) if (c.status === 'unknown') out[UNKNOWN_GROUP[c.code] || 'other']++;
+  return out;
+}
+// Share of applicable checks that passed on each of the last 30 days (7 points), rebuilt from the
+// check history. Days before the first check have no value. Only checks still in scope count.
+function coverageTrend(t, days = 30, points = 7) {
+  const inScope = new Set(allChecks(t).map((c) => `${c.subject_type}:${c.subject_id}:${c.control_key}`));
+  const rows = db.all('SELECT subject_type, subject_id, control_key, status, created_at FROM evaluations WHERE tenant_id=? ORDER BY created_at', t);
+  const today = clock.today(), latest = new Map();
+  const out = [];
+  let i = 0;
+  for (let p = 0; p < points; p++) {
+    const day = addDays(today, -Math.round(days - (p * days) / (points - 1)));
+    const end = `${day}T23:59:59.999Z`;
+    for (; i < rows.length && rows[i].created_at <= end; i++) {
+      const r = rows[i], key = `${r.subject_type}:${r.subject_id}:${r.control_key}`;
+      if (inScope.has(key)) latest.set(key, r.status);
+    }
+    let pass = 0, total = 0;
+    for (const s of latest.values()) if (s !== 'not_applicable') { total++; if (s === 'pass') pass++; }
+    out.push({ date: day, pct: total ? Math.round((pass / total) * 1000) / 10 : null });
+  }
+  const known = out.filter((x) => x.pct !== null);
+  return { points: out, since: known[0]?.date || null, change: known.length > 1 ? Math.round((known.at(-1).pct - known[0].pct) * 10) / 10 : null };
+}
+function expiringSummary(data) {
+  const n = (name) => data.groups.find((g) => g.name === name)?.count || 0;
+  const all = data.groups.flatMap((g) => g.items).sort((a, b) => a.days_left - b.days_left);
+  return { expired: n('Expired'), d30: n('Next 30 days'), d60: n('31 to 60 days'), d90: n('61 to 90 days'),
+    next: all.slice(0, 3).map((x) => ({ subject_id: x.subject_id, subject: x.subject, control: x.control, facility: x.facility, expires_on: x.expires_on, days_left: x.days_left })) };
+}
+// The one line of context under each "Needs your attention" row.
+function attentionDetail(t, user, open) {
+  const approvals = listApprovals(t, user), kinds = {};
+  for (const a of approvals) kinds[a.kind] = (kinds[a.kind] || 0) + 1;
+  const review = listEvidence(t, user).filter((e) => e.status === 'needs_review' && e.can_review);
+  return { approvals_by_kind: kinds, review: review.length, review_oldest: review.map((e) => e.created_at).sort()[0] || null };
 }
 function metrics(t) {
   const base = (k) => db.get('SELECT value FROM baselines WHERE tenant_id=? AND key=?', t, k)?.value ?? null;

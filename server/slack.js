@@ -180,7 +180,11 @@ async function handleEvent(tenantId, envelope, chatHandle) {
     const { reply: answer } = await chatHandle(u.tenant_id, { ...u, type: 'user' }, text.slice(0, 1000), { source: 'slack' });
     await reply(answer);
   }
-  catch (err) { console.error('[slack] chat failed:', err); await reply('Something went wrong while answering. The error was logged.'); }
+  catch (err) {
+    if (err.status >= 400 && err.status < 500) return reply(err.message);
+    console.error('[slack] chat failed:', err);
+    await reply('Something went wrong while answering. The error was logged.');
+  }
 }
 function verify(secret, ts, raw, sig) {
   if (!secret || !ts || !sig || Math.abs(Date.now() / 1000 - +ts) > 300) return false;

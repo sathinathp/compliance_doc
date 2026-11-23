@@ -28,10 +28,6 @@
           <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>
         </button>
       </div>
-      <button type="button" class="rail-ask rail-assistant" data-act="openChat" aria-controls="chatDrawer" aria-expanded="false" data-label="Ask coworker">
-        <svg class="rail-icon" aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M13 8H7"/><path d="M17 12H7"/></svg>
-        <span class="rail-label">Ask coworker</span>
-      </button>
       <nav class="rail-nav" id="tabs" aria-label="Main"></nav>
       <nav class="rail-org" id="tabsOrg" aria-label="Organisation"></nav>
     </aside>
@@ -42,10 +38,12 @@
       </button>
       <div class="bar-start">
         <div class="org-context"><span class="org-initial" id="tenantAvatar" aria-hidden="true"></span><strong id="tenantName"></strong><span class="org-mode" id="tenantStatus" hidden></span></div>
-        <nav class="bar-trail" aria-label="Breadcrumb"><ol id="barTrail"></ol></nav>
       </div>
       <div class="bar-end">
-        <a class="bar-fresh" id="barFresh" href="#checks" hidden></a>
+        <button type="button" class="bar-coworker" data-act="openChat" aria-label="Ask coworker" aria-controls="chatDrawer" aria-expanded="false" title="Ask coworker">
+          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2zM7 8h6m-6 4h10"/></svg>
+          <span>Ask coworker</span>
+        </button>
         <div class="account" id="wornBadge">
           <button type="button" id="meBtn" aria-expanded="false" aria-controls="meMenu" aria-haspopup="menu"><span id="userAvatar" aria-hidden="true"></span><span class="account-label"><strong id="userName"></strong><small id="userRole"></small></span><svg class="account-caret" aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button>
           <div class="dir" id="meMenu">
@@ -70,7 +68,7 @@
     </dialog>
     <main class="content" id="workspace-main" tabindex="-1">
       <div class="title" id="pageTitleArea">
-        <div class="page-heading"><span id="crumb"></span><h1 id="heading">Compliance overview</h1><p id="scope"></p></div>
+        <div class="page-heading"><span id="crumb" hidden></span><h1 id="heading">Compliance overview</h1><p id="scope"></p></div>
         <div class="tools" id="topTools">
           <input class="search" id="globalSearch" placeholder="Filter this page" aria-label="Filter this page">
           <button class="btn" data-act="importRoster">Import roster</button>
@@ -78,7 +76,6 @@
           <button class="btn primary" data-act="uploadEvidence">Upload evidence</button>
           <button class="btn primary" data-act="newView">New view</button>
           <button class="btn primary" data-act="logNotice">Log a notice</button>
-          <button type="button" class="btn mobile-assistant" data-act="openChat" aria-controls="chatDrawer" aria-expanded="false">Ask coworker</button>
         </div>
       </div>
 
@@ -105,9 +102,20 @@
         <div class="chat-bot-brand"><div class="bot-avatar-circle"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5 20 6v6c0 4-3 7.4-8 9.5-5-2.1-8-5.5-8-9.5V6z"/><path d="m8.4 11.9 2.5 2.5 4.8-5.1"/></svg></div><div><div class="bot-name-row"><h3 class="bot-name">Aegis coworker</h3></div><span class="bot-channel">Answers from your live records</span></div></div>
         <button class="btn-close-drawer" data-act="closeChat" aria-label="Close chat"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
       </div>
-      <div class="chat-messages" id="chatMessages" aria-live="polite"></div>
-      <div class="chat-prompts-bar"><span class="prompts-label">Try asking</span><div class="prompt-pills-scroll" id="chatPrompts"></div></div>
-      <div class="chat-input-area"><div id="chatStatus" class="chat-status" role="status"></div><form class="chat-form" data-form="chat"><input name="text" autocomplete="off" maxlength="1000" placeholder="Ask about a check, case or worker" aria-label="Message"><button type="submit" class="btn-send-chat" aria-label="Send"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg></button></form><p class="chat-note">Answers come from your Aegis records. Follow-ups are sent only after you confirm.</p></div>
+      <div class="chat-toolbar" role="group" aria-label="Conversations">
+        <button type="button" class="chat-tool" id="chatNewButton" data-act="newChat"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>New chat</button>
+        <button type="button" class="chat-tool" id="chatHistoryButton" data-act="toggleChatHistory" aria-expanded="false" aria-controls="chatHistory"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 1 2.6 6.4M3 6v6h6m3-5v5l3 2"/></svg>History</button>
+      </div>
+      <section id="chatHistory" class="chat-history" aria-labelledby="chatHistoryHeading" hidden>
+        <h3 id="chatHistoryHeading">Previous chats</h3>
+        <div id="chatHistoryList"></div>
+      </section>
+      <div id="chatThread" class="chat-thread">
+        <div class="chat-messages" id="chatMessages" aria-live="polite"></div>
+        <div class="chat-prompts-bar" id="chatPromptsBar"><span class="prompts-label" id="chatPromptLabel">Try asking</span><div class="prompt-pills-scroll" id="chatPrompts"></div></div>
+        <div class="chat-input-area" id="chatComposer"><div id="chatStatus" class="chat-status" role="status"></div><form class="chat-form" data-form="chat"><input name="text" autocomplete="off" maxlength="1000" placeholder="Ask about a check, case or worker" aria-label="Message"><button type="submit" class="btn-send-chat" aria-label="Send"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg></button></form><p class="chat-note" id="chatNote">Answers come from your Aegis records.</p></div>
+        <p class="chat-unavailable" id="chatUnavailable" hidden></p>
+      </div>
     </aside>
   </div>
 
