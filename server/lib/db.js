@@ -1,4 +1,5 @@
 'use strict';
+const fs = require('node:fs');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 const { Worker } = require('node:worker_threads');
@@ -8,6 +9,7 @@ CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS tenants(id TEXT PRIMARY KEY, slug TEXT UNIQUE, name TEXT, kind TEXT, setup_json TEXT DEFAULT '{}', channel_json TEXT DEFAULT '{"type":"outbox"}', webhook_secret TEXT, created_at TEXT, first_assessment_at TEXT);
 CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), email TEXT UNIQUE, name TEXT, role TEXT, password_hash TEXT, slack_id TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY, user_id TEXT REFERENCES users(id), expires_at TEXT);
+CREATE TABLE IF NOT EXISTS workspace_verifications(tenant_id TEXT PRIMARY KEY REFERENCES tenants(id), user_id TEXT UNIQUE NOT NULL REFERENCES users(id), token_hash TEXT UNIQUE, expires_at TEXT, requested_at TEXT NOT NULL, verified_at TEXT);
 CREATE TABLE IF NOT EXISTS entities(id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, name TEXT, state TEXT, confirmed INT DEFAULT 0, UNIQUE(tenant_id,name));
 CREATE TABLE IF NOT EXISTS facilities(id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, name TEXT, state TEXT, requirements_json TEXT DEFAULT '[]', requirements_confirmed INT DEFAULT 0, requirement_source TEXT, UNIQUE(tenant_id,name));
 CREATE TABLE IF NOT EXISTS workers(id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, external_id TEXT, source TEXT, name TEXT, email TEXT, slack_id TEXT, role TEXT, category TEXT, dept TEXT, license_type TEXT, entity_id TEXT, status TEXT DEFAULT 'active', hire_date TEXT, work_auth_expires TEXT, attrs_json TEXT DEFAULT '{}', readiness TEXT DEFAULT 'pending', created_at TEXT, updated_at TEXT, UNIQUE(tenant_id,source,external_id));
@@ -30,6 +32,7 @@ CREATE TABLE IF NOT EXISTS submission_tokens(token_hash TEXT PRIMARY KEY, tenant
 CREATE TABLE IF NOT EXISTS events(id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, source TEXT, external_id TEXT, type TEXT, payload_json TEXT, status TEXT, received_at TEXT, processed_at TEXT, error TEXT, UNIQUE(tenant_id,source,external_id));
 CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, tenant_id TEXT, type TEXT, payload_json TEXT, run_at TEXT, status TEXT, attempts INT DEFAULT 0, max_attempts INT DEFAULT 5, last_error TEXT, dedupe_key TEXT, locked_at TEXT, created_at TEXT, finished_at TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_job ON jobs(dedupe_key) WHERE dedupe_key IS NOT NULL AND status IN ('queued','running');
+CREATE INDEX IF NOT EXISTS ix_job_dedupe ON jobs(dedupe_key);
 CREATE INDEX IF NOT EXISTS ix_jobs ON jobs(status,run_at);
 CREATE TABLE IF NOT EXISTS schedules(id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, kind TEXT, cadence TEXT, next_run_at TEXT, enabled INT DEFAULT 1, config_json TEXT DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS connectors(id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, type TEXT, name TEXT, config_enc TEXT, cursor TEXT, status TEXT, capabilities_json TEXT DEFAULT '[]', last_sync_at TEXT, last_error TEXT, records INT DEFAULT 0);
@@ -37,6 +40,16 @@ CREATE TABLE IF NOT EXISTS imports(id TEXT PRIMARY KEY, tenant_id TEXT, filename
 CREATE TABLE IF NOT EXISTS dashboards(id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, name TEXT, definition_json TEXT, roles_json TEXT, created_by TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS notices(id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, entity_id TEXT, agency TEXT, notice_type TEXT, received_on TEXT, response_due TEXT, summary TEXT, draft_response TEXT, status TEXT, created_by TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS chat_messages(id TEXT PRIMARY KEY, tenant_id TEXT, user_id TEXT, sender TEXT, author TEXT, text TEXT, created_at TEXT);
+CREATE TABLE IF NOT EXISTS coworker_policies(
+  tenant_id TEXT PRIMARY KEY REFERENCES tenants(id), enabled INT NOT NULL, follow_ups INT NOT NULL,
+  dashboards INT NOT NULL, slack INT NOT NULL, retention_days INT, daily_ai_calls INT,
+  follow_up_epoch INT NOT NULL DEFAULT 0, updated_at TEXT, updated_by TEXT
+);
+CREATE TABLE IF NOT EXISTS coworker_chats(
+  id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), user_id TEXT NOT NULL REFERENCES users(id),
+  coworker_epoch INT NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_coworker_chats ON coworker_chats(tenant_id,user_id,coworker_epoch,updated_at);
 CREATE TABLE IF NOT EXISTS baselines(tenant_id TEXT, key TEXT, value REAL, note TEXT, updated_at TEXT, PRIMARY KEY(tenant_id,key));
 CREATE TABLE IF NOT EXISTS manual_support(id TEXT PRIMARY KEY, tenant_id TEXT, minutes REAL, note TEXT, created_by TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS counters(tenant_id TEXT, key TEXT, value REAL DEFAULT 0, PRIMARY KEY(tenant_id,key));
@@ -45,6 +58,75 @@ CREATE INDEX IF NOT EXISTS ix_audit ON audit_log(tenant_id,seq);
 CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit_log BEGIN SELECT RAISE(ABORT,'audit_log is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit_log BEGIN SELECT RAISE(ABORT,'audit_log is append-only'); END;
 `;
+
+// Postgres version of SCHEMA: same tables, with Postgres types and triggers.
+// chat_messages gets an explicit rowid so "ORDER BY created_at, rowid" works on both databases.
+const PG_SCHEMA = SCHEMA
+  .replace(/^CREATE TRIGGER.*$/gm, '')
+  .replace('seq INTEGER PRIMARY KEY AUTOINCREMENT', 'seq INTEGER PRIMARY KEY')
+  .replace(/ REAL\b/g, ' DOUBLE PRECISION')
+  .replace('chat_messages(id TEXT PRIMARY KEY,', 'chat_messages(rowid SERIAL, id TEXT PRIMARY KEY,') + `
+CREATE OR REPLACE FUNCTION aegis_audit_append_only() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'audit_log is append-only'; END $$;
+DROP TRIGGER IF EXISTS audit_no_change ON audit_log;
+CREATE TRIGGER audit_no_change BEFORE UPDATE OR DELETE ON audit_log FOR EACH ROW EXECUTE FUNCTION aegis_audit_append_only();
+`;
+
+const COWORKER_HISTORY_INDEXES = `
+CREATE INDEX IF NOT EXISTS ix_chat_thread ON chat_messages(coworker_chat_id,created_at);
+CREATE INDEX IF NOT EXISTS ix_chat_retention ON chat_messages(tenant_id,created_at);
+`;
+
+// Accounts can be switched off (deactivated) without deleting them, so their history stays readable.
+function migrateUsers() {
+  if (mode === 'pg') { exec('ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled_at TEXT'); return; }
+  if (!all('PRAGMA table_info(users)').some((column) => column.name === 'disabled_at')) exec('ALTER TABLE users ADD COLUMN disabled_at TEXT');
+}
+function migrateCoworkerAccess() {
+  migrateUsers();
+  if (mode === 'pg') {
+    exec(`
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS coworker_epoch INT NOT NULL DEFAULT 0;
+      ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS coworker_epoch INT;
+      ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS coworker_chat_id TEXT REFERENCES coworker_chats(id) ON DELETE CASCADE;
+      ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS context_json TEXT;
+      CREATE OR REPLACE FUNCTION aegis_coworker_access_changed() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF OLD.role IS DISTINCT FROM NEW.role OR OLD.tenant_id IS DISTINCT FROM NEW.tenant_id THEN
+          NEW.coworker_epoch := OLD.coworker_epoch + 1;
+        END IF;
+        RETURN NEW;
+      END $$;
+      DROP TRIGGER IF EXISTS coworker_access_changed ON users;
+      CREATE TRIGGER coworker_access_changed BEFORE UPDATE OF role,tenant_id ON users
+        FOR EACH ROW EXECUTE FUNCTION aegis_coworker_access_changed();
+      ${COWORKER_HISTORY_INDEXES}
+    `);
+    return;
+  }
+  tx(() => {
+    if (!all('PRAGMA table_info(users)').some((column) => column.name === 'coworker_epoch')) {
+      exec('ALTER TABLE users ADD COLUMN coworker_epoch INT NOT NULL DEFAULT 0');
+    }
+    const messageColumns = new Set(all('PRAGMA table_info(chat_messages)').map((column) => column.name));
+    if (!messageColumns.has('coworker_epoch')) {
+      exec('ALTER TABLE chat_messages ADD COLUMN coworker_epoch INT');
+    }
+    if (!messageColumns.has('coworker_chat_id')) {
+      exec('ALTER TABLE chat_messages ADD COLUMN coworker_chat_id TEXT REFERENCES coworker_chats(id) ON DELETE CASCADE');
+    }
+    if (!messageColumns.has('context_json')) {
+      exec('ALTER TABLE chat_messages ADD COLUMN context_json TEXT');
+    }
+    exec(`
+      CREATE TRIGGER IF NOT EXISTS coworker_access_changed AFTER UPDATE OF role,tenant_id ON users
+      WHEN OLD.role IS NOT NEW.role OR OLD.tenant_id IS NOT NEW.tenant_id
+      BEGIN
+        UPDATE users SET coworker_epoch=OLD.coworker_epoch+1 WHERE id=NEW.id;
+      END;
+      ${COWORKER_HISTORY_INDEXES}
+    `);
+  });
+}
 
 let mode = 'sqlite'; // 'pg' or 'sqlite'
 let sqliteDb = null;
@@ -76,6 +158,27 @@ function toPgSql(sql) {
   return s.replace(/\?/g, () => `$${++i}`);
 }
 
+// Postgres cancels a statement after this long; the main thread waits a little longer before
+// giving up on the worker, so a stuck worker can never freeze the server.
+const STATEMENT_TIMEOUT_MS = +(process.env.AEGIS_DB_STATEMENT_TIMEOUT_MS || 30000);
+const WAIT_TIMEOUT_MS = STATEMENT_TIMEOUT_MS + 15000;
+const BUFFER_BYTES = 64 * 1024 * 1024;
+let pgUrlInUse = null;
+
+// Starts the query worker and waits for it to connect. Returns true when connected.
+function startPgWorker(url) {
+  const sab = new SharedArrayBuffer(BUFFER_BYTES);
+  pgInt32 = new Int32Array(sab, 0, 4);
+  pgUint8 = new Uint8Array(sab, 16);
+  pgWorker = new Worker(path.join(__dirname, 'pg-worker.js'), { workerData: { sab, connectionString: url, statementTimeoutMs: STATEMENT_TIMEOUT_MS } });
+  // Time limit, so a crashed worker (for example, the pg package is not installed) cannot freeze startup.
+  if (Atomics.wait(pgInt32, 0, 0, 15000) === 'timed-out') { pgWorker.terminate(); throw new Error('no answer from the database worker. Run "npm install" and check that PostgreSQL is running.'); }
+  if (pgInt32[2] !== 0) { pgWorker.terminate(); return false; }
+  Atomics.store(pgInt32, 0, 0);
+  pgUrlInUse = url;
+  return true;
+}
+
 function pgExecSync(type, sql, params = []) {
   const payload = JSON.stringify({ type, sql, params });
   const encoded = Buffer.from(payload, 'utf8');
@@ -87,7 +190,17 @@ function pgExecSync(type, sql, params = []) {
   Atomics.store(pgInt32, 0, 1);
   pgWorker.postMessage('run');
 
-  Atomics.wait(pgInt32, 0, 1);
+  if (Atomics.wait(pgInt32, 0, 1, WAIT_TIMEOUT_MS) === 'timed-out') {
+    // The worker is stuck. Replace it so the next query works, and fail this one loudly.
+    console.error(`[db] PostgreSQL did not answer within ${WAIT_TIMEOUT_MS / 1000}s. Restarting the database worker.`);
+    pgWorker.terminate();
+    let ok = false;
+    try { ok = startPgWorker(pgUrlInUse); } catch (e) { console.error('[db]', e.message); }
+    if (!ok) console.error('[db] Could not reconnect to PostgreSQL. Every query will fail until it is back.');
+    // The new connection must take the one-server lock again (the old connection held it).
+    else if (serverLocked && !pgExecSync('query', LOCK_SQL).rows[0]?.ok) console.error('[db] Another Aegis server took the database lock while this one was reconnecting. Stop one of them.');
+    throw new Error('The database did not answer in time.');
+  }
   const len = pgInt32[1];
   const status = pgInt32[2];
   const resBuf = Buffer.from(pgUint8.buffer, 16, len);
@@ -98,38 +211,90 @@ function pgExecSync(type, sql, params = []) {
   return res.data;
 }
 
+// Separate PG* settings win over DATABASE_URL. They are encoded here, so a
+// password with @, #, : or / works without hand-encoding.
+function pgConnectionString() {
+  const { PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE } = process.env;
+  if (PGUSER && PGDATABASE) {
+    const auth = encodeURIComponent(PGUSER) + (PGPASSWORD ? ':' + encodeURIComponent(PGPASSWORD) : '');
+    return `postgresql://${auth}@${PGHOST || 'localhost'}:${PGPORT || 5432}/${encodeURIComponent(PGDATABASE)}`;
+  }
+  return process.env.DATABASE_URL || null;
+}
+
 function open(file) {
   const isTest = process.env.NODE_ENV === 'test' || /aegis-(ai-)?[a-zA-Z0-9]+/.test(process.env.AEGIS_DATA || '');
-  const pgUrl = !isTest ? (process.env.DATABASE_URL || 'postgresql://AI_compliance:Work%40123@localhost:5432/ai_compliance') : null;
+  const isProd = process.env.NODE_ENV === 'production';
+  // Tests use SQLite unless AEGIS_TEST_DATABASE_URL points them at a Postgres database.
+  const pgUrl = isTest ? (process.env.AEGIS_TEST_DATABASE_URL || null) : pgConnectionString();
+  // Production must run on PostgreSQL. Falling back to a local SQLite file there would
+  // silently split the data, so stop and say what is wrong instead.
+  if (isProd && !pgUrl) throw new Error('[db] NODE_ENV=production needs PostgreSQL. Set PGHOST, PGUSER, PGPASSWORD and PGDATABASE (or DATABASE_URL).');
   if (pgUrl) {
     try {
-      const sab = new SharedArrayBuffer(8 * 1024 * 1024); // 8MB
-      pgInt32 = new Int32Array(sab, 0, 4);
-      pgUint8 = new Uint8Array(sab, 16);
-
-      pgWorker = new Worker(path.join(__dirname, 'pg-worker.js'), {
-        workerData: { sab, connectionString: pgUrl }
-      });
-
-      Atomics.wait(pgInt32, 0, 0);
-      if (pgInt32[2] === 0) {
+      if (startPgWorker(pgUrl)) {
         mode = 'pg';
         console.log(`[db] Connected to PostgreSQL at ${pgUrl.replace(/:[^:]*@/, ':****@')}`);
+        // Every schema statement is safe to re-run, so it runs on each start. That way new tables
+        // and indexes also reach an existing database. Changing an existing column still needs a migration.
+        const fresh = !get("SELECT to_regclass('tenants') AS t").t;
+        exec(PG_SCHEMA);
+        migrateCoworkerAccess();
+        if (fresh) console.log('[db] Created the Aegis tables in PostgreSQL.');
         return;
       }
+      if (isProd) throw new Error('could not connect. Check the PG* settings and that PostgreSQL is running.');
+      console.warn('[db] PostgreSQL connection failed, falling back to SQLite (development only).');
     } catch (err) {
-      console.warn('[db] PostgreSQL connection failed, falling back to SQLite:', err.message);
+      if (pgWorker) pgWorker.terminate();
+      if (isProd) throw new Error(`[db] PostgreSQL ${err.message}`);
+      console.warn('[db] PostgreSQL connection failed, falling back to SQLite (development only):', err.message);
     }
+  } else if (!isTest) {
+    console.warn('[db] No PostgreSQL settings found, so using a local SQLite file. This is for development only.');
   }
 
   // Fallback to SQLite (used in tests or when Postgres is unavailable)
   mode = 'sqlite';
+  sqliteFile = file;
   sqliteDb = new DatabaseSync(file);
   sqliteDb.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
-  if (!sqliteDb.prepare("SELECT name FROM sqlite_master WHERE name='tenants'").get()) {
-    sqliteDb.exec(SCHEMA);
-  }
+  sqliteDb.exec(SCHEMA); // safe to re-run; adds new tables and indexes to an existing file
+  migrateCoworkerAccess();
   console.log('[db] Using SQLite at', file);
+}
+
+// ---- One server per database
+// Background jobs assume they are the only ones running, so a second server on the same database
+// would send messages twice. PostgreSQL: an advisory lock held by this server's connection, which
+// PostgreSQL releases the moment the server stops or crashes. SQLite: a lock file beside the
+// database naming the server's process; a file left behind by a crashed server is ignored.
+// Returns true when this server holds the lock.
+// PostgreSQL advisory locks cover a whole database, so the key also names the schema the tables
+// live in: two Aegis installs in different schemas of one database do not block each other.
+const SERVER_LOCK = 70214523; // a fixed number that names the Aegis server lock
+const LOCK_SQL = `SELECT pg_try_advisory_lock(${SERVER_LOCK}, hashtext(current_schema())) AS ok`;
+let sqliteFile = null, serverLocked = false;
+function lockServer() {
+  if (serverLocked) return true;
+  if (mode === 'pg') { serverLocked = !!get(LOCK_SQL)?.ok; return serverLocked; }
+  const lock = `${sqliteFile}.lock`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      fs.writeFileSync(lock, String(process.pid), { flag: 'wx' });
+      serverLocked = true;
+      process.on('exit', () => { try { if (fs.readFileSync(lock, 'utf8') === String(process.pid)) fs.unlinkSync(lock); } catch { /* already gone */ } });
+      return true;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      const pid = Number(fs.readFileSync(lock, 'utf8')) || 0;
+      let alive = false;
+      try { if (pid && pid !== process.pid) { process.kill(pid, 0); alive = true; } } catch (err) { alive = err.code === 'EPERM'; }
+      if (alive) return false;
+      try { fs.unlinkSync(lock); } catch { /* another process removed it first */ }
+    }
+  }
+  return false;
 }
 
 function all(s, ...a) {
@@ -220,11 +385,12 @@ function update(table, idv, row, idc = 'id') {
 
 function resetAll() {
   if (mode === 'pg') {
-    const tables = all("SELECT table_name AS name FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'");
+    const tables = all("SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema() AND table_type='BASE TABLE'");
     for (const t of tables) {
       exec(`DROP TABLE IF EXISTS "${t.name}" CASCADE`);
     }
-    exec(SCHEMA);
+    exec(PG_SCHEMA);
+    migrateCoworkerAccess();
     return;
   }
   sqliteDb.exec('PRAGMA foreign_keys=OFF');
@@ -233,12 +399,16 @@ function resetAll() {
   }
   sqliteDb.exec('PRAGMA foreign_keys=ON');
   sqliteDb.exec(SCHEMA);
+  migrateCoworkerAccess();
 }
 
 function close() {
   if (mode === 'pg' && pgWorker) {
     try { pgWorker.postMessage('close'); } catch {}
   }
+  if (mode === 'sqlite' && sqliteDb) {
+    try { sqliteDb.close(); } catch {}
+  }
 }
 
-module.exports = { open, all, get, run, exec, tx, insert, update, resetAll, close };
+module.exports = { open, all, get, run, exec, tx, insert, update, resetAll, close, lockServer, mode: () => mode };

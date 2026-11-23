@@ -1,7 +1,7 @@
 'use strict';
 // Deterministic control evaluator. No AI here: every result is Pass, Fail, Unknown or Not applicable,
 // with a reason and evidence references. Missing or stale evidence can never yield Pass.
-const { addDays, daysBetween } = require('./lib/util');
+const { addDays, daysBetween, sameName } = require('./lib/util');
 
 const NA = (reason) => ({ status: 'not_applicable', code: 'not_applicable', reason, evidence_ids: [], action_needed: false, gap_kind: null });
 const unknown = (code, reason, gap_kind, extra = {}) => ({ status: 'unknown', code, reason, evidence_ids: [], action_needed: true, gap_kind, ...extra });
@@ -23,7 +23,7 @@ function applies(c, s, ctx) {
   }
   if (a.has && !s[a.has] && !attrs[a.has]) return { ok: false, why: `No ${a.has.replace(/_/g, ' ')} on the worker record.` };
   if (a.facility_requires) {
-    if (!ctx.facility) return { ok: null, why: 'No confirmed work location, so facility requirements cannot be determined.' };
+    if (!ctx.facility) return { ok: null, why: 'Not assigned to a work location, so location requirements cannot be checked.' };
     if (!ctx.facility.requirements_confirmed) return { ok: null, why: `Requirements for ${ctx.facility.name} have not been confirmed.` };
     if (!(ctx.facilityReqs || []).includes(a.facility_requires)) return { ok: false, why: `${ctx.facility.name} does not require this.` };
   }
@@ -36,7 +36,9 @@ function evaluate(c, s, ctx) {
   if (ap.ok === null) return unknown('missing_context', ap.why, 'data');
   const today = ctx.today, docTypes = c.evidence?.doc_types || [];
   const ev = (ctx.evidence || []).filter((e) => docTypes.includes(e.doc_type));
-  const accepted = ev.filter((e) => e.status === 'accepted'), pending = ev.filter((e) => e.status === 'needs_review');
+  const wrongHolder = (e) => c.subject === 'worker' && e.holder_name && s.name && !sameName(e.holder_name, s.name);
+  const accepted = ev.filter((e) => e.status === 'accepted' && !wrongHolder(e));
+  const pending = (ctx.evidence || []).filter((e) => e.status === 'needs_review' && (docTypes.includes(e.doc_type) || e.control_key === c.key));
   const review = (msg) => unknown('awaiting_review', msg, 'review', { evidence_ids: pending.map((e) => e.id) });
 
   switch (c.type) {
