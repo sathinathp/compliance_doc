@@ -1,15 +1,32 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Secure document upload | Aegis</title>
-<link rel="stylesheet" href="/styles.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Document request · Aegis</title>
+  <link rel="stylesheet" href="/worker-assets/tokens.css">
+  <link rel="stylesheet" href="/worker-assets/styles.css">
+  <link rel="stylesheet" href="/worker-assets/surfaces.css">
 </head>
 <body class="submit-page">
   <main class="submit-card">
-    <div class="brand-logo-circle"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg></div>
-    <div id="content"><p>Loading your request...</p></div>
+    <div class="upload-wordmark">
+      <span aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6z"/><path d="m9 12 2 2 4-4"/></svg></span>
+      Aegis
+    </div>
+    <div id="content" aria-live="polite">
+      <h1 id="request-title">Document request</h1>
+      <p id="request-info">Loading your request…</p>
+    </div>
+    <button id="reload" type="button" class="btn-card-outline" hidden>Try again</button>
+    <form id="upload-form" hidden>
+      <label for="file">Choose your document</label>
+      <input type="file" id="file" aria-describedby="file-hint" accept=".pdf,.txt,image/*" required>
+      <p id="file-hint">PDF, image, or text file, up to 10 MB.</p>
+      <p id="upload-error" role="alert" hidden></p>
+      <button type="submit" class="btn-submit-green">Upload document</button>
+    </form>
   </main>
-  <script src="/submit.js"></script>
+  <script src="/worker-assets/submit.js"></script>
 </body>
 </html>

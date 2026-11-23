@@ -26,9 +26,15 @@ const counter = (t, key) => db.get('SELECT value FROM counters WHERE tenant_id=?
 // ---- durable jobs: every handler must be safe to run twice.
 const handlers = {};
 const on = (type, fn) => { handlers[type] = fn; };
-function enqueue(tenantId, type, payload = {}, { dedupe = null, runAt = null, max = 5 } = {}) {
-  db.run(`INSERT OR IGNORE INTO jobs(id,tenant_id,type,payload_json,run_at,status,max_attempts,dedupe_key,created_at) VALUES(?,?,?,?,?,'queued',?,?,?)`,
+// dedupe: a second job with the same key is skipped while the first is still queued or running.
+// once: the key may run only one time ever, even after the first job finished. Used for keys that
+// contain a date (for example the daily sync), so "once a day" really means once a day.
+// Returns true when a new job was added.
+function enqueue(tenantId, type, payload = {}, { dedupe = null, once = false, runAt = null, max = 5 } = {}) {
+  if (once && dedupe && db.get('SELECT 1 AS x FROM jobs WHERE dedupe_key=?', dedupe)) return false;
+  const r = db.run(`INSERT OR IGNORE INTO jobs(id,tenant_id,type,payload_json,run_at,status,max_attempts,dedupe_key,created_at) VALUES(?,?,?,?,?,'queued',?,?,?)`,
     id('job'), tenantId, type, JSON.stringify(payload), runAt || clock.iso(), max, dedupe, clock.iso());
+  return !!r?.changes;
 }
 let busy = null;
 async function runOne(force) {
@@ -46,12 +52,17 @@ async function runOne(force) {
   }
   return true;
 }
+// Runs queued jobs one at a time, pausing between jobs so waiting requests are answered. "while"
+// (not "if") makes a second caller wait its turn instead of starting a second loop alongside.
+const letRequestsThrough = () => new Promise((resolve) => setImmediate(resolve));
 async function loop(force = false) {
-  if (busy) await busy;
-  busy = (async () => { let n = 0; while (n++ < 5000 && await runOne(force)); })();
+  while (busy) await busy;
+  busy = (async () => { let n = 0; while (n++ < 5000 && await runOne(force)) await letRequestsThrough(); })();
   try { await busy; } finally { busy = null; }
 }
 const drain = () => loop(true);
+// Resolves when the job loop is not running a job (used on shutdown).
+const idle = () => busy || Promise.resolve();
 const recoverStale = () => db.run(`UPDATE jobs SET status='queued' WHERE status='running'`);
 
 // ---- permissions
@@ -63,4 +74,4 @@ const isAdmin = (u) => u.role === 'admin';
 class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
 const assertPack = (u, pack) => { if (!canPack(u, pack)) throw new HttpError(403, `Your role cannot act on the ${pack} pack.`); };
 const assertAdmin = (u) => { if (!isAdmin(u)) throw new HttpError(403, 'Administrator role required.'); };
-module.exports = { SYSTEM, audit, verifyAudit, bump, counter, on, enqueue, loop, drain, recoverStale, ROLE_PACKS, ROLE_LABEL, canPack, canSeeRestricted, isAdmin, assertPack, assertAdmin, HttpError };
+module.exports = { SYSTEM, audit, verifyAudit, bump, counter, on, enqueue, loop, drain, idle, recoverStale, ROLE_PACKS, ROLE_LABEL, canPack, canSeeRestricted, isAdmin, assertPack, assertAdmin, HttpError };
