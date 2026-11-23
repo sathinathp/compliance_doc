@@ -81,12 +81,12 @@ These need your input or accounts. They were not available in this build.
 
 | Item | Status | What is needed |
 |---|---|---|
-| Real HRMS API | The mock in `server/mock-hrms.js` stands in | API docs and credentials, then update `mapHrms` |
+| Real HRMS API | Connector is ready and configurable. The mock in `server/mock-hrms.js` stands in until the key arrives | API URL, key and a sample response. Then follow `docs/HRMS-CONNECTOR.md` (no code change) |
 | Pack content | Starter rules, marked for review | Compliance, immigration and finance owners must confirm each rule and source |
 | Document reading | Text and text-based PDF work without AI | Paste a DeepSeek or Claude key in Settings > AI Engine for photos and chat. Neither has been run against the live service yet. DeepSeek cannot read scanned PDFs |
 | Slack | Coded, not tested against a live workspace | Bot token and signing secret |
-| Email to workers | **Not built.** Without Slack, messages stay in the outbox | Choose an email provider and add it to `server/channels.js` |
+| Email to workers | Built (SMTP or Resend), not tested against a live provider. Without settings, messages stay in the outbox | SMTP settings or a Resend key in `.env` |
 | Primary-source license checks | Not built | State board or vendor integration |
-| Hosting | Single-server SQLite | Move to Postgres and object storage for multiple servers, and add backups |
+| Hosting | PostgreSQL, one server. Production mode refuses unsafe settings; `/healthz` for uptime checks. Documents are encrypted on the server's disk | Back up the database and `AEGIS_DATA/documents` together. Cloud document storage is deliberately not set up yet. Run one server only, because jobs run inside it |
 | Security review | Basic controls only | Penetration test, SSO, BAAs and retention rules before real PHI or immigration data |
 | Paid demand | Not testable in software | At least one paying external customer, per point 10 |

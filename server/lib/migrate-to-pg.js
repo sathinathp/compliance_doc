@@ -4,6 +4,9 @@ const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
 
+const envFile = path.join(__dirname, '..', '..', '.env');
+if (process.loadEnvFile && fs.existsSync(envFile)) process.loadEnvFile(envFile);
+
 const sqlitePath = path.join(__dirname, '..', '..', 'data', 'aegis.db');
 if (!fs.existsSync(sqlitePath)) {
   console.log('No SQLite DB found at', sqlitePath);
@@ -16,7 +19,7 @@ const tables = [
   'packs', 'tenant_packs', 'control_changes', 'cases', 'case_notes', 'evidence',
   'evaluations', 'actions', 'approvals', 'messages', 'submission_tokens', 'events',
   'jobs', 'schedules', 'connectors', 'imports', 'dashboards', 'notices',
-  'chat_messages', 'baselines', 'manual_support', 'counters', 'audit_log'
+  'coworker_policies', 'coworker_chats', 'chat_messages', 'baselines', 'manual_support', 'counters', 'audit_log'
 ];
 
 let sqlDump = 'BEGIN;\n';
@@ -60,12 +63,17 @@ const dumpFile = path.join(__dirname, '..', '..', 'data', 'pg_seed.sql');
 fs.writeFileSync(dumpFile, sqlDump, 'utf8');
 console.log('Generated SQL dump at', dumpFile, 'with length:', sqlDump.length);
 
-// Execute with psql
-const psqlBin = 'C:\\Program Files\\PostgreSQL\\18\\bin\\psql.exe';
-const res = spawnSync(psqlBin, ['-U', 'AI_compliance', '-d', 'ai_compliance', '-h', 'localhost', '-p', '5432', '-f', dumpFile], {
-  env: { ...process.env, PGPASSWORD: 'Work@123' },
-  encoding: 'utf8'
-});
+// Execute with psql. psql reads PGHOST, PGPORT, PGUSER, PGPASSWORD and PGDATABASE from the
+// environment (loaded from .env above), so no connection details live in this file.
+// Set PSQL_PATH if psql is not on PATH, for example C:\Program Files\PostgreSQL\18\bin\psql.exe.
+const psqlBin = process.env.PSQL_PATH || 'psql';
+const target = process.env.PGUSER && process.env.PGDATABASE ? [] : process.env.DATABASE_URL ? [process.env.DATABASE_URL] : null;
+if (!target) {
+  console.error('Set PGHOST, PGUSER, PGPASSWORD and PGDATABASE (or DATABASE_URL) in .env first.');
+  process.exit(1);
+}
+const res = spawnSync(psqlBin, [...target, '-v', 'ON_ERROR_STOP=1', '-f', dumpFile], { env: process.env, encoding: 'utf8' });
+if (res.error) { console.error(`Could not run ${psqlBin}: ${res.error.message}. Set PSQL_PATH to the full path of psql.`); process.exit(1); }
 
 console.log('psql stdout:', res.stdout ? res.stdout.slice(0, 300) : '');
 if (res.stderr) console.error('psql stderr:', res.stderr.slice(0, 300));

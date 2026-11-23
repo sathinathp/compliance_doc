@@ -1,25 +1,96 @@
-const tok = location.pathname.split('/').pop(), box = document.getElementById('content');
-const say = (title, text) => { box.textContent = ''; const h = document.createElement('h1'); h.textContent = title; const p = document.createElement('p'); p.textContent = text; box.append(h, p); };
-fetch(`/api/submit/${tok}`).then(async (r) => {
-  const d = await r.json();
-  if (!r.ok) return say('Link unavailable', d.error);
-  box.textContent = '';
-  const h = document.createElement('h1'); h.textContent = `Hi ${d.first_name}`;
-  const p = document.createElement('p'); p.textContent = `Please upload your ${d.document}. Due ${d.due}.`;
-  const f = document.createElement('form');
-  const label = document.createElement('label'); label.textContent = 'Choose a file (PDF, image or text, up to 10 MB)'; label.className = 'form-label'; label.htmlFor = 'file';
-  const i = document.createElement('input'); i.type = 'file'; i.id = 'file'; i.required = true; i.className = 'form-select';
-  const b = document.createElement('button'); b.className = 'btn-submit-green submit-btn'; b.textContent = 'Upload securely';
-  const n = document.createElement('p'); n.className = 'subtext'; n.textContent = 'This link is unique to this request. Do not forward it.';
-  f.append(label, i, b, n); box.append(h, p, f);
-  f.addEventListener('submit', (e) => {
-    e.preventDefault(); b.disabled = true; b.textContent = 'Uploading...';
-    const rd = new FileReader();
-    rd.onload = async () => {
-      const res = await fetch(`/api/submit/${tok}`, { method: 'POST', body: JSON.stringify({ file: { name: i.files[0].name, mime: i.files[0].type, data: rd.result.split(',')[1] } }) });
-      const o = await res.json();
-      if (res.ok) say('Thank you', o.status); else { say('Upload failed', o.error); }
-    };
-    rd.readAsDataURL(i.files[0]);
+'use strict';
+
+const token = location.pathname.split('/').pop();
+const endpoint = '/api/submit/' + encodeURIComponent(token);
+const title = document.getElementById('request-title');
+const info = document.getElementById('request-info');
+const retry = document.getElementById('reload');
+const form = document.getElementById('upload-form');
+const input = document.getElementById('file');
+const error = document.getElementById('upload-error');
+const submit = form.querySelector('[type="submit"]');
+
+function showError(message) {
+  error.hidden = !message;
+  error.textContent = message;
+}
+
+function showUnavailable(message) {
+  form.hidden = true;
+  title.textContent = 'Request unavailable';
+  info.textContent = message;
+}
+
+async function loadRequest() {
+  retry.hidden = true;
+  info.textContent = 'Loading your request…';
+  try {
+    const response = await fetch(endpoint, { cache: 'no-store' });
+    const request = await response.json();
+    if (!response.ok) {
+      showUnavailable(request.error || 'This request could not be opened.');
+      retry.hidden = response.status === 410;
+      return;
+    }
+    title.textContent = request.document;
+    info.textContent = 'Requested for ' + request.first_name +
+      (request.due ? ' · Due ' + request.due : '');
+    form.hidden = false;
+  } catch {
+    showUnavailable('Check your connection and try again.');
+    retry.hidden = false;
+  }
+}
+
+function readFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = reader.onabort = () => reject(new Error('The file could not be read. Choose it again and retry.'));
+    reader.readAsDataURL(file);
   });
+}
+
+form.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (submit.disabled) return;
+  const file = input.files[0];
+  if (!file) return;
+  if (file.size === 0 || file.size > 10 * 1024 * 1024) {
+    showError(file.size === 0 ? 'This file is empty. Choose another document.' : 'Choose a file of 10 MB or less.');
+    return;
+  }
+  showError('');
+  submit.disabled = true;
+  input.disabled = true;
+  submit.textContent = 'Uploading…';
+  try {
+    const data = await readFile(file);
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file: { name: file.name, mime: file.type, data } }),
+    });
+    const result = await response.json();
+    if (response.status === 410 || response.status === 429) {
+      showUnavailable(result.error || 'Contact your coordinator about this request.');
+    } else if (!response.ok) {
+      showError(result.error || 'The upload could not be confirmed. Please retry.');
+    } else {
+      form.hidden = true;
+      title.textContent = 'Document received';
+      info.textContent = result.status;
+      form.reset();
+    }
+  } catch (reason) {
+    showError(reason.message?.startsWith('The file could not be read') ? reason.message : 'The upload could not be confirmed. Check your connection and retry.');
+  } finally {
+    submit.disabled = false;
+    input.disabled = false;
+    submit.textContent = 'Upload document';
+  }
 });
+
+input.addEventListener('change', () => showError(''));
+retry.addEventListener('click', loadRequest);
+loadRequest();
