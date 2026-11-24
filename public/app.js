@@ -163,6 +163,8 @@ const HEAD = { overview: ['Workspace', 'Overview', 'Current status across activa
 const caseSel = new Set();
 let lastCaseCheck = null;
 let caseClosed = false, me = null, route = 'overview', routeArg = null, checkFilter = {}, evidenceSel = null, lastDraft = null, importPreview = null;
+// Evidence uploaded in this browser session, marked New in the inbox until the page is reloaded.
+const recentUploads = new Set();
 let navigation = 0;
 // The company's locations, from the last Setup or Workers page, for the location suggestions.
 let knownLocations = [];
@@ -1070,7 +1072,7 @@ const VIEWS = {
     const controls = Object.fromEntries(ctl.controls.map((c) => [c.key, c]));
     const ev = rows.find((e) => e.id === evidenceSel) || rows.find((e) => e.status === 'needs_review') || null;
     const waiting = rows.filter((e) => e.status === 'needs_review').length;
-    return h`<div class="bottom-split-row evidence-layout"><div class="split-card"><div class="split-card-header"><div><h3 class="split-title">Evidence inbox</h3><p class="muted small">${rows.length} document${rows.length === 1 ? '' : 's'}${waiting ? ` · ${waiting} waiting for review` : ''}</p></div></div>${table(['Document', 'Subject', 'Confidence', 'Status'], rows.map((e) => h`<tr class="click${e.id === ev?.id ? ' selected' : ''}" data-act="selectEvidence" data-id="${e.id}"><td><button class="row-title" data-act="selectEvidence" data-id="${e.id}">${words(e.doc_type)}</button><div class="muted small">${e.filename}</div></td><td class="text-secondary">${e.subject_name}</td><td>${e.source === 'demo_seed' ? '—' : `${Math.round((e.confidence || 0) * 100)}%`}</td><td>${statePill(e.status)}</td></tr>`), ['No evidence yet', 'Documents appear here when workers send them or you upload them.'])}</div>
+    return h`<div class="bottom-split-row evidence-layout"><div class="split-card"><div class="split-card-header"><div><h3 class="split-title">Evidence inbox</h3><p class="muted small">${rows.length} document${rows.length === 1 ? '' : 's'}${waiting ? ` · ${waiting} waiting for review` : ''}</p></div></div>${table(['Document', 'Subject', 'Confidence', 'Status'], rows.map((e) => h`<tr class="click${e.id === ev?.id ? ' selected' : ''}" data-act="selectEvidence" data-id="${e.id}"><td><button class="row-title" data-act="selectEvidence" data-id="${e.id}">${words(e.doc_type)}</button>${recentUploads.has(e.id) ? h` <span class="pill pill-blue new-tag">New</span>` : ''}<div class="muted small">${e.filename}</div></td><td class="text-secondary">${e.subject_name}</td><td>${e.source === 'demo_seed' ? '—' : `${Math.round((e.confidence || 0) * 100)}%`}</td><td>${statePill(e.status)}</td></tr>`), ['No evidence yet', 'Documents appear here when workers send them or you upload them.'])}</div>
     ${ev ? evidencePanel(ev, controls) : h`<aside class="split-card inspector" aria-label="Document details"><div class="inspector-head"><h3 class="split-title">Document details</h3></div><div class="inspector-body">${emptyState(['Pick a document', 'Its details and what Aegis read from it show here.'])}</div></aside>`}</div>`;
   },
   async packs() {
@@ -1378,6 +1380,17 @@ function draftCard(d) {
 }
 // The right-hand panel on Evidence. It fits the screen and scrolls on its own; for a document
 // waiting for review, Accept and Reject stay pinned at the bottom.
+// One file in the upload window: what happened to it, and why. A zip or an email lists the documents in it.
+function uploadRow(name, r) {
+  if (r.files) return h`<div class="upload-row-main"><span class="upload-file-name">${name}</span><span class="pill pill-blue">Opened: ${r.files.length} document${r.files.length === 1 ? '' : 's'}</span></div><ul class="upload-children">${r.files.map((x) => h`<li>${uploadRow(x.filename.split(' › ').pop(), x)}</li>`)}</ul>`;
+  const [label, cls] = r.state === 'waiting' ? ['Waiting', 'pill-na'] : r.state === 'reading' ? ['Reading…', 'pill-blue'] : r.state === 'failed' ? ['Not uploaded', 'pill-fail']
+    : r.duplicate ? ['Already on record', 'pill-na'] : r.status === 'accepted' ? ['Accepted', 'pill-pass'] : r.status === 'rejected' ? ['Rejected', 'pill-fail'] : ['Needs review', 'pill-warn'];
+  const why = r.state === 'failed' ? r.error
+    : r.duplicate ? `This exact file was uploaded for this person${r.created_at ? ` on ${dt(r.created_at)}` : ' before'}. Nothing new was saved.`
+      : r.state ? '' : r.status === 'accepted' ? 'Matched to the requirement. The check runs again.' : (r.reasons || []).join(' ');
+  const open = r.id && !r.state ? h`<button type="button" class="btn-link-action" data-act="openUploaded" data-id="${r.id}" aria-label="Open ${name}">Open</button>` : '';
+  return h`<div class="upload-row-main"><span class="upload-file-name">${name}</span><span class="pill ${cls}">${label}</span>${open}</div>${why ? h`<p class="upload-why">${why}</p>` : ''}`;
+}
 const EV_FIELDS = [['holder_name', 'Name on document'], ['doc_number', 'Document number'], ['issued_on', 'Issued', 'date'], ['expires_on', 'Expires', 'date'], ['state', 'State'], ['period', 'Period'], ['entity_name', 'Company']];
 function evidencePanel(e, controls = {}) {
   const pending = e.can_review;
@@ -1386,11 +1399,15 @@ function evidencePanel(e, controls = {}) {
   const requirement = ctl ? `${ctl.name} · ${words(ctl.pack)}` : e.control_key ? words(e.control_key) : 'Not matched yet';
   const reasons = e.review_reasons.length ? h`<div class="why-box"><strong>Why this needs a person</strong><ul>${e.review_reasons.map((r) => h`<li>${r}</li>`)}</ul></div>` : '';
   const facts = h`<dl class="kv ev-facts"><dt>File</dt><dd>${e.filename}${e.has_file ? h` · <a class="btn-link-action" href="/api/evidence/${e.id}/file">Download</a>` : ''}</dd><dt>For</dt><dd>${e.subject_name}</dd><dt>Requirement</dt><dd>${requirement}</dd><dt>Source</dt><dd>${words(e.source)}</dd>${e.reviewed_by ? h`<dt>Reviewed by</dt><dd>${e.reviewed_by}</dd>` : ''}${e.reject_reason ? h`<dt>Rejected because</dt><dd>${e.reject_reason}</dd>` : ''}</dl>`;
+  // The uploaded file itself, so the reviewer can compare every field with what the document says.
+  const doc = e.preview === 'image' ? h`<h4 class="inspector-sub">The document</h4><a class="ev-preview" href="/api/evidence/${e.id}/preview" target="_blank" rel="noopener" title="Open the first page full size"><img src="/api/evidence/${e.id}/preview" alt="First page of ${e.filename}" loading="lazy"></a><p class="muted small">Scroll to see up to three pages. Download the file to see every page.</p>`
+    : e.preview === 'text' ? h`<h4 class="inspector-sub">The document</h4><pre class="ev-preview-text" data-preview-text="${e.id}" tabindex="0" aria-label="Text of ${e.filename}">Loading the text…</pre>`
+      : e.has_file ? h`<p class="muted small">Aegis cannot show this file here. Download it to open it.</p>` : '';
   const head = h`<div class="inspector-head"><div><h3 class="split-title">${words(e.doc_type)}</h3><p class="muted small">${e.subject_name}</p></div>${statePill(e.status)}</div>`;
   if (!pending) {
     // Finished documents: plain read-only details, no empty boxes.
     const read = EV_FIELDS.filter(([k]) => e[k]);
-    return h`<aside class="split-card inspector" aria-label="Document details">${head}<div class="inspector-body">${reasons}${facts}
+    return h`<aside class="split-card inspector" aria-label="Document details">${head}<div class="inspector-body">${reasons}${facts}${doc}
       <h4 class="inspector-sub">What the document says</h4>
       ${read.length ? h`<dl class="kv ev-read">${read.map(([k, l, t]) => h`<dt>${l}</dt><dd>${t === 'date' ? date(e[k]) : e[k]}${conf(k)}</dd>`)}</dl>` : h`<p class="muted small">No details were read from this document.</p>`}
     </div></aside>`;
@@ -1398,10 +1415,10 @@ function evidencePanel(e, controls = {}) {
   const f = ([k, l, type = 'text']) => h`<div class="form-group"><label class="form-label" for="evidence-${k}">${l}${conf(k)}</label><input id="evidence-${k}" name="${k}" type="${type}" class="form-select" value="${e[k] || ''}"></div>`;
   return h`<aside class="split-card inspector" aria-label="Review document">${head}
     <form class="inspector-form" data-form="reviewEvidence" data-id="${e.id}">
-      <div class="inspector-body">${reasons}${facts}
+      <div class="inspector-body">${reasons}${facts}${doc}
         <h4 class="inspector-sub">What the document says</h4>
         <p class="muted small">Correct anything Aegis read wrongly. The percentage shows how sure Aegis was.</p>
-        ${e.doc_type === 'unknown' ? h`<div class="form-group"><label class="form-label" for="evidence-type">Document type</label><select id="evidence-type" name="doc_type" class="form-select" required><option value="">Choose a type</option>${['professional_license', 'bls_card', 'acls_card', 'tb_screening', 'flu_vaccine', 'facility_orientation', 'handbook_ack', 'security_training', 'i9_record', 'work_authorization', 'w4', 'payroll_filing_receipt'].map((x) => h`<option value="${x}">${words(x)}</option>`)}</select></div>` : ''}
+        <div class="form-group"><label class="form-label" for="evidence-type">Document type${conf('doc_type')}</label><select id="evidence-type" name="doc_type" class="form-select" required><option value="">Choose a type</option>${['professional_license', 'bls_card', 'acls_card', 'tb_screening', 'flu_vaccine', 'facility_orientation', 'handbook_ack', 'security_training', 'i9_record', 'work_authorization', 'w4', 'payroll_filing_receipt'].map((x) => h`<option value="${x}" ${x === e.doc_type ? raw('selected') : ''}>${words(x)}</option>`)}</select></div>
         <div class="form-grid">${EV_FIELDS.map(f)}</div>
         <div class="form-group"><label class="form-label" for="evidence-rejection-reason">Reason, if you reject it</label><input id="evidence-rejection-reason" name="reason" class="form-select" placeholder="Required to reject. The sender sees this."></div>
       </div>
@@ -1599,6 +1616,13 @@ const ACT = {
     await api(`/api/workers/${el.dataset.id}/readiness-review`, {}); toast('Sent to Approvals.', 'success'); closeModal(); refresh();
   },
   selectEvidence(el, ev) { ev?.stopPropagation(); evidenceSel = el.dataset.id; refresh(); },
+  // From the upload window: close it and show that document in the Evidence inbox, scrolled into view.
+  async openUploaded(el) {
+    closeModal();
+    if (el.dataset.id) evidenceSel = el.dataset.id;
+    if (route === 'evidence') await refresh(); else { location.hash = 'evidence'; await new Promise((ok) => setTimeout(ok, 500)); }
+    document.querySelector('.evidence-layout tr.selected')?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  },
   addWorker() { openModal('Add Worker', 'Added workers are checked against activated packs.', h`<form data-form="addWorker"><div class="form-grid"><div class="form-group"><label class="form-label">Full name</label><input name="name" class="form-select" required></div><div class="form-group"><label class="form-label">Email</label><input name="email" type="email" class="form-select"></div><div class="form-group"><label class="form-label">Role</label><input name="role" class="form-select" required></div><div class="form-group"><label class="form-label">Category</label><select name="category" class="form-select"><option value="clinical">Clinical</option><option value="corporate">Corporate</option></select></div><div class="form-group"><label class="form-label">License type</label><select name="license_type" class="form-select"><option value="">None</option><option>RN</option><option>NP</option><option>MD</option><option>PT</option></select></div><div class="form-group"><label class="form-label">Hire date</label><input name="hire_date" type="date" class="form-select" value="${me.today}"></div><div class="form-group"><label class="form-label">Facility</label><input name="facility" class="form-select"></div><div class="form-group"><label class="form-label">State</label><input name="facility_state" maxlength="2" class="form-select"></div><div class="form-group"><label class="form-label">Employing entity</label><input name="entity" class="form-select"></div></div><button class="btn-submit-green">Save worker</button></form>`, null, true); },
   importRoster() { importPreview = null; openModal('Import Worker Roster', 'Excel or CSV. You review the mapping before anything is saved.', h`<form data-form="importFile"><div class="drop-zone-box"><input type="file" name="file" accept=".csv,.xlsx" required aria-label="Roster file"><span class="subtext mt">Columns like Name, Email, Role, Facility, State, License Type, Hire Date</span></div><button class="btn-submit-green mt">Preview import</button></form>`); },
   async commitImport(el) { const r = await api(`/api/import/${el.dataset.id}/commit`, {}); toast(`${r.created} added, ${r.updated} updated.`, 'success'); closeModal(); after(); },
@@ -1616,10 +1640,10 @@ const ACT = {
       </div>
       <div class="form-group"><span class="form-label">Files</span>
         <label class="upload-drop" data-upload-drop>
-          <input type="file" name="file" required multiple data-upload-files aria-describedby="upHint">
+          <input type="file" name="file" required multiple data-upload-files aria-describedby="upHint" accept=".pdf,.docx,.doc,.rtf,.odt,.pages,.jpg,.jpeg,.png,.webp,.gif,.heic,.heif,.tif,.tiff,.bmp,.txt,.csv,.html,.htm,.eml,.msg,.zip">
           <span class="upload-drop-icon" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg></span>
           <b data-upload-title>Drop files here, or <u>choose files</u></b>
-          <span id="upHint" data-upload-count>One file, or select several at once to upload in bulk. PDF or photo.</span>
+          <span id="upHint" data-upload-count>One file, or several at once. PDF, Word, photos and scans (including iPhone and TIFF), text, emails or a .zip.</span>
         </label>
         <ul class="upload-list" data-upload-list hidden></ul>
       </div>
@@ -1823,17 +1847,34 @@ const FORM = {
     const p = await api('/api/import/preview', { file: await fileData(f.elements.file.files[0]) });
     openModal(`Review ${p.filename}`, `${p.total} worker(s) ready. Nothing is saved yet.`, h`${p.errors.length ? h`<div class="alert-box">${p.errors.length} row(s) will be skipped: ${p.errors.map((e) => `row ${e.row}: ${e.error}`).join('; ')}</div>` : ''}${p.unmapped.length ? h`<p class="small muted mb">Ignored columns: ${p.unmapped.join(', ')}</p>` : ''}<p class="small mb">Missing: ${p.missing.facility} location, ${p.missing.email} email, ${p.missing.hire_date} hire date. These will show as data gaps.</p>${table(['Name', 'Email', 'Role', 'Facility', 'Hire date'], p.sample.map((r) => h`<tr><td>${r.name}</td><td>${r.email}</td><td>${r.role}</td><td>${r.facility}</td><td>${r.hire_date}</td></tr>`), '')}`, h`<button class="btn-cancel" data-act="closeModal">Cancel</button><button class="btn-submit-green" data-act="commitImport" data-id="${p.id}">Import ${p.total} worker(s)</button>`, true);
   },
+  // The upload window stays open and shows what happened to each file: accepted, sent to review
+  // (with the reason), already on record, or not uploaded. One file failing does not stop the rest.
   async upload(d, f) {
     const [subject_type, subject_id] = d.subject.split(':'), files = [...f.elements.file.files], many = files.length > 1;
-    let last, matched = 0, review = 0, dup = 0;
-    for (const file of files) {
-      // With several files the document number and expiry are left for Aegis to read from each file.
-      last = await api('/api/evidence', { subject_type, subject_id, control_key: d.control_key || null, bulk: many, file: await fileData(file), claimed: many ? {} : { doc_number: d.doc_number, expires_on: d.expires_on } });
-      if (last.duplicate) dup++; else if (last.status === 'accepted') matched++; else review++;
+    const list = f.querySelector('[data-upload-list]'), done = [];
+    const row = (i) => list.children[i];
+    let failed = 0;
+    list.hidden = false;
+    list.innerHTML = render(files.map((file) => h`<li>${uploadRow(file.name, { state: 'waiting' })}</li>`));
+    for (const field of f.querySelectorAll('input, select')) field.disabled = true;
+    for (const [i, file] of files.entries()) {
+      row(i).innerHTML = render(uploadRow(file.name, { state: 'reading' }));
+      try {
+        // With several files the document number and expiry are left for Aegis to read from each file.
+        const r = await api('/api/evidence', { subject_type, subject_id, control_key: d.control_key || null, bulk: many, file: await fileData(file), claimed: many ? {} : { doc_number: d.doc_number, expires_on: d.expires_on } });
+        done.push(...(r.files || [r]));
+        row(i).innerHTML = render(uploadRow(file.name, r));
+      } catch (err) { failed++; row(i).innerHTML = render(uploadRow(file.name, { state: 'failed', error: err.message })); }
     }
-    if (!many) toast(last.duplicate ? 'That file is already on record.' : last.status === 'accepted' ? 'Evidence matched. Re-running the check.' : `Sent to review: ${last.reasons[0]}`, last.status === 'accepted' ? 'success' : 'warning');
-    else toast([matched ? `${matched} matched` : '', review ? `${review} sent to review` : '', dup ? `${dup} already on record` : ''].filter(Boolean).join(' · ') + '.', review || dup ? 'warning' : 'success');
-    closeModal(); evidenceSel = last.id; if (route !== 'evidence') location.hash = 'evidence'; setTimeout(after, 1200);
+    const count = (test) => done.filter(test).length, fresh = done.filter((r) => !r.duplicate);
+    const summary = [[count((r) => !r.duplicate && r.status === 'accepted'), 'accepted'], [count((r) => !r.duplicate && r.status !== 'accepted'), 'sent to review'], [count((r) => r.duplicate), 'already on record'], [failed, 'not uploaded']]
+      .filter(([n]) => n).map(([n, w]) => `${n} ${w}`).join(' · ');
+    f.querySelector('[data-upload-title]').textContent = summary ? `Done: ${summary}` : 'Done';
+    f.querySelector('[data-upload-count]').textContent = 'Open a file to check what Aegis read, or close this window. New files are marked New in the inbox.';
+    for (const r of fresh) recentUploads.add(r.id);
+    const go = f.querySelector('[data-upload-go]');
+    go.type = 'button'; go.dataset.act = 'openUploaded'; go.dataset.id = (fresh[0] || done.at(-1))?.id || ''; go.textContent = 'Go to the Evidence inbox';
+    if (route === 'evidence') refresh();
   },
   async reviewEvidence(d, f, sub) {
     const { reason, ...fields } = d;
@@ -2731,12 +2772,29 @@ document.addEventListener('change', (e) => {
   form.querySelector('[data-single-only]').hidden = n > 1;
   form.querySelector('[data-upload-drop]').classList.toggle('has-files', n > 0);
   form.querySelector('[data-upload-title]').innerHTML = n ? `${n} file${n > 1 ? 's' : ''} chosen · <u>change</u>` : 'Drop files here, or <u>choose files</u>';
-  form.querySelector('[data-upload-count]').textContent = n > 1 ? 'Bulk upload: Aegis reads the document number and expiry from each file.' : 'One file, or select several at once to upload in bulk. PDF or photo.';
+  form.querySelector('[data-upload-count]').textContent = n > 1 ? 'Bulk upload: Aegis reads the document number and expiry from each file.' : 'One file, or several at once. PDF, Word, photos and scans (including iPhone and TIFF), text, emails or a .zip.';
   const list = form.querySelector('[data-upload-list]');
   list.hidden = !n;
   list.innerHTML = render(files.map((f) => h`<li><span class="upload-file-name">${f.name}</span><span class="upload-file-size">${fileSize(f.size)}</span></li>`));
   form.querySelector('[data-upload-go]').textContent = n > 1 ? `Upload ${n} files` : 'Upload';
 });
+// Evidence review: fill in the text of a document when its panel appears, and say so plainly when a
+// preview cannot be shown. textContent keeps document text as text, never as page markup.
+const previewText = new Map();
+function loadPreviewText() {
+  for (const el of document.querySelectorAll('[data-preview-text]:not([data-loaded])')) {
+    el.dataset.loaded = '1';
+    const id = el.dataset.previewText;
+    if (!previewText.has(id)) previewText.set(id, api(`/api/evidence/${id}/preview`).then((d) => d.text || '', (err) => { previewText.delete(id); throw err; }));
+    previewText.get(id).then((text) => { el.textContent = text || 'No text was found in this document.'; }, (err) => { el.textContent = err.message; el.classList.add('is-error'); });
+  }
+}
+new MutationObserver(loadPreviewText).observe(document.documentElement, { childList: true, subtree: true });
+document.addEventListener('error', (e) => {
+  const img = e.target; if (!(img instanceof HTMLImageElement) || !img.closest('.ev-preview')) return;
+  const note = document.createElement('p'); note.className = 'muted small'; note.textContent = 'Aegis cannot show this file here. Download it to open it.';
+  img.closest('.ev-preview').replaceWith(note);
+}, true);
 // Highlight the drop area while files are dragged over it. The file input covers it, so the drop itself is native.
 for (const type of ['dragenter', 'dragover', 'dragleave', 'drop']) {
   document.addEventListener(type, (e) => {

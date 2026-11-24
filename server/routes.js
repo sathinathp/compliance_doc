@@ -4,12 +4,13 @@ const sandbox = require('./lib/sandbox');
 const W = require('./lib/workspace');
 const CoworkerPolicy = require('./coworker-policy');
 const db = require('./lib/db'), { clock, id, sha256, token, j, hashPassword, checkPassword } = require('./lib/util');
+const docread = require('./lib/docread');
 const P = require('./platform'), R = require('./registry'), E = require('./engine'), Ev = require('./evidence'), C = require('./connectors'), V = require('./views'), Chat = require('./chat'), llm = require('./llm'), mock = require('./mock-hrms'), channels = require('./channels'), Slack = require('./slack');
 const { HttpError } = P;
 const routes = [];
 const add = (m, p, fn, o = {}) => { const keys = []; const re = new RegExp('^' + p.replace(/:([a-z_]+)/g, (_, k) => { keys.push(k); return '([^/]+)'; }) + '$'); routes.push({ m, re, keys, fn, o }); };
 const demo = () => process.env.AEGIS_DEMO === '1';
-const file = (b) => { if (!b.file?.data) throw new HttpError(400, 'A file is required.'); return { filename: String(b.file.name || 'upload').slice(0, 200), mime: String(b.file.mime || 'application/octet-stream'), data: Buffer.from(b.file.data, 'base64') }; };
+const file = (b) => { if (b.file && !b.file.data) throw new HttpError(400, 'This file is empty, so there is nothing to read.'); if (!b.file?.data) throw new HttpError(400, 'A file is required.'); return { filename: String(b.file.name || 'upload').slice(0, 200), mime: String(b.file.mime || 'application/octet-stream'), data: Buffer.from(b.file.data, 'base64') }; };
 const edit = (u) => { if (u.role === 'viewer') throw new HttpError(403, 'Read-only role.'); };
 const getCase = (t, cid) => { const c = db.get('SELECT * FROM cases WHERE id=? AND tenant_id=?', cid, t); if (!c) throw new HttpError(404, 'Case not found.'); return c; };
 const seen = (u, c) => { if (c.restricted && !P.canSeeRestricted(u)) throw new HttpError(403, 'This case is restricted.'); };
@@ -206,9 +207,25 @@ add('POST', '/api/workers/:id/readiness-review', ({ t, user, p }) => {
   if (d.readiness_request) throw new HttpError(409, `${d.name} is already waiting for a readiness decision in Approvals.`);
   E.requestDecision(t, user, 'readiness_decision', null, `Assignment readiness: ${d.name}`, d.readiness_view.statement, 'onboarding', d.id); return { ok: true }; });
 add('GET', '/api/evidence', ({ t, user }) => V.listEvidence(t, user));
-add('POST', '/api/evidence', async ({ t, user, body }) => { edit(user); const ev = await Ev.intake(t, { subject_type: body.subject_type || 'worker', subject_id: body.subject_id, control_key: body.control_key || null, ...file(body), claimed: body.claimed || {}, source: body.bulk ? 'bulk_upload' : 'upload' }, user); return { id: ev.id, status: ev.status, duplicate: !!ev.duplicate, reasons: j(ev.review_reasons_json, []) }; });
+add('POST', '/api/evidence', async ({ t, user, body }) => { edit(user); const ev = await Ev.intake(t, { subject_type: body.subject_type || 'worker', subject_id: body.subject_id, control_key: body.control_key || null, ...file(body), claimed: body.claimed || {}, source: body.bulk ? 'bulk_upload' : 'upload' }, user);
+  // created_at tells the uploader when a file that is already on record was first sent.
+  const one = (e) => ({ id: e.id, filename: e.filename, status: e.status, duplicate: !!e.duplicate, created_at: e.created_at, reasons: j(e.review_reasons_json, []) });
+  // A zip folder or an email comes back as every document that was in it.
+  return { ...one(ev), ...(ev.files ? { files: ev.files.map(one), failed: ev.failed, skipped: ev.skipped } : {}) };
+});
 const getEv = (t, u, eid) => { const e = db.get('SELECT * FROM evidence WHERE id=? AND tenant_id=?', eid, t); if (!e) throw new HttpError(404, 'Evidence not found.'); if (!Ev.canView(u, e)) throw new HttpError(403, 'This evidence is restricted.'); return e; };
 add('POST', '/api/evidence/:id/review', ({ t, user, p, body }) => { edit(user); Ev.review(t, user, getEv(t, user, p.id), body); return { ok: true }; });
+// The first page as a picture, or the text Aegis read, shown next to the fields on the review screen.
+add('GET', '/api/evidence/:id/preview', async ({ t, user, p, res }) => {
+  const e = getEv(t, user, p.id); if (!e.stored_path) throw new HttpError(404, 'Demo evidence has no file.');
+  let data;
+  try { data = await Ev.readFile(e); } catch (err) { console.error('[storage]', err.message); throw new HttpError(503, 'The document could not be read from storage.'); }
+  const view = await docread.preview(data, e.mime, e.filename);
+  if (!view) throw new HttpError(415, 'Aegis cannot show this file. Download it to open it.');
+  P.audit(t, 'EVIDENCE_VIEWED', e.filename, 'Document preview shown.', user);
+  if (view.type === 'text') return { text: view.text };
+  res.writeHead(200, { 'content-type': view.mediaType || 'image/jpeg', 'cache-control': 'private, max-age=300', 'content-disposition': 'inline' }); res.end(view.data); return res;
+});
 add('GET', '/api/evidence/:id/file', async ({ t, user, p, res }) => {
   const e = getEv(t, user, p.id); if (!e.stored_path) throw new HttpError(404, 'Demo evidence has no file.');
   let data;

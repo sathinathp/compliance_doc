@@ -3,7 +3,7 @@
 const db = require('./lib/db'), { clock, j, daysBetween, addDays, csvCell } = require('./lib/util');
 const P = require('./platform'), R = require('./registry'), E = require('./engine');
 const { canSeeRestricted } = P;
-const llm = require('./llm'), Ev = require('./evidence');
+const llm = require('./llm'), Ev = require('./evidence'), docread = require('./lib/docread');
 const isoDay = 864e5;
 
 function controlMap(t) {
@@ -97,7 +97,7 @@ function listEvidence(t, user, { acceptedFrom, acceptedThrough } = {}) {
   const rows = acceptedFrom && acceptedThrough
     ? db.all("SELECT * FROM evidence WHERE tenant_id=? AND status='accepted' AND expires_on BETWEEN ? AND ? ORDER BY expires_on,created_at DESC", t, acceptedFrom, acceptedThrough)
     : db.all('SELECT * FROM evidence WHERE tenant_id=? ORDER BY created_at DESC', t);
-  return rows.filter((e) => Ev.canView(user, e)).map((e) => ({ id: e.id, subject_name: names[e.subject_id], subject_type: e.subject_type, subject_id: e.subject_id, doc_type: e.doc_type, status: e.status, source: e.source, filename: e.filename, doc_number: e.doc_number, holder_name: e.holder_name, state: e.state, entity_name: e.entity_name, period: e.period, issued_on: e.issued_on, expires_on: e.expires_on, confidence: e.confidence, field_confidence: j(e.fields_json, {}), review_reasons: j(e.review_reasons_json, []), flags: j(e.flags_json, []), control_key: e.control_key, reviewed_by: e.reviewed_by, reject_reason: e.reject_reason, created_at: e.created_at, has_file: !!e.stored_path, can_review: e.status === 'needs_review' && Ev.canReview(user, e, controls[e.control_key]) }));
+  return rows.filter((e) => Ev.canView(user, e)).map((e) => ({ id: e.id, subject_name: names[e.subject_id], subject_type: e.subject_type, subject_id: e.subject_id, doc_type: e.doc_type, status: e.status, source: e.source, filename: e.filename, doc_number: e.doc_number, holder_name: e.holder_name, state: e.state, entity_name: e.entity_name, period: e.period, issued_on: e.issued_on, expires_on: e.expires_on, confidence: e.confidence, field_confidence: j(e.fields_json, {}), review_reasons: j(e.review_reasons_json, []), flags: j(e.flags_json, []), control_key: e.control_key, reviewed_by: e.reviewed_by, reject_reason: e.reject_reason, created_at: e.created_at, has_file: !!e.stored_path, preview: e.stored_path ? docread.previewKind(e.mime, e.filename) : null, can_review: e.status === 'needs_review' && Ev.canReview(user, e, controls[e.control_key]) }));
 }
 function listApprovals(t, user, status = 'pending') {
   return db.all('SELECT * FROM approvals WHERE tenant_id=? AND status=? ORDER BY created_at DESC', t, status).filter((a) => (a.pack_key ? P.canPack(user, a.pack_key) : P.isAdmin(user)));

@@ -15,11 +15,47 @@ const sha256 = (x) => crypto.createHash('sha256').update(x).digest('hex');
 const token = () => crypto.randomBytes(32).toString('base64url');
 const addDays = (d, n) => new Date(new Date(d + 'T00:00:00Z').getTime() + n * 864e5).toISOString().slice(0, 10);
 const daysBetween = (a, b) => Math.round((new Date(b + 'T00:00:00Z') - new Date(a + 'T00:00:00Z')) / 864e5);
-function sameName(a, b) {
-  const parts = (name) => String(name || '').normalize('NFD').toLowerCase().replace(/,.*$/, '').replace(/\p{M}/gu, '').replace(/[^\p{L}\s]/gu, '').trim().split(/\s+/).filter(Boolean);
-  const x = parts(a), y = parts(b);
-  return x.length > 0 && y.length > 0 && x[0] === y[0] && x.at(-1) === y.at(-1);
+// ---- Comparing the name on a document with the name on the worker record ----
+// Credentials and suffixes after a name ("Sarah Jenkins, RN") and titles before it ("Dr.") are not part of it.
+const NAME_EXTRAS = new Set(['rn', 'lpn', 'lvn', 'np', 'aprn', 'crna', 'cna', 'cma', 'md', 'do', 'pa', 'pac', 'pt', 'dpt', 'ot', 'otr', 'rrt', 'bsn', 'msn', 'dnp', 'phd', 'pharmd', 'rph', 'emt', 'fnp', 'fnpc', 'ccrn', 'mph', 'mba', 'jr', 'sr', 'ii', 'iii', 'iv', 'esq']);
+const TITLES = new Set(['mr', 'mrs', 'ms', 'miss', 'mx', 'dr', 'prof']);
+// Common short forms of first names. Both directions count.
+const NICKNAMES = [['al', 'alex', 'alexander', 'alexandra', 'alexis'], ['bob', 'rob', 'robbie', 'bobby', 'robert'], ['bill', 'will', 'billy', 'william', 'liam'], ['liz', 'beth', 'betty', 'eliza', 'elizabeth'], ['kate', 'katie', 'kathy', 'cathy', 'katherine', 'catherine', 'kathryn'], ['mike', 'mick', 'michael'], ['jim', 'jimmy', 'jamie', 'james'], ['tom', 'tommy', 'thomas'], ['dave', 'david'], ['chris', 'christopher', 'christine', 'christina'], ['jen', 'jenny', 'jennifer'], ['sam', 'samuel', 'samantha'], ['dan', 'danny', 'daniel'], ['joe', 'joey', 'joseph'], ['tony', 'anthony'], ['nick', 'nicholas'], ['matt', 'matthew'], ['ben', 'benjamin'], ['andy', 'drew', 'andrew'], ['steve', 'steven', 'stephen'], ['rick', 'rich', 'richard', 'dick'], ['ed', 'eddie', 'edward'], ['pat', 'patrick', 'patricia', 'trish'], ['sue', 'susan', 'suzanne'], ['meg', 'maggie', 'margaret', 'peggy'], ['vicky', 'victoria'], ['abby', 'abigail'], ['greg', 'gregory'], ['ken', 'kenneth'], ['jon', 'john', 'johnny', 'jonathan'], ['raj', 'rajesh'], ['ravi', 'ravindra']];
+const NICK = new Map();
+for (const group of NICKNAMES) for (const n of group) NICK.set(n, new Set([...(NICK.get(n) || []), ...group]));
+// The words of a name, first name first. "Patel, Alex" is read as Alex Patel; "Alex Patel, RN" as Alex Patel.
+function nameWords(raw) {
+  const plain = String(raw || '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+  const words = (s) => s.replace(/[^\p{L}\s'-]/gu, ' ').split(/\s+/).map((w) => w.replace(/^['-]+|['-]+$/g, '')).filter(Boolean);
+  const pieces = plain.split(',').map(words).filter((p) => p.length);
+  const extra = (p) => p.every((w) => NAME_EXTRAS.has(w.replace(/-/g, '')));
+  let out = pieces[0] || [];
+  const after = pieces.slice(1).filter((p) => !extra(p));
+  if (after.length && out.length) out = [...after.flat(), ...out]; // "Last, First Middle"
+  while (out.length > 1 && TITLES.has(out[0])) out.shift();
+  while (out.length > 1 && NAME_EXTRAS.has(out.at(-1).replace(/-/g, ''))) out.pop();
+  return out;
 }
+const firstNamesFit = (p, q) => p === q || (p.length === 1 && q.startsWith(p)) || (q.length === 1 && p.startsWith(q))
+  || (Math.min(p.length, q.length) >= 3 && (p.startsWith(q) || q.startsWith(p))) || !!NICK.get(p)?.has(q);
+const lastNamesFit = (p, q) => p === q || p.split('-').includes(q) || q.split('-').includes(p);
+// 'same'      first and last name agree (middle names, credentials, capitals and accents aside)
+// 'possible'  only part of it fits: one name only, an initial, a short form (Alex / Alexander, Bob / Robert),
+//             a double surname, or the names in reverse order. A person checks it.
+// 'different' the names conflict (Jordan Example is not Alex Example). The document is not this worker's.
+function nameMatch(onDocument, onRecord) {
+  const x = nameWords(onDocument), y = nameWords(onRecord);
+  if (!x.length || !y.length) return 'different';
+  if (x.join(' ') === y.join(' ')) return 'same'; // also a one-word name read the same way twice
+  if (x.length > 1 && y.length > 1 && x[0] === y[0] && x.at(-1) === y.at(-1)) return 'same';
+  if (x.length === 1 || y.length === 1) {
+    const [lone, full] = x.length === 1 ? [x[0], y] : [y[0], x];
+    return lone === full.at(-1) || firstNamesFit(lone, full[0]) ? 'possible' : 'different';
+  }
+  if (x[0] === y.at(-1) && x.at(-1) === y[0]) return 'possible';
+  return lastNamesFit(x.at(-1), y.at(-1)) && firstNamesFit(x[0], y[0]) ? 'possible' : 'different';
+}
+const sameName = (a, b) => nameMatch(a, b) === 'same';
 const j = (s, d = null) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
 
 function hashPassword(pw) {
@@ -99,20 +135,41 @@ function parseXlsx(buf) {
   }
   return rows.filter((r) => r.some((v) => String(v).trim()));
 }
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+const monthOf = (word) => MONTHS.indexOf(String(word).slice(0, 3).toLowerCase()) + 1;
+// A calendar date as YYYY-MM-DD, or null when the parts do not make a real date.
+function ymd(y, mo, d) {
+  y = +y; mo = +mo; d = +d;
+  if (y < 100) y += 2000;
+  const t = new Date(Date.UTC(y, mo - 1, d));
+  return t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === d ? t.toISOString().slice(0, 10) : null;
+}
+// Reads the date formats found on US and Indian documents and in spreadsheets.
+// 3/4/2027 is read month first (US). It is read day first only when the first number cannot be a month (31/12/2027).
+// A month and year with no day (12/2027, December 2027) means the end of that month, as on renewal cards.
+// Never goes through the local time zone, so a date cannot move a day.
 function normDate(v) {
   if (v === undefined || v === null || v === '') return null;
-  const s = String(v).trim();
+  const s = String(v).trim().replace(/\s+/g, ' ');
   if (/^\d{5}(\.\d+)?$/.test(s)) return new Date(Date.UTC(1899, 11, 30) + +s * 864e5).toISOString().slice(0, 10);
-  let m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(s);
-  if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
-  m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s);
-  if (m) return `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+  let m = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:$|[T ])/.exec(s);
+  if (m) return ymd(m[1], m[2], m[3]);
+  m = /^(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4}|\d{2})$/.exec(s);
+  if (m) return +m[1] > 12 ? ymd(m[3], m[2], m[1]) : ymd(m[3], m[1], m[2]);
+  m = /^(\d{1,2})[/.\-](\d{4})$/.exec(s);
+  if (m) return +m[1] >= 1 && +m[1] <= 12 ? new Date(Date.UTC(+m[2], +m[1], 0)).toISOString().slice(0, 10) : null;
+  m = /^([A-Za-z]{3,9})\.? (\d{1,2})(?:st|nd|rd|th)?,? (\d{4})$/.exec(s); // December 31, 2027
+  if (m && monthOf(m[1])) return ymd(m[3], monthOf(m[1]), m[2]);
+  m = /^(\d{1,2})(?:st|nd|rd|th)?[ \-]([A-Za-z]{3,9})\.?,?[ \-](\d{4})$/.exec(s); // 31 December 2027, 31-Dec-2027
+  if (m && monthOf(m[2])) return ymd(m[3], monthOf(m[2]), m[1]);
+  m = /^([A-Za-z]{3,9})\.?,? (\d{4})$/.exec(s); // December 2027
+  if (m && monthOf(m[1])) return new Date(Date.UTC(+m[2], monthOf(m[1]), 0)).toISOString().slice(0, 10);
   const d = new Date(s);
-  return isNaN(d) ? null : d.toISOString().slice(0, 10);
+  return isNaN(d) ? null : ymd(d.getFullYear(), d.getMonth() + 1, d.getDate());
 }
 const csvCell = (v) => {
   let s = v === null || v === undefined ? '' : String(v);
   if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`; // stops spreadsheet formula injection
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
-module.exports = { clock, id, shortId, sha256, token, addDays, daysBetween, sameName, j, hashPassword, checkPassword, setSecret, encrypt, decrypt, parseCsv, parseXlsx, normDate, csvCell };
+module.exports = { clock, id, shortId, sha256, token, addDays, daysBetween, sameName, nameMatch, j, hashPassword, checkPassword, setSecret, encrypt, decrypt, parseCsv, parseXlsx, normDate, csvCell };
