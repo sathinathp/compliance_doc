@@ -49,6 +49,8 @@ function upsertWorker(t, rec, source, actor = SYSTEM) {
         if (key !== 'updated_at' && (rec[input] == null || rec[input] === '' || fields[key] == null)) delete fields[key];
       }
     }
+    // A sync without an email never erases one added in Aegis; an email from the HR system replaces it.
+    if (w?.email && !fields.email) delete fields.email;
     let changed = true, created = false;
     if (w) {
       changed = Object.keys(fields).some((k) => k !== 'updated_at' && (w[k] ?? null) !== (fields[k] ?? null));

@@ -2,7 +2,7 @@
 // Evidence intake: store privately, extract, match, then accept or send to review.
 // "Document uploaded" never means "requirement satisfied": the evaluator decides that.
 const db = require('./lib/db'), storage = require('./lib/storage'), docread = require('./lib/docread'), { clock, id, sha256, normDate, sameName, nameMatch, j } = require('./lib/util');
-const P = require('./platform'), R = require('./registry'), { latestDuePeriod } = require('./evaluator'), llm = require('./llm');
+const P = require('./platform'), R = require('./registry'), { latestDuePeriod, applies } = require('./evaluator'), llm = require('./llm');
 const { HttpError, SYSTEM } = P;
 const DOC_KEYWORDS = [['professional_license', /(registered nurse|nursing|medical|physical therapy|professional)\s+licen[sc]e|licen[sc]e (type|class)/i], ['acls_card', /\bACLS\b|advanced cardiovascular/i], ['bls_card', /\bBLS\b|basic life support/i], ['tb_screening', /\bTB\b|tuberculosis|quantiferon/i], ['flu_vaccine', /influenza|flu (vaccine|shot)/i], ['facility_orientation', /facility orientation/i], ['handbook_ack', /handbook|policy acknowledg/i], ['security_training', /security (awareness )?training/i], ['i9_record', /\bI-9\b|employment eligibility/i], ['work_authorization', /employment authorization|\bEAD\b/i], ['w4', /\bW-?4\b|withholding certificate/i], ['payroll_filing_receipt', /form 941|payroll filing|filing receipt|acknowledg(e)?ment of filing/i]];
 const INJECTION = [/ignore (all |any |the )?(previous|prior|above) (instructions|prompts)/i, /(system|assistant)\s*:/i, /(mark|set|treat)\s+(this|the|all)?\s*(document|case|check|control|evidence)?\s*(as)?\s*(approved|passed|verified|compliant|closed)/i, /you are (now )?(an?|the) /i, /do not (flag|review|escalate)/i];
@@ -269,6 +269,112 @@ const FIELD_NAMES = { doc_type: 'document type', expires_on: 'expiry date', doc_
 const fieldName = (k) => FIELD_NAMES[k] || k.replace(/_/g, ' ');
 const listWords = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}`);
 
+// ---- Duplicates ----
+// Two kinds. An exact copy (the same bytes) is never stored twice: the upload is noted on the copy
+// already on record. The same document in another file (a photo of a card whose PDF is accepted) is
+// stored as "covered": it points at the accepted copy and needs no review.
+// Document numbers are compared on letters and digits only, so "BLS-293847" and "BLS 293847" match.
+const docNumber = (v) => String(v ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+const plain = (v) => String(v ?? '').trim().replace(/\s+/g, ' ').toUpperCase();
+// The new reading is the same document when it has the accepted copy's type and number, and the
+// details that identify it (holder, issue and expiry dates) are on the new one too, read the same
+// way: a half-read photo is never taken for a copy. Supporting details (state, company, period) may
+// be missing from one reading, for example a photo where the AI left out the employer's name, but
+// when both readings have one, they must agree.
+function sameDocument(accepted, f) {
+  if (!accepted.doc_type || accepted.doc_type === 'unknown' || accepted.doc_type !== f.doc_type) return false;
+  if (!docNumber(accepted.doc_number) || docNumber(accepted.doc_number) !== docNumber(f.doc_number)) return false;
+  for (const k of ['expires_on', 'issued_on']) if (accepted[k] && plain(accepted[k]) !== plain(f[k])) return false;
+  for (const k of ['state', 'entity_name', 'period']) if (accepted[k] && f[k] && plain(accepted[k]) !== plain(f[k])) return false;
+  if (accepted.holder_name && (!f.holder_name || nameMatch(f.holder_name, accepted.holder_name) !== 'same')) return false;
+  return true;
+}
+// Only requirements that accept documents automatically are covered without a person. Restricted
+// documents and requirements that need an owner's review always reach a person, even as copies.
+const coversWithoutReview = (ctrl) => !!(ctrl?.evidence?.auto_accept && !ctrl.restricted);
+function acceptedOriginal(t, type, sid, controlKey, f) {
+  return db.all("SELECT * FROM evidence WHERE tenant_id=? AND subject_type=? AND subject_id=? AND control_key=? AND status='accepted' ORDER BY created_at", t, type, sid, controlKey)
+    .find((a) => sameDocument(a, f)) || null;
+}
+// Once a document is accepted, copies of it that are waiting for review need no review any more.
+function coverWaitingCopies(t, accepted, actor) {
+  const ctrl = accepted.control_key && R.effectiveControls(t).find((c) => c.key === accepted.control_key);
+  if (!coversWithoutReview(ctrl)) return [];
+  const copies = db.all("SELECT * FROM evidence WHERE tenant_id=? AND subject_type=? AND subject_id=? AND control_key=? AND status='needs_review' AND coverable=1 AND id<>?", t, accepted.subject_type, accepted.subject_id, accepted.control_key, accepted.id)
+    .filter((e) => sameDocument(accepted, e));
+  if (!copies.length) return [];
+  const sub = subjectOf(t, accepted.subject_type, accepted.subject_id);
+  for (const e of copies) {
+    db.update('evidence', e.id, { status: 'covered', covered_by: accepted.id });
+    P.audit(t, 'EVIDENCE_DUPLICATE', sub.name, `${e.filename} is the same ${ctrl.name} as ${accepted.filename}, which is now accepted. Kept on file; no review needed.`, actor, { case_id: e.case_id });
+  }
+  return copies;
+}
+// When an accepted document has to be checked again, its copies are checked again with it.
+function reopenCopies(t, original, subjectName, actor) {
+  const reason = `The accepted copy of this document (${original.filename}) needs checking again, so this copy needs a person too.`;
+  for (const e of db.all("SELECT * FROM evidence WHERE tenant_id=? AND covered_by=? AND status='covered'", t, original.id)) {
+    db.update('evidence', e.id, { status: 'needs_review', covered_by: null, review_reasons_json: JSON.stringify([...new Set([...j(e.review_reasons_json, []), reason])]) });
+    P.audit(t, 'EVIDENCE_REVIEW', subjectName, `${e.filename}: ${reason}`, actor, { case_id: e.case_id });
+  }
+}
+// Whether the requirement a document was matched to applies to this person, decided exactly as the
+// checks decide it. Returns a sentence when it does not, and nothing when it applies or when that
+// cannot be told yet (for example, no work location). memo saves lookups across a list.
+function requirementNote(t, ev, memo = {}) {
+  if (!ev.control_key || ev.status === 'rejected') return null;
+  memo.controls ??= Object.fromEntries(R.effectiveControls(t).map((c) => [c.key, c]));
+  memo.subjects ??= new Map();
+  const c = memo.controls[ev.control_key];
+  if (!c || c.subject !== ev.subject_type) return null;
+  const key = `${ev.subject_type}:${ev.subject_id}`;
+  if (!memo.subjects.has(key)) {
+    const s = db.get(`SELECT * FROM ${ev.subject_type === 'worker' ? 'workers' : 'entities'} WHERE id=? AND tenant_id=?`, ev.subject_id, t);
+    const facility = s && ev.subject_type === 'worker' ? require('./engine').currentFacility(t, s.id) : null;
+    memo.subjects.set(key, s ? { s: { ...s, attrs: j(s.attrs_json, {}) }, ctx: { facility, facilityReqs: facility ? j(facility.requirements_json, []) : [] } } : null);
+  }
+  const m = memo.subjects.get(key);
+  if (!m) return null;
+  if (m.s.status && m.s.status !== 'active') return `${m.s.name} is no longer active (${String(m.s.status).replace(/_/g, ' ')}), so no checks run for them. Documents for them are kept on file.`;
+  const ap = applies(c, m.s, m.ctx);
+  if (ap.ok !== false) return null;
+  const why = ap.why.replace(/\.$/, '').replace(/^(Applies|Does|No) /, (w) => w.toLowerCase());
+  return `${c.name} doesn't apply to ${m.s.name} (${why}). Documents for it are kept on file but don't count toward any check.`;
+}
+
+// ---- Moving a document to the person named on it ----
+// A document with someone else's name usually means the wrong person was picked at upload. When the
+// name on it is exactly one other worker's (not a partial match, and not a name two workers share),
+// Aegis offers to move it there. memo.workers saves lookups across a list.
+function moveTarget(t, ev, memo = {}) {
+  if (ev.subject_type !== 'worker' || ev.status !== 'needs_review' || !ev.holder_name) return null;
+  memo.workers ??= db.all('SELECT id,name FROM workers WHERE tenant_id=?', t);
+  const current = memo.workers.find((w) => w.id === ev.subject_id);
+  if (!current || nameMatch(ev.holder_name, current.name) !== 'different') return null;
+  const fits = memo.workers.filter((w) => w.id !== ev.subject_id && nameMatch(ev.holder_name, w.name) === 'same');
+  return fits.length === 1 ? { id: fits[0].id, name: fits[0].name } : null;
+}
+// Moves the document and checks it again from the start for the right person, exactly as if it had
+// been uploaded for them: matching, review reasons, duplicates and the person's checks.
+async function move(t, user, ev, targetId) {
+  const current = R.effectiveControls(t).find((c) => c.key === ev.control_key && c.subject === ev.subject_type);
+  if (!canReview(user, ev, current)) throw new HttpError(403, 'Your role cannot move this document.');
+  if (ev.status !== 'needs_review') throw new HttpError(409, 'Only a document waiting for review can be moved.');
+  const target = moveTarget(t, ev);
+  if (!target || target.id !== targetId) throw new HttpError(422, 'A document can only be moved to the worker whose name is on it.');
+  if (!ev.stored_path) throw new HttpError(409, 'This document has no stored file to move.');
+  const from = subjectOf(t, ev.subject_type, ev.subject_id);
+  let data;
+  try { data = await readFile(ev); } catch (e) { console.error('[storage]', e.message); throw new HttpError(503, 'The document could not be read. Please try again in a few minutes.'); }
+  const out = await intakeOne(t, { subject_type: 'worker', subject_id: target.id, control_key: null, filename: ev.filename, mime: ev.mime, data, source: ev.source, replace: ev }, user);
+  const result = out.duplicate ? `${target.name} already had the same file, so the moved copy was removed.`
+    : { accepted: 'It was accepted.', covered: 'It is a duplicate of a document already accepted.', needs_review: 'It is waiting for review.' }[out.status] || '';
+  P.audit(t, 'EVIDENCE_MOVED', target.name, `${ev.restricted ? 'A restricted document' : ev.filename} was moved from ${from.name} to ${target.name}, the person named on it, and checked again. ${result}`, user,
+    { case_id: ev.case_id, detail: { evidence_id: ev.id, from: from.id, to: target.id } });
+  P.enqueue(t, 'evaluate_subject', { type: 'worker', id: from.id, trigger: 'evidence_moved' }, { dedupe: `eval:worker:${from.id}` });
+  return out;
+}
+
 // A .zip folder or an email is opened, and each document in it becomes its own piece of evidence,
 // read and matched on its own. The result is the first document, with all of them in files.
 async function intake(t, args, actor) {
@@ -294,16 +400,33 @@ async function intake(t, args, actor) {
   }
   return { ...files[0], files, failed, skipped: box.skipped };
 }
-async function intakeOne(t, { subject_type, subject_id, control_key, filename, mime, data, claimed = {}, source, case_id }, actor) {
+// replace is a document being moved here from another person: it keeps its id, file and upload
+// details, and everything read or decided about it is worked out again for this person.
+async function intakeOne(t, { subject_type, subject_id, control_key, filename, mime, data, claimed = {}, source, case_id, replace = null }, actor) {
   const subject = subjectOf(t, subject_type, subject_id), hash = sha256(data);
-  const dupe = db.get("SELECT * FROM evidence WHERE tenant_id=? AND subject_type=? AND subject_id=? AND sha256=? AND status IN ('accepted','needs_review')", t, subject_type, subject_id, hash);
+  const dupe = db.get("SELECT * FROM evidence WHERE tenant_id=? AND subject_type=? AND subject_id=? AND sha256=? AND status IN ('accepted','needs_review','covered') AND id<>? ORDER BY created_at LIMIT 1", t, subject_type, subject_id, hash, replace?.id || '');
   const controls = R.effectiveControls(t).filter((c) => c.subject === subject_type && c.evidence?.doc_types?.length);
   const hinted = control_key && controls.find((c) => c.key === control_key);
   if (control_key && !hinted) throw new HttpError(400, 'Choose an active evidence requirement for this record.');
   if (actor?.type === 'user' && hinted) P.assertPack(actor, hinted.pack_key);
   if (dupe && (!hinted || dupe.control_key === hinted.key)) {
     if (actor?.type === 'user' && !canView(actor, dupe)) throw new HttpError(403, 'This evidence is restricted.');
-    return { ...dupe, duplicate: true };
+    // Nothing new is stored, but the attempt is kept on the copy on record and in the audit log.
+    const copies = [...j(dupe.copies_json, []), { filename, at: clock.iso(), by: actor?.name || null, source }].slice(-50);
+    db.update('evidence', dupe.id, { copies_json: JSON.stringify(copies) });
+    if (replace) {
+      // A document moved to someone who already has the same file: the misplaced copy is removed
+      // from the other person's file, so their record no longer holds this person's document.
+      db.run('DELETE FROM evidence WHERE id=? AND tenant_id=?', replace.id, t);
+      await storage.remove(replace.stored_path).catch((e) => console.error('[storage]', e.message));
+      P.audit(t, 'EVIDENCE_COPY', subject.name, dupe.restricted ? 'A restricted document was moved here, but the same file was already on record, so the moved copy was removed.'
+        : `${filename} was moved here, but ${subject.name} already has the same file (${dupe.filename}). The moved copy was removed.`, actor, { case_id: dupe.case_id, detail: { sha256: hash, evidence_id: dupe.id } });
+      P.enqueue(t, 'evaluate_subject', { type: subject_type, id: subject_id, trigger: 'evidence_moved' }, { dedupe: `eval:${subject_type}:${subject_id}` });
+      return { ...dupe, copies_json: JSON.stringify(copies), duplicate: true };
+    }
+    P.audit(t, 'EVIDENCE_COPY', subject.name, dupe.restricted ? 'A restricted document was uploaded again. It is the same file as one already on record, so nothing new was saved.'
+      : `${filename} is the same file as ${dupe.filename}, already on record. Nothing new was saved.`, actor, { case_id: case_id || dupe.case_id, detail: { sha256: hash, evidence_id: dupe.id } });
+    return { ...dupe, copies_json: JSON.stringify(copies), duplicate: true };
   }
   const x = await extract(t, data, mime, filename);
   const f = { ...x.fields }, conf = { ...x.confidence }, reasons = [];
@@ -326,6 +449,8 @@ async function intakeOne(t, { subject_type, subject_id, control_key, filename, m
   if (!x.hadText && x.aiRead) reasons.push('Fields were read by AI from an image, so a person must confirm them.');
   else if (!x.hadText) reasons.push(x.aiNote || 'No readable text in this file, so fields need human confirmation.');
   if (x.sourceNote) reasons.push(x.sourceNote);
+  // A different person blocks acceptance (see hasRecordedHolderMismatch); a possible match only asks a person to check.
+  const holder = subject_type === 'worker' && f.holder_name ? nameMatch(f.holder_name, subject.name) : 'same';
   if (x.scanRead.length) reasons.push(`The ${listWords(x.scanRead.map(fieldName))} came from the scanned page${x.scanPages.length > 1 ? 's' : ''} (page ${listWords(x.scanPages.map(String))}) and ${x.scanRead.length > 1 ? 'were' : 'was'} read by AI, so a person must confirm ${x.scanRead.length > 1 ? 'them' : 'it'}.`);
   for (const a of x.ambiguous) reasons.push(`The ${fieldName(a.field)} is printed as ${a.printed}, which can be read as two different dates (month first or day first). Please check it against the document.`);
   if (x.notOnPage.length) reasons.push(`The AI gave a ${listWords(x.notOnPage.map(fieldName))} that does not appear in the document text. Please check it against the file.`);
@@ -337,24 +462,32 @@ async function intakeOne(t, { subject_type, subject_id, control_key, filename, m
     for (const k of ctrl.evidence.required_fields || []) if (!f[k]) missing.push(fieldName(k)); else if ((conf[k] || 0) < 0.9 && !explained.has(k)) unsure.push(fieldName(k));
     if (missing.length) reasons.push(`Could not read the ${listWords(missing)}.`);
     if (unsure.length) reasons.push(`Please check the ${listWords(unsure)}; the reading is uncertain.`);
-    // A different person blocks acceptance (see hasRecordedHolderMismatch); a possible match only asks a person to check.
-    const holder = subject_type === 'worker' && f.holder_name ? nameMatch(f.holder_name, subject.name) : 'same';
     if (holder === 'different') reasons.push(`Name on document (${f.holder_name}) does not match ${subject.name}.`);
     if (holder === 'possible') reasons.push(`Check the name: the document says “${f.holder_name}” and the worker is ${subject.name}. Only part of the name matches, so make sure it is the same person.`);
     if (f.expires_on && f.expires_on < clock.today()) reasons.push('Document had already expired when it was received.');
     if (ctrl.type === 'periodic_filing') { const { period } = latestDuePeriod(clock.today()); if (f.entity_name !== subject.name || f.period !== period) reasons.push(`Entity or reporting period does not match the control (expected ${subject.name}, ${period}).`); }
     if (!ctrl.evidence.auto_accept) reasons.push('This control requires owner review.');
   }
-  const status = reasons.length ? 'needs_review' : 'accepted';
-  const fid = id('ev');
-  let stored;
-  try { stored = await storage.put(t, fid, data); }
-  catch (e) { console.error('[storage]', e.message); throw new HttpError(503, 'The document could not be stored. Please try again in a few minutes.'); }
+  // An accepted copy may stand in for this document only when nothing but a person's confirmation is
+  // missing: no instruction-like text, no clash between the AI and the page, and the worker's own name.
+  const coverable = !!(ctrl && coversWithoutReview(ctrl) && !extractedRestricted && f.doc_number && !x.flags.length && !x.notOnPage.length && !x.disagreements.length && holder === 'same');
+  const original = coverable ? acceptedOriginal(t, subject_type, subject_id, ctrl.key, f) : null;
+  const status = original ? 'covered' : reasons.length ? 'needs_review' : 'accepted';
+  const fid = replace ? replace.id : id('ev');
+  let stored = replace?.stored_path;
+  if (!replace) {
+    try { stored = await storage.put(t, fid, data); }
+    catch (e) { console.error('[storage]', e.message); throw new HttpError(503, 'The document could not be stored. Please try again in a few minutes.'); }
+  }
   const confs = Object.values(conf);
-  db.insert('evidence', { id: fid, tenant_id: t, subject_type, subject_id, doc_type: f.doc_type || 'unknown', status, source, filename, mime, size: data.length, sha256: hash, stored_path: stored, doc_number: f.doc_number, holder_name: f.holder_name, state: f.state, entity_name: f.entity_name, period: f.period, issued_on: f.issued_on, expires_on: f.expires_on, fields_json: JSON.stringify(conf), confidence: confs.length ? Math.min(...confs) : 0, review_reasons_json: JSON.stringify(reasons), flags_json: JSON.stringify(x.flags), case_id: case_id || null, control_key: ctrl?.key || null, restricted: ctrl?.restricted || extractedRestricted ? 1 : 0, created_at: clock.iso() });
+  const read = { subject_type, subject_id, doc_type: f.doc_type || 'unknown', status, doc_number: f.doc_number, holder_name: f.holder_name, state: f.state, entity_name: f.entity_name, period: f.period, issued_on: f.issued_on, expires_on: f.expires_on, fields_json: JSON.stringify(conf), confidence: confs.length ? Math.min(...confs) : 0, review_reasons_json: JSON.stringify(reasons), flags_json: JSON.stringify(x.flags), case_id: case_id || null, control_key: ctrl?.key || null, restricted: ctrl?.restricted || extractedRestricted ? 1 : 0, covered_by: original?.id || null, coverable: coverable ? 1 : 0 };
+  if (replace) db.update('evidence', fid, { ...read, reviewed_by: null, reviewed_at: null, reject_reason: null });
+  else db.insert('evidence', { id: fid, tenant_id: t, ...read, source, filename, mime, size: data.length, sha256: hash, stored_path: stored, created_at: clock.iso(), copies_json: '[]' });
   const auditText = !f.doc_type ? 'A document was submitted for private classification.'
-    : `${filename} ${status === 'accepted' ? `matched to ${ctrl.name}.` : `sent to review. ${reasons.join(' ')}`}`;
-  P.audit(t, status === 'accepted' ? 'EVIDENCE_MATCHED' : 'EVIDENCE_REVIEW', subject.name, auditText, actor, { case_id, detail: { sha256: hash } });
+    : status === 'covered' ? `${filename} is the same ${ctrl.name} as ${original.filename}, which is already accepted. Kept on file; no review needed.`
+      : `${filename} ${status === 'accepted' ? `matched to ${ctrl.name}.` : `sent to review. ${reasons.join(' ')}`}`;
+  P.audit(t, { accepted: 'EVIDENCE_MATCHED', covered: 'EVIDENCE_DUPLICATE' }[status] || 'EVIDENCE_REVIEW', subject.name, auditText, actor, { case_id, detail: { sha256: hash } });
+  if (status === 'accepted') coverWaitingCopies(t, db.get('SELECT * FROM evidence WHERE id=?', fid), actor);
   P.enqueue(t, 'evaluate_subject', { type: subject_type, id: subject_id, trigger: 'evidence_received' }, { dedupe: `eval:${subject_type}:${subject_id}` });
   return db.get('SELECT * FROM evidence WHERE id=?', fid);
 }
@@ -385,6 +518,7 @@ function review(t, user, ev, { decision, fields = {}, reason }) {
     if (ev.restricted && !restrictedType(next.doc_type) && !target?.restricted) throw new HttpError(422, 'A restricted document cannot be accepted for an unrestricted requirement.');
     db.update('evidence', ev.id, u);
     P.audit(t, 'EVIDENCE_ACCEPTED', sub.name, `${ev.filename} accepted by reviewer.`, user, { case_id: ev.case_id });
+    coverWaitingCopies(t, db.get('SELECT * FROM evidence WHERE id=?', ev.id), user);
   } else if (decision === 'reject') {
     if (typeof reason !== 'string' || !reason.trim()) throw new HttpError(400, 'A rejection reason is required.');
     db.update('evidence', ev.id, { status: 'rejected', reject_reason: reason, reviewed_by: user.name, reviewed_at: clock.iso() });
@@ -406,6 +540,7 @@ function recheckAcceptedHolders() {
       const reasons = [...new Set([...j(ev.review_reasons_json, []), reason])];
       db.update('evidence', ev.id, { status: 'needs_review', review_reasons_json: JSON.stringify(reasons) });
       P.audit(ev.tenant_id, 'EVIDENCE_REVIEW', ev.worker_name, reason, SYSTEM, { case_id: ev.case_id });
+      reopenCopies(ev.tenant_id, ev, ev.worker_name, SYSTEM);
       if (!affected.has(ev.tenant_id)) affected.set(ev.tenant_id, []);
       affected.get(ev.tenant_id).push(ev);
     }
@@ -424,4 +559,4 @@ function recheckAcceptedHolders() {
 function seedAccepted(t, type, sid, f) {
   db.insert('evidence', { id: id('ev'), tenant_id: t, subject_type: type, subject_id: sid, status: 'accepted', source: 'demo_seed', filename: `${f.doc_type}.txt`, mime: 'text/plain', size: 0, sha256: sha256(id('x')), stored_path: '', confidence: 1, fields_json: '{}', created_at: clock.iso(), reviewed_by: 'Demo seed', reviewed_at: clock.iso(), ...f });
 }
-module.exports = { intake, review, canView, canReview, readFile, recheckAcceptedHolders, seedAccepted, extract, heuristicExtract, INJECTION };
+module.exports = { intake, review, move, moveTarget, canView, canReview, readFile, recheckAcceptedHolders, seedAccepted, extract, heuristicExtract, requirementNote, sameDocument, INJECTION };

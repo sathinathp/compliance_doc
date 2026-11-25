@@ -511,3 +511,171 @@ test('names written differently: surname first is the same person; a first name 
   assert.ok(someoneElse.data.reasons.some((x) => x.startsWith(`Name on document (Jordan ${last}) does not match`)));
   assert.equal((await admin.post(`/api/evidence/${someoneElse.data.id}/review`, { decision: 'accept' })).status, 422, 'a different person is still blocked');
 });
+
+// ---- Duplicates and requirements that do not apply ----
+const blsCard = (w, no, extra = '') => `Basic Life Support\nName: ${w.name}\nCard No: ${no}\nExpiration Date: 2029-03-01${extra}`;
+const uploadBls = (w, file) => admin.post('/api/evidence', { subject_type: 'worker', subject_id: w.id, control_key: 'CTRL-HC-BLS', file });
+const evidenceRow = async (eid) => (await admin.get('/api/evidence')).data.find((e) => e.id === eid);
+const lastAudit = (type) => db.get('SELECT * FROM audit_log WHERE type=? ORDER BY seq DESC LIMIT 1', type);
+// Photos are read by the stand-in Claude, as in production.
+const withClaude = (fn) => async () => {
+  Object.assign(process.env, { ANTHROPIC_API_KEY: KEY, AEGIS_LLM_PROVIDER: 'anthropic' });
+  process.env.AEGIS_LLM_BASE_URL = `http://127.0.0.1:${fake.address().port}/anthropic/v1/messages`;
+  try { await fn(); } finally { delete process.env.ANTHROPIC_API_KEY; delete process.env.AEGIS_LLM_PROVIDER; }
+};
+
+test('the same card in another file is kept as a duplicate of the accepted one and needs no review', withClaude(async () => {
+  const w = db.get("SELECT * FROM workers WHERE name LIKE 'Sarah Jenkins%'");
+  const fields = { doc_type: 'bls_card', holder_name: w.name, doc_number: 'QA-BLS-555', expires_on: '2029-03-01', confidence: 0.98 };
+  reply = fields;
+  const text = await uploadBls(w, up('bls-555.txt', 'text/plain', blsCard(w, 'QA-BLS-555')));
+  assert.equal(text.data.status, 'accepted', text.data.reasons.join(' | '));
+  const waitingBefore = (await admin.get('/api/nav')).data.evidence;
+
+  reply = { ...fields, doc_number: 'QA BLS 555' }; // the photo prints the number with spaces
+  const photo = await uploadBls(w, up('bls-555.png', 'image/png', [137, 80, 78, 71, 55]));
+  assert.equal(photo.data.status, 'covered', photo.data.reasons.join(' | '));
+  assert.equal(photo.data.duplicate, false);
+  assert.deepEqual(photo.data.covered_by, { id: text.data.id, filename: 'bls-555.txt' });
+  assert.equal((await admin.get('/api/nav')).data.evidence, waitingBefore, 'a duplicate adds nothing to the review queue');
+  const row = await evidenceRow(photo.data.id);
+  assert.equal(row.can_review, false); assert.deepEqual(row.covered_by, { id: text.data.id, filename: 'bls-555.txt' });
+  assert.deepEqual((await evidenceRow(text.data.id)).duplicates, [{ id: photo.data.id, filename: 'bls-555.png' }]);
+  assert.match(lastAudit('EVIDENCE_DUPLICATE').action, /^bls-555\.png is the same BLS provider card as bls-555\.txt, which is already accepted/);
+  assert.equal((await admin.post(`/api/evidence/${photo.data.id}/review`, { decision: 'accept' })).status, 409, 'a duplicate is not a review task');
+
+  reply = { ...fields, expires_on: '2031-03-01' }; // a renewed card is a new document, not a copy
+  const renewal = await uploadBls(w, up('bls-renewed.png', 'image/png', [137, 80, 78, 71, 56]));
+  assert.equal(renewal.data.status, 'needs_review');
+  assert.equal(renewal.data.covered_by, null);
+  assert.equal((await evidenceRow(renewal.data.id)).same_as, null);
+
+  reply = { ...fields, doc_number: 'QA-BLS-000' }; // the AI and the page disagree on the number: not the same card
+  const misread = await uploadBls(w, up('bls-555-misread.txt', 'text/plain', blsCard(w, 'QA-BLS-555', '\nTraining Center: Mercy')));
+  assert.equal(misread.data.status, 'needs_review');
+  assert.ok(misread.data.reasons.some((x) => /document number differently/.test(x)), misread.data.reasons.join(' | '));
+  assert.equal((await evidenceRow(misread.data.id)).same_as, null);
+
+  reply = { ...fields, state: 'NV' }; // the AI adds a state the page does not show: a person must look
+  const typedCopy = await uploadBls(w, up('bls-555-copy.txt', 'text/plain', blsCard(w, 'QA-BLS-555', '\nTraining Center: St. Jude')));
+  assert.equal(typedCopy.data.status, 'needs_review');
+  assert.ok(typedCopy.data.reasons.some((x) => /does not appear in the document text/.test(x)), typedCopy.data.reasons.join(' | '));
+  assert.deepEqual((await evidenceRow(typedCopy.data.id)).same_as, { id: text.data.id, filename: 'bls-555.txt' }, 'the reviewer is told it matches the accepted card');
+
+}));
+
+test('a copy waiting for review becomes a duplicate once the same card is accepted, and is checked again if that card is', withClaude(async () => {
+  const w = db.get("SELECT * FROM workers WHERE name LIKE 'David Kim%'");
+  const fields = { doc_type: 'bls_card', holder_name: w.name, doc_number: 'QA-BLS-777', expires_on: '2029-03-01', confidence: 0.97 };
+  reply = fields;
+  const photo = await uploadBls(w, up('bls-777.jpg', 'image/jpeg', [255, 216, 255, 77]));
+  assert.equal(photo.data.status, 'needs_review');
+  reply = { ...fields, holder_name: w.name.split(' ')[0] }; // only the first name: a person must check it
+  const partName = await uploadBls(w, up('bls-777-first-name.jpg', 'image/jpeg', [255, 216, 255, 78]));
+  assert.equal(partName.data.status, 'needs_review');
+
+  reply = fields;
+  const text = await uploadBls(w, up('bls-777.txt', 'text/plain', blsCard(w, 'QA-BLS-777')));
+  assert.equal(text.data.status, 'accepted', text.data.reasons.join(' | '));
+  const covered = db.get('SELECT * FROM evidence WHERE id=?', photo.data.id);
+  assert.equal(covered.status, 'covered'); assert.equal(covered.covered_by, text.data.id);
+  assert.match(lastAudit('EVIDENCE_DUPLICATE').action, /^bls-777\.jpg is the same BLS provider card as bls-777\.txt, which is now accepted/);
+  assert.equal(db.get('SELECT status FROM evidence WHERE id=?', partName.data.id).status, 'needs_review', 'a partial name always reaches a person');
+
+  // An exact copy of the accepted file is not stored again, and the attempt is recorded on the original.
+  const count = () => db.get('SELECT COUNT(*) n FROM evidence WHERE subject_id=?', w.id).n, before = count();
+  const again = await uploadBls(w, up('renamed-card.txt', 'text/plain', blsCard(w, 'QA-BLS-777')));
+  assert.equal(again.data.duplicate, true); assert.equal(again.data.id, text.data.id);
+  assert.equal(again.data.filename, 'bls-777.txt', 'the result names the copy already on record');
+  assert.equal(count(), before);
+  const copies = (await evidenceRow(text.data.id)).copies;
+  assert.equal(copies.length, 1); assert.equal(copies[0].filename, 'renamed-card.txt'); assert.equal(copies[0].by, 'Sathinath');
+  assert.match(lastAudit('EVIDENCE_COPY').action, /^renamed-card\.txt is the same file as bls-777\.txt, already on record\. Nothing new was saved\./);
+  const photoAgain = await uploadBls(w, up('bls-777 (1).jpg', 'image/jpeg', [255, 216, 255, 77]));
+  assert.equal(photoAgain.data.duplicate, true); assert.equal(photoAgain.data.status, 'covered'); assert.equal(count(), before);
+
+  // If the accepted card turns out to belong to someone else, its duplicates go back to a person.
+  db.run('UPDATE evidence SET holder_name=? WHERE id=?', 'Jordan Example', text.data.id);
+  require('../server/evidence').recheckAcceptedHolders();
+  const reopened = db.get('SELECT * FROM evidence WHERE id=?', photo.data.id);
+  assert.equal(reopened.status, 'needs_review'); assert.equal(reopened.covered_by, null);
+  assert.ok(JSON.parse(reopened.review_reasons_json).some((x) => /accepted copy of this document \(bls-777\.txt\) needs checking again/.test(x)));
+
+}));
+
+test('documents for a requirement that does not apply to the person say so', withClaude(async () => {
+  const alex = db.get("SELECT * FROM workers WHERE name='Alex Patel'"), nurse = db.get("SELECT * FROM workers WHERE name LIKE 'Sarah Jenkins%'");
+  reply = { doc_type: 'bls_card', holder_name: alex.name, doc_number: 'QA-BLS-888', expires_on: '2029-03-01', confidence: 0.98 };
+  const r = await uploadBls(alex, up('alex-bls.txt', 'text/plain', blsCard(alex, 'QA-BLS-888')));
+  assert.equal(r.data.status, 'accepted');
+  const note = "BLS provider card doesn't apply to Alex Patel (applies to clinical workers only). Documents for it are kept on file but don't count toward any check.";
+  assert.equal(r.data.requirement_note, note);
+  assert.equal((await evidenceRow(r.data.id)).requirement_note, note);
+  assert.equal((await evidenceRow(db.get("SELECT id FROM evidence WHERE subject_id=? AND filename='bls-555.txt'", nurse.id).id)).requirement_note, null, 'a nurse needs a BLS card');
+
+}));
+
+test('two readings are the same document only when every accepted detail matches', () => {
+  const { sameDocument } = require('../server/evidence');
+  const accepted = { doc_type: 'bls_card', doc_number: 'BLS-293847', holder_name: 'Alex Patel', expires_on: '2028-04-02', issued_on: '2026-04-02' };
+  assert.equal(sameDocument(accepted, { ...accepted, doc_number: 'bls 293847', holder_name: 'Patel, Alex' }), true);
+  assert.equal(sameDocument(accepted, { ...accepted, issued_on: null }), false, 'a date the new reading lacks is a difference');
+  const withEmployer = { ...accepted, state: 'NY', entity_name: 'Example Healthcare Staffing LLC' };
+  assert.equal(sameDocument(withEmployer, { ...accepted, state: null, entity_name: null }), true, 'a photo may leave out the employer and state');
+  assert.equal(sameDocument(withEmployer, { ...withEmployer, state: 'CA' }), false, 'but they must not disagree');
+  assert.equal(sameDocument(accepted, { ...accepted, expires_on: '2028-04-03' }), false);
+  assert.equal(sameDocument(accepted, { ...accepted, holder_name: 'Alex' }), false);
+  assert.equal(sameDocument(accepted, { ...accepted, doc_type: 'acls_card' }), false);
+  assert.equal(sameDocument({ ...accepted, doc_number: null }, accepted), false, 'without a number nothing is called a copy');
+});
+
+// ---- Moving a document to the person named on it ----
+test('a document uploaded for the wrong person can be moved to the worker named on it', async () => {
+  const alex = db.get("SELECT * FROM workers WHERE name='Alex Patel'");
+  assert.equal((await admin.post('/api/workers', { name: 'Alex Example', role: 'Staff Nurse', category: 'clinical', license_type: 'RN' })).status, 200);
+  const other = db.get("SELECT * FROM workers WHERE name='Alex Example'"), nurse = db.get("SELECT id FROM workers WHERE name LIKE 'Sarah Jenkins%'");
+  const card = blsCard(alex, 'QA-BLS-901');
+  const wrong = await uploadBls(other, up('alex-patel-bls.txt', 'text/plain', card));
+  assert.equal(wrong.data.status, 'needs_review');
+  assert.ok(wrong.data.reasons.some((x) => x.startsWith('Name on document (Alex Patel) does not match Alex Example')), wrong.data.reasons.join(' | '));
+  assert.deepEqual(wrong.data.move_to, { id: alex.id, name: 'Alex Patel' });
+  assert.deepEqual((await evidenceRow(wrong.data.id)).move_to, { id: alex.id, name: 'Alex Patel' });
+
+  // Only to the person named on it, and only by someone who may review it.
+  assert.equal((await admin.post(`/api/evidence/${wrong.data.id}/move`, { subject_id: nurse.id })).status, 422);
+  assert.equal((await admin.post(`/api/evidence/${wrong.data.id}/move`, { subject_id: other.id })).status, 422);
+  assert.equal((await hr.post(`/api/evidence/${wrong.data.id}/move`, { subject_id: alex.id })).status, 403);
+
+  const moved = await admin.post(`/api/evidence/${wrong.data.id}/move`, { subject_id: alex.id });
+  assert.equal(moved.status, 200, moved.text);
+  assert.equal(moved.data.id, wrong.data.id); assert.equal(moved.data.subject_name, 'Alex Patel'); assert.equal(moved.data.move_to, null);
+  assert.equal(moved.data.status, 'accepted', moved.data.reasons.join(' | '));
+  const row = db.get('SELECT * FROM evidence WHERE id=?', wrong.data.id);
+  assert.equal(row.subject_id, alex.id); assert.equal(row.case_id, null); assert.equal(row.filename, 'alex-patel-bls.txt');
+  assert.ok(!JSON.parse(row.review_reasons_json).some((x) => /Name on document/.test(x)), 'the wrong-person reason is gone');
+  assert.match(lastAudit('EVIDENCE_MOVED').action, /^alex-patel-bls\.txt was moved from Alex Example to Alex Patel, the person named on it, and checked again\. It was accepted\./);
+  assert.ok(!(await admin.get('/api/evidence')).data.some((e) => e.subject_id === other.id && e.filename === 'alex-patel-bls.txt'), 'no longer in Alex Example’s file');
+  assert.equal((await admin.post(`/api/evidence/${wrong.data.id}/move`, { subject_id: alex.id })).status, 409, 'an accepted document stays where it is');
+
+  // Alex Patel already has this exact file: the misplaced copy is removed rather than stored twice.
+  const again = await uploadBls(other, up('alex-patel-bls (2).txt', 'text/plain', card));
+  assert.equal(again.data.duplicate, false); assert.deepEqual(again.data.move_to, { id: alex.id, name: 'Alex Patel' });
+  const merged = await admin.post(`/api/evidence/${again.data.id}/move`, { subject_id: alex.id });
+  assert.equal(merged.status, 200, merged.text);
+  assert.equal(merged.data.duplicate, true); assert.equal(merged.data.id, wrong.data.id);
+  assert.equal(db.get('SELECT COUNT(*) n FROM evidence WHERE id=?', again.data.id).n, 0);
+  assert.ok(JSON.parse(db.get('SELECT copies_json c FROM evidence WHERE id=?', wrong.data.id).c).some((c) => c.filename === 'alex-patel-bls (2).txt'));
+  assert.match(lastAudit('EVIDENCE_MOVED').action, /Alex Patel already had the same file, so the moved copy was removed\.$/);
+});
+
+test('a move is offered only when the name on the document is exactly one other worker', () => {
+  const { moveTarget } = require('../server/evidence');
+  const ev = { subject_type: 'worker', subject_id: 'w1', status: 'needs_review', holder_name: 'Patel, Alex' };
+  const workers = [{ id: 'w1', name: 'Alex Example' }, { id: 'w2', name: 'Alex Patel' }, { id: 'w3', name: 'Alexander Patel' }];
+  assert.deepEqual(moveTarget(null, ev, { workers }), { id: 'w2', name: 'Alex Patel' });
+  assert.equal(moveTarget(null, ev, { workers: [...workers, { id: 'w4', name: 'Alex Patel, RN' }] }), null, 'two workers share the name');
+  assert.equal(moveTarget(null, { ...ev, holder_name: 'Alex' }, { workers }), null, 'a first name alone fits Alex Example too, so it stays with a person');
+  assert.equal(moveTarget(null, { ...ev, holder_name: 'Jordan Smith' }, { workers }), null, 'nobody by that name');
+  assert.equal(moveTarget(null, { ...ev, status: 'accepted' }, { workers }), null, 'only documents waiting for review');
+  assert.equal(moveTarget(null, { ...ev, subject_type: 'entity' }, { workers }), null);
+});

@@ -177,7 +177,11 @@ test('MILESTONE: HRMS event to request, accepted submission, verified closure, m
   const m = msgs(hire.name).find((x) => /BLS/.test(x.subject)); assert.ok(m);
   const tok = link(m.body); assert.ok(tok);
   assert.equal((await fetch(`${base}/api/submit/${tok}`)).status, 200);
-  await upload(tok, file('bls.txt', `American Heart Association Basic Life Support\nName: ${hire.name}\nCard No: AHA-1\nExpiration Date: 2029-01-15\n`));
+  const card = `American Heart Association Basic Life Support\nName: ${hire.name}\nCard No: AHA-1\nExpiration Date: 2029-01-15\n`;
+  assert.equal((await upload(tok, file('bls.txt', card))).data.status, 'Your document was accepted and the check is being rerun.');
+  // Sending the same file again tells the worker plainly that nothing more is needed.
+  assert.equal((await upload(tok, file('bls (1).txt', card))).data.status, 'We already have this file, and it is accepted. There is nothing more to do.');
+  assert.equal(db.get("SELECT COUNT(*) n FROM evidence WHERE subject_id=? AND doc_type='bls_card'", hire.id).n, 1);
   await P.drain();
   const c = (await admin.get(`/api/cases/${blsCase.id}`)).data;
   assert.equal(c.state, 'closed'); assert.equal(c.closure, 'verified'); assert.ok(c.closure_evidence_id);
@@ -852,4 +856,40 @@ test('audit search filters by kind, text and date, pages without overlap, and is
   const onDay = (await admin.get(`/api/audit/search?from=${day}&to=${day}`)).data;
   assert.ok(onDay.rows.every((r) => r.ts.startsWith(day)));
   assert.equal((await health.get('/api/audit/search')).status, 403);
+});
+
+test('HR and administrators can add a worker email, and an HR sync without one does not erase it', async () => {
+  const t = bid().id;
+  assert.equal((await admin.post('/api/workers', { name: 'Casey Noemail', role: 'Staff Nurse', category: 'clinical', license_type: 'RN' })).status, 200);
+  const w = db.get("SELECT * FROM workers WHERE name='Casey Noemail'");
+  assert.equal(w.email, null);
+  assert.ok((await admin.get('/api/setup')).data.gap_items.some((g) => g.kind === 'no_email' && g.workers.some((x) => x.id === w.id)));
+
+  assert.equal((await admin.post(`/api/workers/${w.id}/email`, { email: 'not-an-email' })).status, 400);
+  assert.equal((await admin.post(`/api/workers/${w.id}/email`, { email: '' })).status, 400);
+  assert.equal((await fin.post(`/api/workers/${w.id}/email`, { email: 'casey@bluebix.demo' })).status, 403, 'finance cannot change worker records');
+  const taken = db.get("SELECT name, email FROM workers WHERE tenant_id=? AND email IS NOT NULL AND id<>? LIMIT 1", t, w.id);
+  const clash = await admin.post(`/api/workers/${w.id}/email`, { email: taken.email.toUpperCase() });
+  assert.equal(clash.status, 409); assert.match(clash.data.error, new RegExp(`^${taken.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} already uses this email address`));
+
+  const saved = await hr.post(`/api/workers/${w.id}/email`, { email: '  casey.noemail@bluebix.demo ' });
+  assert.equal(saved.status, 200); assert.equal(saved.data.changed, true);
+  assert.equal(db.get('SELECT email FROM workers WHERE id=?', w.id).email, 'casey.noemail@bluebix.demo');
+  assert.equal((await admin.get(`/api/workers/${w.id}`)).data.email, 'casey.noemail@bluebix.demo');
+  assert.ok(!(await admin.get('/api/setup')).data.gap_items.some((g) => g.kind === 'no_email' && g.workers.some((x) => x.id === w.id)), 'no longer listed as missing');
+  const entry = db.get("SELECT * FROM audit_log WHERE type='WORKER_UPDATED' AND subject='Casey Noemail' ORDER BY seq DESC LIMIT 1");
+  assert.equal(entry.action, 'Email address added. Document requests can now reach them.');
+  assert.ok(!entry.action.includes('@'), 'the address stays out of the audit log');
+  assert.equal((await admin.post(`/api/workers/${w.id}/email`, { email: 'casey.noemail@bluebix.demo' })).data.changed, false);
+
+  // A worker from the HR system: an email added in Aegis survives a sync that has none, and the HR system's own email wins.
+  const C = require('../server/connectors');
+  const synced = db.get("SELECT * FROM workers WHERE tenant_id=? AND source LIKE 'con_%' AND external_id IS NOT NULL LIMIT 1", t);
+  db.run('UPDATE workers SET email=NULL WHERE id=?', synced.id);
+  assert.equal((await admin.post(`/api/workers/${synced.id}/email`, { email: 'kept.by.aegis@bluebix.demo' })).status, 200);
+  const rec = { external_id: synced.external_id, name: synced.name, role: synced.role, category: synced.category, dept: synced.dept, license_type: synced.license_type, status: synced.status, hire_date: synced.hire_date };
+  C.upsertWorker(t, rec, synced.source);
+  assert.equal(db.get('SELECT email FROM workers WHERE id=?', synced.id).email, 'kept.by.aegis@bluebix.demo');
+  C.upsertWorker(t, { ...rec, email: 'from.hr@bluebix.demo' }, synced.source);
+  assert.equal(db.get('SELECT email FROM workers WHERE id=?', synced.id).email, 'from.hr@bluebix.demo');
 });

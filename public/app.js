@@ -17,7 +17,7 @@ const LABELS = {
   identified: 'New', following_up: 'Following up', in_review: 'In review', reevaluating: 'Re-evaluating',
   confirmed: 'Confirmed by owner', false_finding: 'Marked false by owner', verified: 'Verified with evidence', no_longer_applicable: 'No longer applicable',
   // evidence, messages and approvals
-  needs_review: 'Needs review', pending_approval: 'Waiting for approval', demo_seed: 'Demo data', bulk_upload: 'Bulk upload',
+  needs_review: 'Needs review', covered: 'Duplicate', pending_approval: 'Waiting for approval', demo_seed: 'Demo data', bulk_upload: 'Bulk upload',
   action: 'Message to send', assignment_review: 'Assignment decision', readiness_decision: 'Readiness decision',
   control_activation: 'Rule change', notice_response: 'Notice response',
   // people and packs
@@ -83,7 +83,7 @@ function setNavigationOpen(open) {
 
 const PILL = { pass: ['pill-pass', 'Pass'], fail: ['pill-fail', 'Fail'], unknown: ['pill-unknown', 'Unknown'], not_applicable: ['pill-na', 'N/A'], restricted: ['pill-na', 'Restricted'], not_assessed: ['pill-na', 'Not assessed'] };
 const statusPill = (s) => { const [c, l] = PILL[s] || ['pill-na', words(s)]; return h`<span class="pill ${c}">${l}</span>`; };
-const STATE_PILL = { needs_review: 'pill-warn', accepted: 'pill-pass', rejected: 'pill-fail', superseded: 'pill-na', sent: 'pill-pass', queued: 'pill-blue', pending_approval: 'pill-warn' };
+const STATE_PILL = { needs_review: 'pill-warn', accepted: 'pill-pass', rejected: 'pill-fail', covered: 'pill-na', superseded: 'pill-na', sent: 'pill-pass', queued: 'pill-blue', pending_approval: 'pill-warn' };
 const statePill = (s) => h`<span class="pill ${STATE_PILL[s] || 'pill-blue'}">${words(s)}</span>`;
 const prio = (p) => h`<span class="priority-pill ${p === 'high' ? 'pill-high' : p === 'medium' ? 'pill-med' : 'pill-low'}">${words(p)}</span>`;
 // How urgent a due date is, in words: "22 days overdue", "Due today", "Due in 3 days".
@@ -165,6 +165,16 @@ let lastCaseCheck = null;
 let caseClosed = false, me = null, route = 'overview', routeArg = null, checkFilter = {}, evidenceSel = null, lastDraft = null, importPreview = null;
 // Evidence uploaded in this browser session, marked New in the inbox until the page is reloaded.
 const recentUploads = new Set();
+// The result of the last upload, so it is still there after the upload window closes. Kept in this
+// browser for this person and workspace until it is dismissed, the next upload replaces it, or a day passes.
+const lastUploadKey = () => `aegis:last-upload:${me?.tenant?.id || ''}:${me?.user?.id || ''}`;
+function lastUpload() {
+  try {
+    const v = JSON.parse(localStorage.getItem(lastUploadKey()) || 'null');
+    return v && Date.now() - Date.parse(v.at) < 864e5 ? v : null;
+  } catch { return null; }
+}
+function saveLastUpload(v) { try { localStorage.setItem(lastUploadKey(), JSON.stringify(v)); } catch { /* storage full or blocked: the upload window still showed it */ } }
 let navigation = 0;
 // The company's locations, from the last Setup or Workers page, for the location suggestions.
 let knownLocations = [];
@@ -539,10 +549,10 @@ function setupSteps(s) {
   const SHOWN = 5;
   const gapPeople = (g) => {
     if (!g.workers?.length) return '';
-    const fix = g.kind === 'no_location' && canEdit();
+    const fix = (g.kind === 'no_location' && canEdit()) || (g.kind === 'no_email' && canAddWorker());
     if (g.workers.length === 1 && !fix) return '';
     const shown = g.workers.slice(0, SHOWN), more = g.workers.length - shown.length;
-    return h`<ul class="gap-people">${shown.map((w) => h`<li><button class="btn-link-action" data-act="workerDetail" data-id="${w.id}">${w.name}</button>${fix ? h`<button class="btn-card-outline" data-act="moveWorker" data-id="${w.id}" data-title="Set work location for ${w.name}">Set location</button>` : ''}</li>`)}${more ? h`<li><a class="btn-link-action" href="#workers">${plural(more, 'more worker')} on the Workers page</a></li>` : ''}</ul>`;
+    return h`<ul class="gap-people">${shown.map((w) => h`<li><button class="btn-link-action" data-act="workerDetail" data-id="${w.id}">${w.name}</button>${fix && g.kind === 'no_location' ? h`<button class="btn-card-outline" data-act="moveWorker" data-id="${w.id}" data-title="Set work location for ${w.name}">Set location</button>` : ''}${fix && g.kind === 'no_email' ? h`<button class="btn-card-outline" data-act="editEmail" data-id="${w.id}" data-name="${w.name}">Add email</button>` : ''}</li>`)}${more ? h`<li><a class="btn-link-action" href="#workers">${plural(more, 'more worker')} on the Workers page</a></li>` : ''}</ul>`;
   };
   const gapNote = (k, info) => (gapsFor(k).length ? h`<div class="setup-note${info ? ' is-info' : ''}"><b>${info ? 'Good to know' : gapsFor(k).length === 1 ? 'One thing to fix' : `${gapsFor(k).length} things to fix`}</b><ul>${gapsFor(k).map((g) => h`<li>${g.text}${gapPeople(g)}</li>`)}</ul></div>` : '');
   const active = s.recommended.filter((p) => p.status === 'active');
@@ -622,20 +632,20 @@ let auditFilter = { kind: '', q: '', from: '', to: '' }, audit = { rows: [], mor
 const auditUrl = (before) => `/api/audit/search?${new URLSearchParams(Object.entries({ ...auditFilter, before: before || '' }).filter(([, v]) => v)).toString()}`;
 const AUDIT_LABEL = {
   CHECK_RESULT: 'Check result', CASE_OPENED: 'Case opened', CASE_STATE: 'Case moved', CASE_NOTE: 'Note added', CASE_ESCALATED: 'Case escalated', CASE_CLOSED: 'Case closed',
-  FINDING_REVIEWED: 'Finding reviewed', EVIDENCE_MATCHED: 'Evidence matched', EVIDENCE_ACCEPTED: 'Evidence accepted', EVIDENCE_REJECTED: 'Evidence rejected', EVIDENCE_REVIEW: 'Sent to review', EVIDENCE_VIEWED: 'Evidence opened',
+  FINDING_REVIEWED: 'Finding reviewed', EVIDENCE_MATCHED: 'Evidence matched', EVIDENCE_ACCEPTED: 'Evidence accepted', EVIDENCE_REJECTED: 'Evidence rejected', EVIDENCE_REVIEW: 'Sent to review', EVIDENCE_VIEWED: 'Evidence opened', EVIDENCE_DUPLICATE: 'Duplicate kept', EVIDENCE_COPY: 'Same file uploaded again', EVIDENCE_MOVED: 'Moved to the right person',
   APPROVAL_REQUESTED: 'Approval requested', APPROVAL_DECIDED: 'Decision made', APPROVAL_UPDATED: 'Approval updated', READINESS_REOPENED: 'Readiness reopened',
   MESSAGE_SENT: 'Message', DIGEST_SENT: 'Digest posted', DIGEST_OUTBOX: 'Digest saved', DIGEST_FAILED: 'Digest failed', CHAT_COMMAND: 'Coworker request', COWORKER_POLICY_UPDATED: 'Coworker policy updated',
-  WORKER_ADDED: 'Worker added', ROSTER_IMPORT: 'Roster imported', ASSIGNMENT_CHANGED: 'Assignment changed', HRMS_EVENT: 'HRMS update', HRMS_SYNC: 'HRMS sync',
+  WORKER_ADDED: 'Worker added', WORKER_UPDATED: 'Worker updated', ROSTER_IMPORT: 'Roster imported', ASSIGNMENT_CHANGED: 'Assignment changed', HRMS_EVENT: 'HRMS update', HRMS_SYNC: 'HRMS sync',
   PACK_ACTIVATED: 'Pack activated', PACK_MODE: 'Pack mode changed', CONTROL_DRAFTED: 'Rule drafted', DASHBOARD_CREATED: 'View saved', DASHBOARD_DELETED: 'View deleted', USER_ADDED: 'User added',
 };
 // The kind of each event, as on the server, so the dot matches the filter it belongs to.
 const AUDIT_KIND = {};
 for (const [k, list] of Object.entries({
   checks: ['CHECK_RESULT'], cases: ['CASE_OPENED', 'CASE_STATE', 'CASE_NOTE', 'CASE_ESCALATED', 'CASE_CLOSED', 'FINDING_REVIEWED'],
-  evidence: ['EVIDENCE_MATCHED', 'EVIDENCE_ACCEPTED', 'EVIDENCE_REJECTED', 'EVIDENCE_REVIEW', 'EVIDENCE_VIEWED', 'EVIDENCE_RECEIVED'],
+  evidence: ['EVIDENCE_MATCHED', 'EVIDENCE_ACCEPTED', 'EVIDENCE_REJECTED', 'EVIDENCE_REVIEW', 'EVIDENCE_VIEWED', 'EVIDENCE_RECEIVED', 'EVIDENCE_DUPLICATE', 'EVIDENCE_COPY', 'EVIDENCE_MOVED'],
   approvals: ['APPROVAL_REQUESTED', 'APPROVAL_DECIDED', 'APPROVAL_UPDATED', 'READINESS_REOPENED'],
   messages: ['ACTION_SENT', 'MESSAGE_SENT', 'DIGEST_SENT', 'DIGEST_OUTBOX', 'DIGEST_FAILED', 'CHAT_COMMAND', 'SLACK_TEST'],
-  records: ['WORKER_ADDED', 'ROSTER_IMPORT', 'ASSIGNMENT_CHANGED', 'HRMS_EVENT', 'HRMS_SYNC'],
+  records: ['WORKER_ADDED', 'WORKER_UPDATED', 'ROSTER_IMPORT', 'ASSIGNMENT_CHANGED', 'HRMS_EVENT', 'HRMS_SYNC'],
 })) for (const t of list) AUDIT_KIND[t] = k;
 const auditKindOf = (t) => AUDIT_KIND[t] || 'settings';
 const auditLabel = (t) => AUDIT_LABEL[t] || words(String(t).toLowerCase());
@@ -818,6 +828,12 @@ function reportDetail(r) {
 
 // Worker window buttons. When every check passes, asking for the readiness decision is the main step.
 // While checks are open, getting the missing documents is, and the decision is still there but quieter.
+// Where document requests for this worker go, and a way to add or change it (HR and administrators).
+function workerContact(w) {
+  const edit = (label) => (canAddWorker() ? h`<button type="button" class="btn-link-action" data-act="editEmail" data-id="${w.id}" data-name="${w.name}" data-email="${w.email || ''}" data-hrms="${String(w.source || '').startsWith('con_') ? '1' : ''}" data-back="1">${label}</button>` : '');
+  return w.email ? h`<p class="worker-contact"><span class="muted">Email</span> <b>${w.email}</b>${edit('Change')}</p>`
+    : h`<div class="setup-note worker-contact-missing"><b>No email address</b>Document requests and reminders cannot reach ${w.name}. ${canAddWorker() ? '' : 'Ask HR or an administrator to add one.'}${edit('Add email')}</div>`;
+}
 function workerFoot(w, openN, total) {
   if (!canEdit() || w.status !== 'active') return '';
   const move = h`<button class="btn-cancel" data-act="moveWorker" data-id="${w.id}">Change assignment</button>`;
@@ -1072,8 +1088,8 @@ const VIEWS = {
     const controls = Object.fromEntries(ctl.controls.map((c) => [c.key, c]));
     const ev = rows.find((e) => e.id === evidenceSel) || rows.find((e) => e.status === 'needs_review') || null;
     const waiting = rows.filter((e) => e.status === 'needs_review').length;
-    return h`<div class="bottom-split-row evidence-layout"><div class="split-card"><div class="split-card-header"><div><h3 class="split-title">Evidence inbox</h3><p class="muted small">${rows.length} document${rows.length === 1 ? '' : 's'}${waiting ? ` · ${waiting} waiting for review` : ''}</p></div></div>${table(['Document', 'Subject', 'Confidence', 'Status'], rows.map((e) => h`<tr class="click${e.id === ev?.id ? ' selected' : ''}" data-act="selectEvidence" data-id="${e.id}"><td><button class="row-title" data-act="selectEvidence" data-id="${e.id}">${words(e.doc_type)}</button>${recentUploads.has(e.id) ? h` <span class="pill pill-blue new-tag">New</span>` : ''}<div class="muted small">${e.filename}</div></td><td class="text-secondary">${e.subject_name}</td><td>${e.source === 'demo_seed' ? '—' : `${Math.round((e.confidence || 0) * 100)}%`}</td><td>${statePill(e.status)}</td></tr>`), ['No evidence yet', 'Documents appear here when workers send them or you upload them.'])}</div>
-    ${ev ? evidencePanel(ev, controls) : h`<aside class="split-card inspector" aria-label="Document details"><div class="inspector-head"><h3 class="split-title">Document details</h3></div><div class="inspector-body">${emptyState(['Pick a document', 'Its details and what Aegis read from it show here.'])}</div></aside>`}</div>`;
+    return h`<div class="bottom-split-row evidence-layout"><div class="split-card"><div class="split-card-header"><div><h3 class="split-title">Evidence inbox</h3><p class="muted small">${rows.length} document${rows.length === 1 ? '' : 's'}${waiting ? ` · ${waiting} waiting for review` : ''}</p></div></div>${lastUploadNote(lastUpload())}${table(['Document', 'Subject', 'Confidence', 'Status'], rows.map((e) => h`<tr class="click${e.id === ev?.id ? ' selected' : ''}" data-act="selectEvidence" data-id="${e.id}"><td><button class="row-title" data-act="selectEvidence" data-id="${e.id}">${words(e.doc_type)}</button>${recentUploads.has(e.id) ? h` <span class="pill pill-blue new-tag">New</span>` : ''}${e.requirement_note ? h` <span class="pill pill-warn new-tag" title="${e.requirement_note}">Not required</span>` : ''}<div class="muted small">${e.filename}</div></td><td class="text-secondary">${e.subject_name}</td><td>${e.source === 'demo_seed' ? '—' : `${Math.round((e.confidence || 0) * 100)}%`}</td><td>${statePill(e.status)}</td></tr>`), ['No evidence yet', 'Documents appear here when workers send them or you upload them.'])}</div>
+    ${ev ? evidencePanel(ev, controls, rows) : h`<aside class="split-card inspector" aria-label="Document details"><div class="inspector-head"><h3 class="split-title">Document details</h3></div><div class="inspector-body">${emptyState(['Pick a document', 'Its details and what Aegis read from it show here.'])}</div></aside>`}</div>`;
   },
   async packs() {
     scope(null);
@@ -1383,21 +1399,49 @@ function draftCard(d) {
 // One file in the upload window: what happened to it, and why. A zip or an email lists the documents in it.
 function uploadRow(name, r) {
   if (r.files) return h`<div class="upload-row-main"><span class="upload-file-name">${name}</span><span class="pill pill-blue">Opened: ${r.files.length} document${r.files.length === 1 ? '' : 's'}</span></div><ul class="upload-children">${r.files.map((x) => h`<li>${uploadRow(x.filename.split(' › ').pop(), x)}</li>`)}</ul>`;
-  const [label, cls] = r.state === 'waiting' ? ['Waiting', 'pill-na'] : r.state === 'reading' ? ['Reading…', 'pill-blue'] : r.state === 'failed' ? ['Not uploaded', 'pill-fail']
-    : r.duplicate ? ['Already on record', 'pill-na'] : r.status === 'accepted' ? ['Accepted', 'pill-pass'] : r.status === 'rejected' ? ['Rejected', 'pill-fail'] : ['Needs review', 'pill-warn'];
-  const why = r.state === 'failed' ? r.error
-    : r.duplicate ? `This exact file was uploaded for this person${r.created_at ? ` on ${dt(r.created_at)}` : ' before'}. Nothing new was saved.`
-      : r.state ? '' : r.status === 'accepted' ? 'Matched to the requirement. The check runs again.' : (r.reasons || []).join(' ');
-  const open = r.id && !r.state ? h`<button type="button" class="btn-link-action" data-act="openUploaded" data-id="${r.id}" aria-label="Open ${name}">Open</button>` : '';
-  return h`<div class="upload-row-main"><span class="upload-file-name">${name}</span><span class="pill ${cls}">${label}</span>${open}</div>${why ? h`<p class="upload-why">${why}</p>` : ''}`;
+  const [label, cls] = uploadLabel(r), why = uploadWhy(r);
+  const open = r.id && !r.state ? h`<button type="button" class="btn-link-action" data-act="openUploaded" data-id="${r.id}" aria-label="Open ${r.duplicate ? r.filename : name}">Open</button>` : '';
+  // The sentence for a requirement that does not apply is shown once, above the list (requirementNotes).
+  const notRequired = !r.state && !r.duplicate && r.requirement_note ? h`<span class="pill pill-warn" title="${r.requirement_note}">Not required</span>` : '';
+  return h`<div class="upload-row-main"><span class="upload-file-name">${name}</span>${notRequired}<span class="pill ${cls}">${label}</span>${open}</div>${why ? h`<p class="upload-why">${why}</p>` : ''}${!r.state && !r.duplicate && r.move_to ? h`<p class="upload-why">${moveButton([r.id], r.move_to)}</p>` : ''}`;
+}
+// A document with another worker's name on it: one button moves it (or several) to that person.
+const moveButton = (ids, to, label = `Move to ${to.name}`, cls = 'btn-link-action') => h`<button type="button" class="${cls} move-action" data-act="moveEvidence" data-ids="${ids.join(',')}" data-to="${to.id}" data-name="${to.name}">${label}</button>`;
+// Documents in one upload that name the same other worker, so they can be moved together.
+function moveGroups(rows) {
+  const groups = new Map();
+  for (const r of rows) if (r.move_to && !r.duplicate) groups.set(r.move_to.id, { to: r.move_to, ids: [...(groups.get(r.move_to.id)?.ids || []), r.id] });
+  return [...groups.values()];
+}
+const moveBox = (g, uploadedFor) => h`<div class="info-box move-box" data-move-box="${g.to.id}"><strong>${g.ids.length === 1 ? 'This document names' : `${g.ids.length} documents name`} ${g.to.name}</strong>${g.ids.length === 1 ? 'It was' : 'They were'} uploaded for ${uploadedFor}. If ${g.ids.length === 1 ? 'it is' : 'they are'} ${g.to.name}'s, move ${g.ids.length === 1 ? 'it' : 'them'} and Aegis checks ${g.ids.length === 1 ? 'it' : 'them'} again for ${g.to.name}.<div class="move-box-actions">${moveButton(g.ids, g.to, g.ids.length === 1 ? `Move to ${g.to.name}` : `Move all ${g.ids.length} to ${g.to.name}`, 'btn-card-outline')}</div></div>`;
+const uploadLabel = (r) => (r.state === 'waiting' ? ['Waiting', 'pill-na'] : r.state === 'reading' ? ['Reading…', 'pill-blue'] : r.state === 'failed' ? ['Not uploaded', 'pill-fail']
+  : r.duplicate ? ['Already on record', 'pill-na'] : r.status === 'covered' ? ['Duplicate', 'pill-na'] : r.status === 'accepted' ? ['Accepted', 'pill-pass'] : r.status === 'rejected' ? ['Rejected', 'pill-fail'] : ['Needs review', 'pill-warn']);
+// What happened to one file, in a sentence. For an exact copy, filename and created_at are the copy
+// already on record; for a duplicate, covered_by is the accepted document it repeats.
+const ON_RECORD = { accepted: ' That copy is accepted.', needs_review: ' That copy is waiting for review.', covered: ' That copy is kept as a duplicate of an accepted document.' };
+function uploadWhy(r) {
+  if (r.state === 'failed') return r.error;
+  if (r.state) return '';
+  if (r.moved) return `Moved to ${r.subject_name} and checked again. ${uploadWhy({ ...r, moved: false })}`.trim();
+  if (r.duplicate) return `Same file as ${r.filename}, uploaded ${r.created_at ? `${dt(r.created_at)} UTC` : 'earlier'}. Nothing new was saved.${ON_RECORD[r.status] || ''}`;
+  if (r.status === 'covered') return `Same document as ${r.covered_by?.filename || 'one already on file'}, which is already accepted. Kept on file; no review needed.`;
+  if (r.status === 'accepted') return 'Matched to the requirement. The check runs again.';
+  return (r.reasons || []).join(' ');
 }
 const EV_FIELDS = [['holder_name', 'Name on document'], ['doc_number', 'Document number'], ['issued_on', 'Issued', 'date'], ['expires_on', 'Expires', 'date'], ['state', 'State'], ['period', 'Period'], ['entity_name', 'Company']];
-function evidencePanel(e, controls = {}) {
+function evidencePanel(e, controls = {}, rows = []) {
   const pending = e.can_review;
+  // Documents of this person waiting for review that name the same other worker can be moved together.
+  const moveIds = e.move_to && pending ? rows.filter((x) => x.can_review && x.subject_id === e.subject_id && x.move_to?.id === e.move_to.id).map((x) => x.id) : [];
+  const moveHere = moveIds.length ? h`<div class="info-box move-box"><strong>This document names ${e.move_to.name}</strong>It was uploaded for ${e.subject_name}. If it is ${e.move_to.name}'s, move it and Aegis checks it again for ${e.move_to.name}.<div class="move-box-actions">${moveButton([e.id], e.move_to, `Move to ${e.move_to.name}`, 'btn-card-outline')}${moveIds.length > 1 ? moveButton(moveIds, e.move_to, `Move all ${moveIds.length} that name ${e.move_to.name}`, 'btn-card-outline') : ''}</div></div>` : '';
   const conf = (k) => e.field_confidence[k] ? h` <span class="conf">${Math.round(e.field_confidence[k] * 100)}%</span>` : '';
   const ctl = controls[e.control_key];
   const requirement = ctl ? `${ctl.name} · ${words(ctl.pack)}` : e.control_key ? words(e.control_key) : 'Not matched yet';
-  const reasons = e.review_reasons.length ? h`<div class="why-box"><strong>Why this needs a person</strong><ul>${e.review_reasons.map((r) => h`<li>${r}</li>`)}</ul></div>` : '';
+  // A duplicate needs no person, so the reasons it would have gone to review are not shown as a task.
+  const reasons = e.review_reasons.length && e.status !== 'covered' ? h`<div class="why-box"><strong>${pending ? 'Why this needs a person' : 'Why it went to a person'}</strong><ul>${e.review_reasons.map((r) => h`<li>${r}</li>`)}</ul></div>` : '';
+  const goTo = (x) => h`<button type="button" class="btn-link-action" data-act="selectEvidence" data-id="${x.id}">${x.filename}</button>`;
+  const notes = h`${moveHere}${e.requirement_note ? h`<div class="why-box"><strong>Not required for this person</strong>${e.requirement_note}</div>` : ''}${e.status === 'covered' ? h`<div class="info-box"><strong>Duplicate of an accepted document</strong>Same document as ${e.covered_by ? goTo(e.covered_by) : 'one that is accepted'}, so no review is needed. This copy is kept on file.</div>` : ''}${e.same_as ? h`<div class="info-box"><strong>Looks like a document already accepted</strong>The details match ${goTo(e.same_as)}, which is accepted. Check them below, then accept or reject this copy.</div>` : ''}`;
+  const history = e.duplicates.length || e.copies.length ? h`<h4 class="inspector-sub">Other copies</h4><ul class="copy-list">${e.duplicates.map((x) => h`<li>${goTo(x)} <span class="muted">is a duplicate of this document</span></li>`)}${e.copies.map((c) => h`<li><span>${c.filename}</span> <span class="muted">uploaded again ${dt(c.at)} UTC${c.by ? ` by ${c.by}` : ''}. Same file, so it was not saved twice.</span></li>`)}</ul>` : '';
   const facts = h`<dl class="kv ev-facts"><dt>File</dt><dd>${e.filename}${e.has_file ? h` · <a class="btn-link-action" href="/api/evidence/${e.id}/file">Download</a>` : ''}</dd><dt>For</dt><dd>${e.subject_name}</dd><dt>Requirement</dt><dd>${requirement}</dd><dt>Source</dt><dd>${words(e.source)}</dd>${e.reviewed_by ? h`<dt>Reviewed by</dt><dd>${e.reviewed_by}</dd>` : ''}${e.reject_reason ? h`<dt>Rejected because</dt><dd>${e.reject_reason}</dd>` : ''}</dl>`;
   // The uploaded file itself, so the reviewer can compare every field with what the document says.
   const doc = e.preview === 'image' ? h`<h4 class="inspector-sub">The document</h4><a class="ev-preview" href="/api/evidence/${e.id}/preview" target="_blank" rel="noopener" title="Open the first page full size"><img src="/api/evidence/${e.id}/preview" alt="First page of ${e.filename}" loading="lazy"></a><p class="muted small">Scroll to see up to three pages. Download the file to see every page.</p>`
@@ -1407,23 +1451,35 @@ function evidencePanel(e, controls = {}) {
   if (!pending) {
     // Finished documents: plain read-only details, no empty boxes.
     const read = EV_FIELDS.filter(([k]) => e[k]);
-    return h`<aside class="split-card inspector" aria-label="Document details">${head}<div class="inspector-body">${reasons}${facts}${doc}
+    return h`<aside class="split-card inspector" aria-label="Document details">${head}<div class="inspector-body">${notes}${reasons}${facts}${doc}
       <h4 class="inspector-sub">What the document says</h4>
       ${read.length ? h`<dl class="kv ev-read">${read.map(([k, l, t]) => h`<dt>${l}</dt><dd>${t === 'date' ? date(e[k]) : e[k]}${conf(k)}</dd>`)}</dl>` : h`<p class="muted small">No details were read from this document.</p>`}
+      ${history}
     </div></aside>`;
   }
   const f = ([k, l, type = 'text']) => h`<div class="form-group"><label class="form-label" for="evidence-${k}">${l}${conf(k)}</label><input id="evidence-${k}" name="${k}" type="${type}" class="form-select" value="${e[k] || ''}"></div>`;
   return h`<aside class="split-card inspector" aria-label="Review document">${head}
     <form class="inspector-form" data-form="reviewEvidence" data-id="${e.id}">
-      <div class="inspector-body">${reasons}${facts}${doc}
+      <div class="inspector-body">${notes}${reasons}${facts}${doc}
         <h4 class="inspector-sub">What the document says</h4>
         <p class="muted small">Correct anything Aegis read wrongly. The percentage shows how sure Aegis was.</p>
         <div class="form-group"><label class="form-label" for="evidence-type">Document type${conf('doc_type')}</label><select id="evidence-type" name="doc_type" class="form-select" required><option value="">Choose a type</option>${['professional_license', 'bls_card', 'acls_card', 'tb_screening', 'flu_vaccine', 'facility_orientation', 'handbook_ack', 'security_training', 'i9_record', 'work_authorization', 'w4', 'payroll_filing_receipt'].map((x) => h`<option value="${x}" ${x === e.doc_type ? raw('selected') : ''}>${words(x)}</option>`)}</select></div>
         <div class="form-grid">${EV_FIELDS.map(f)}</div>
         <div class="form-group"><label class="form-label" for="evidence-rejection-reason">Reason, if you reject it</label><input id="evidence-rejection-reason" name="reason" class="form-select" placeholder="Required to reject. The sender sees this."></div>
+        ${history}
       </div>
       <div class="inspector-foot"><p class="muted small">Accepting records the document. Aegis reruns the check. The case closes if it passes.</p><div class="row"><button class="btn-danger" name="decision" value="reject" formnovalidate>Reject</button><button class="btn-submit-green" name="decision" value="accept">Accept evidence</button></div></div>
     </form></aside>`;
+}
+// The last upload at the top of the inbox: the totals, and each file that did not simply become a new
+// document (a copy, a duplicate, a requirement that does not apply, a failure), with a way to open it.
+// Each different "does not apply" sentence once, however many files it covers.
+const requirementNotes = (rows) => [...new Set(rows.map((r) => r.requirement_note).filter(Boolean))];
+const notRequiredBox = (notes) => h`<div class="why-box"><strong>Not required for this person</strong>${notes.length === 1 ? notes[0] : h`<ul>${notes.map((n) => h`<li>${n}</li>`)}</ul>`}</div>`;
+function lastUploadNote(u) {
+  if (!u) return '';
+  return h`<section class="upload-recap" aria-label="Your last upload"><div class="upload-recap-head"><b>Your last upload${u.subject ? ` for ${u.subject}` : ''}</b><span class="muted">${dt(u.at)} UTC</span><button type="button" class="btn-link-action" data-act="dismissLastUpload">Dismiss</button></div>
+    <p>${u.summary}</p>${(u.notes || []).map((n) => h`<p class="upload-warn">${n}</p>`)}${u.items.length ? h`<ul>${u.items.map((i) => h`<li><div class="upload-recap-file"><b>${i.name}</b><span class="pill ${i.cls}">${i.label}</span>${i.id ? h`<button type="button" class="btn-link-action" data-act="selectEvidence" data-id="${i.id}" aria-label="Open ${i.name}">Open</button>` : ''}</div><span class="upload-recap-why">${i.why}</span></li>`)}</ul>` : ''}</section>`;
 }
 const LIFE = [['Identify', ['identified']], ['Assign', ['assigned']], ['Request', ['requested']], ['Follow up', ['following_up']], ['Review', ['in_review']], ['Re-evaluate', ['reevaluating']], ['Close', ['closed']]];
 const lifecycle = (s) => { const i = LIFE.findIndex(([, a]) => a.includes(s)); return h`<div class="lifecycle">${LIFE.map(([l], n) => h`<div class="${n < i ? 'done' : n === i ? 'now' : ''}">${l}</div>`)}</div>`; };
@@ -1593,7 +1649,7 @@ const ACT = {
     const rank = { fail: 0, unknown: 1, pass: 2 };
     const list = w.checks_list.filter((c) => c.status !== 'not_applicable').sort((a, b) => rank[a.status] - rank[b.status]);
     const openN = list.filter((c) => c.status !== 'pass').length;
-    openModal(w.name, `${w.role || 'No role'} · ${w.facility || 'No location assigned'}`, h`<div class="pack-boxes">${rv.summary.map((s) => h`<div class="pack-box pack-box-${s.status}"><span>${words(s.pack)}</span>${statusPill(s.status)}<small>${s.open ? `${s.open} open` : s.status === 'restricted' ? 'Restricted' : 'Nothing open'}</small></div>`)}</div>
+    openModal(w.name, `${w.role || 'No role'} · ${w.facility || 'No location assigned'}`, h`${workerContact(w)}<div class="pack-boxes">${rv.summary.map((s) => h`<div class="pack-box pack-box-${s.status}"><span>${words(s.pack)}</span>${statusPill(s.status)}<small>${s.open ? `${s.open} open` : s.status === 'restricted' ? 'Restricted' : 'Nothing open'}</small></div>`)}</div>
       <div class="readiness-note ${openN || !list.length ? 'is-open' : 'is-clear'}"><b>${!list.length ? 'No applicable checks yet' : openN ? `${openN} of ${list.length} visible checks still open` : 'All visible checks pass'}</b><span>${rv.statement}${w.readiness_request ? ` Waiting in Approvals since ${date(w.readiness_request.created_at)}, asked by ${w.readiness_request.requested_by}.` : ''}</span></div>
       ${table(['Requirement', 'Result', 'Why', ''], list.map((c) => h`<tr><td>${c.control_name}<div class="case-sub">${words(c.pack_key)}</div></td><td>${statusPill(c.status)}</td><td class="small">${c.reason}</td><td class="row-action">${canEdit() && (c.status !== 'pass' || /expir/.test(c.code || '')) ? h`<button class="btn-link-action" data-act="uploadEvidence" data-subject="worker:${w.id}" data-control="${c.control_key}" data-name="${w.name}">Upload</button>` : ''}</td></tr>`), 'No checks yet.')}`, workerFoot(w, openN, list.length), true);
   },
@@ -1603,6 +1659,15 @@ const ACT = {
     openModal(el.dataset.title || 'Change assignment', 'Aegis re-runs the checks that apply to the new location.', h`<form data-form="move" data-id="${el.dataset.id}"><div class="form-group"><label class="form-label" for="mvFacility">Location</label><input id="mvFacility" name="facility" class="form-select" list="mvLocations" autocomplete="off" required><datalist id="mvLocations">${knownLocations.map((f) => h`<option value="${f.name}">${f.state || ''}</option>`)}</datalist></div><div class="form-group"><label class="form-label" for="mvState">State</label><input id="mvState" name="facility_state" class="form-select" maxlength="2" placeholder="${knownLocations.length ? 'Filled in for a known location' : ''}"></div><button class="btn-submit-green">Save</button></form>`);
   },
   openApprovals() { closeModal(); location.hash = 'approvals'; },
+  editEmail(el, ev) {
+    ev?.stopPropagation();
+    const { id: wid, name, email = '', hrms, back } = el.dataset;
+    openModal(email ? `Change email for ${name}` : `Add email for ${name}`, 'Document requests and reminders go to this address.', h`<form data-form="editEmail" data-id="${wid}" data-name="${name}" data-back="${back || ''}">
+      <div class="form-group"><label class="form-label" for="weEmail">Work email</label><input id="weEmail" name="email" type="email" class="form-select" value="${email}" required maxlength="254" autocomplete="off" spellcheck="false" placeholder="name@company.com"></div>
+      ${hrms ? h`<p class="muted small">This worker comes from your HR system. Aegis keeps this email until the HR system sends one for them; after that, the HR system's email is used.</p>` : ''}
+      <button class="btn-submit-green">${email ? 'Save email' : 'Add email'}</button></form>`);
+    setTimeout(() => $('#weEmail')?.focus(), 50);
+  },
   // With checks still open, ask once more and show what the approver will see.
   async readiness(el) {
     if (+el.dataset.open > 0 && !el.dataset.confirmed) {
@@ -1616,6 +1681,36 @@ const ACT = {
     await api(`/api/workers/${el.dataset.id}/readiness-review`, {}); toast('Sent to Approvals.', 'success'); closeModal(); refresh();
   },
   selectEvidence(el, ev) { ev?.stopPropagation(); evidenceSel = el.dataset.id; refresh(); },
+  dismissLastUpload() { try { localStorage.removeItem(lastUploadKey()); } catch { /* nothing to remove */ } refresh(); },
+  // Moves one or more documents to the worker named on them. In the upload window each moved file's
+  // row shows its new result; in the inbox the moved document stays selected under its new person.
+  async moveEvidence(el, ev) {
+    ev?.stopPropagation();
+    const ids = el.dataset.ids.split(',').filter(Boolean), to = el.dataset.to, name = el.dataset.name;
+    const buttons = [...document.querySelectorAll('[data-act="moveEvidence"]')].filter((b) => b.dataset.to === to);
+    for (const b of buttons) b.disabled = true;
+    el.textContent = ids.length > 1 ? `Moving ${ids.length}…` : 'Moving…';
+    // A closed window keeps its contents, so where the button sits decides: the upload window or the inbox panel.
+    const list = el.closest('#modal')?.querySelector('[data-upload-list]') || null, last = lastUpload();
+    let moved = 0, error = null, shown = null;
+    for (const id of ids) {
+      try {
+        const r = await api(`/api/evidence/${id}/move`, { subject_id: to });
+        moved++; shown = r.id; recentUploads.add(r.id);
+        const li = [...(list?.querySelectorAll('[data-act="moveEvidence"]') || [])].find((b) => b.dataset.ids === id)?.closest('li');
+        if (li) li.innerHTML = render(uploadRow(li.querySelector('.upload-file-name')?.textContent || r.filename, { ...r, moved: true }));
+        const item = last?.items.find((i) => i.id === id);
+        if (item) Object.assign(item, { id: r.id, label: 'Moved', cls: 'pill-blue', why: `Moved to ${name} and checked again.` });
+      } catch (err) { error ??= err.message; }
+    }
+    if (last) saveLastUpload(last);
+    if (moved === ids.length) document.querySelector(`[data-move-box="${CSS.escape(to)}"]`)?.remove();
+    else for (const b of buttons) if (b.isConnected) b.disabled = false;
+    if (moved) toast(`${plural(moved, 'document')} moved to ${name} and checked again.`, 'success');
+    if (error) toast(`${ids.length - moved} could not be moved: ${error}`, 'warning');
+    if (!list) evidenceSel = shown || evidenceSel;
+    if (route === 'evidence') refresh();
+  },
   // From the upload window: close it and show that document in the Evidence inbox, scrolled into view.
   async openUploaded(el) {
     closeModal();
@@ -1837,6 +1932,11 @@ const FORM = {
     if (await sendChat(d.text) && f.elements.text.value === d.text) f.reset();
   },
   async addWorker(d) { await api('/api/workers', d); toast('Worker added. Checks are running.', 'success'); closeModal(); setTimeout(after, 1200); },
+  async editEmail(d, f) {
+    const r = await api(`/api/workers/${f.dataset.id}/email`, { email: d.email });
+    toast(r.changed ? `Email saved for ${f.dataset.name}. Document requests can now reach them.` : 'No change: that is already their email.', 'success');
+    if (f.dataset.back) ACT.workerDetail({ dataset: { id: f.dataset.id } }); else { closeModal(); refresh(); }
+  },
   async move(d, f) {
     const known = knownLocations.find((x) => x.name.toLowerCase() === d.facility.trim().toLowerCase());
     const body = known ? { facility: known.name, facility_state: d.facility_state || known.state || '' } : d;
@@ -1851,7 +1951,7 @@ const FORM = {
   // (with the reason), already on record, or not uploaded. One file failing does not stop the rest.
   async upload(d, f) {
     const [subject_type, subject_id] = d.subject.split(':'), files = [...f.elements.file.files], many = files.length > 1;
-    const list = f.querySelector('[data-upload-list]'), done = [];
+    const list = f.querySelector('[data-upload-list]'), done = [], results = [];
     const row = (i) => list.children[i];
     let failed = 0;
     list.hidden = false;
@@ -1863,14 +1963,35 @@ const FORM = {
         // With several files the document number and expiry are left for Aegis to read from each file.
         const r = await api('/api/evidence', { subject_type, subject_id, control_key: d.control_key || null, bulk: many, file: await fileData(file), claimed: many ? {} : { doc_number: d.doc_number, expires_on: d.expires_on } });
         done.push(...(r.files || [r]));
+        results.push(...(r.files ? r.files.map((x) => [x.filename.split(' › ').pop(), x]) : [[file.name, r]]));
+        for (const x of r.failed || []) results.push([x.filename, { state: 'failed', error: x.error }]);
         row(i).innerHTML = render(uploadRow(file.name, r));
-      } catch (err) { failed++; row(i).innerHTML = render(uploadRow(file.name, { state: 'failed', error: err.message })); }
+      } catch (err) {
+        failed++; row(i).innerHTML = render(uploadRow(file.name, { state: 'failed', error: err.message }));
+        results.push([file.name, { state: 'failed', error: err.message }]);
+      }
     }
-    const count = (test) => done.filter(test).length, fresh = done.filter((r) => !r.duplicate);
-    const summary = [[count((r) => !r.duplicate && r.status === 'accepted'), 'accepted'], [count((r) => !r.duplicate && r.status !== 'accepted'), 'sent to review'], [count((r) => r.duplicate), 'already on record'], [failed, 'not uploaded']]
-      .filter(([n]) => n).map(([n, w]) => `${n} ${w}`).join(' · ');
+    const count = (test) => done.filter(test).length, fresh = done.filter((r) => !r.duplicate), nOf = (n, one, more) => `${n} ${n === 1 ? one : more}`;
+    const summary = [
+      [count((r) => !r.duplicate && r.status === 'accepted'), 'accepted', 'accepted'],
+      [count((r) => !r.duplicate && r.status === 'needs_review'), 'sent to review', 'sent to review'],
+      [count((r) => !r.duplicate && r.status === 'covered'), 'duplicate of an accepted document', 'duplicates of accepted documents'],
+      [count((r) => r.duplicate), 'already on record, not saved again', 'already on record, not saved again'],
+      [failed, 'not uploaded', 'not uploaded'],
+    ].filter(([n]) => n).map(([n, one, more]) => nOf(n, one, more)).join(' · ');
+    const notes = requirementNotes(fresh);
+    const total = `${nOf(results.length, 'file', 'files')}${summary ? `: ${summary}` : ''}.`;
     f.querySelector('[data-upload-title]').textContent = summary ? `Done: ${summary}` : 'Done';
-    f.querySelector('[data-upload-count]').textContent = 'Open a file to check what Aegis read, or close this window. New files are marked New in the inbox.';
+    f.querySelector('[data-upload-count]').textContent = 'Open a file to check what Aegis read, or close this window. This summary stays at the top of the Evidence inbox, and new files are marked New there.';
+    if (notes.length) list.insertAdjacentHTML('beforebegin', render(notRequiredBox(notes)));
+    const subjectName = f.elements.subject.selectedOptions[0]?.textContent || '';
+    // Several files naming the same other worker get one button for all of them; a single one has its row button.
+    for (const g of moveGroups(fresh)) if (g.ids.length > 1) list.insertAdjacentHTML('beforebegin', render(moveBox(g, subjectName)));
+    saveLastUpload({ at: new Date().toISOString(), subject: subjectName, summary: total, notes,
+      items: results.filter(([, r]) => r.state === 'failed' || r.duplicate || r.status === 'covered' || (r.move_to && !r.duplicate)).map(([name, r]) => {
+        const [label, cls] = uploadLabel(r);
+        return { name, label, cls, why: uploadWhy(r), id: r.id || null };
+      }) });
     for (const r of fresh) recentUploads.add(r.id);
     const go = f.querySelector('[data-upload-go]');
     go.type = 'button'; go.dataset.act = 'openUploaded'; go.dataset.id = (fresh[0] || done.at(-1))?.id || ''; go.textContent = 'Go to the Evidence inbox';

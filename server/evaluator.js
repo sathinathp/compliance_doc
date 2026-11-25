@@ -81,4 +81,4 @@ function evaluate(c, s, ctx) {
     default: return unknown('unsupported_control', `Control type ${c.type} is not supported.`, 'data');
   }
 }
-module.exports = { evaluate, latestDuePeriod };
+module.exports = { evaluate, latestDuePeriod, applies };

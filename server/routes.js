@@ -109,7 +109,12 @@ add('POST', '/api/submit/:token', async ({ p, body }) => {
   if (n > 20) throw new HttpError(429, 'Too many uploads. Please contact your coordinator.');
   const c = tokenCase(p.token), f = file(body);
   const ev = await Ev.intake(c.tenant_id, { subject_type: c.subject_type, subject_id: c.subject_id, control_key: c.control_key, ...f, source: 'secure_link', case_id: c.id }, { name: c.subject_name });
-  return { received: true, status: ev.status === 'accepted' ? 'Your document was accepted and the check is being rerun.' : 'Thanks. Your document was received and is waiting for review.' };
+  // A worker is told plainly when they sent something Aegis already has, so they do not send it again.
+  const done = ev.status === 'accepted' || ev.status === 'covered';
+  const status = ev.duplicate ? (done ? 'We already have this file, and it is accepted. There is nothing more to do.' : 'We already have this file. It is waiting for review, so there is no need to send it again.')
+    : ev.status === 'covered' ? 'Thanks. This document is already on file and accepted, so there is nothing more to do.'
+      : ev.status === 'accepted' ? 'Your document was accepted and the check is being rerun.' : 'Thanks. Your document was received and is waiting for review.';
+  return { received: true, status };
 }, { public: true });
 
 // ---- webhooks: authenticated by signature, not by session
@@ -194,6 +199,23 @@ add('POST', '/api/workers', ({ t, user, body }) => {
   const r = C.upsertWorker(t, { name, email: String(body.email || '').trim(), role: body.role, license_type: body.license_type || null, category: body.category, dept: body.dept, facility: body.facility, facility_state: body.facility_state, entity: body.entity, hire_date: body.hire_date || clock.today(), work_auth_expires: body.work_auth_expires, attrs: {} }, 'manual', user);
   return r;
 });
+// Adds or changes a worker's email, so document requests can reach them. HR and administrators only,
+// like adding a worker. The address itself stays out of the audit log, which cannot be edited later.
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+add('POST', '/api/workers/:id/email', ({ t, user, p, body }) => {
+  edit(user); if (!P.isAdmin(user) && user.role !== 'hr') throw new HttpError(403, 'HR or administrator role required.');
+  const w = db.get('SELECT * FROM workers WHERE id=? AND tenant_id=?', p.id, t); if (!w) throw new HttpError(404, 'Worker not found.');
+  const email = String(body.email || '').trim();
+  if (!email) throw new HttpError(400, 'Enter an email address.');
+  if (email.length > 254 || !EMAIL.test(email)) throw new HttpError(400, 'Enter a valid email address, like name@company.com.');
+  const other = db.get('SELECT name FROM workers WHERE tenant_id=? AND lower(email)=lower(?) AND id<>?', t, email, w.id);
+  if (other) throw new HttpError(409, `${other.name} already uses this email address. Each worker needs their own.`);
+  if (w.email === email) return { ok: true, email, changed: false };
+  db.update('workers', w.id, { email, updated_at: clock.iso() });
+  P.audit(t, 'WORKER_UPDATED', w.name, w.email ? 'Email address changed.' : 'Email address added. Document requests can now reach them.', user);
+  P.enqueue(t, 'evaluate_subject', { type: 'worker', id: w.id, trigger: 'worker_updated' }, { dedupe: `eval:worker:${w.id}` });
+  return { ok: true, email, changed: true };
+});
 add('POST', '/api/workers/:id/assignment', ({ t, user, p, body }) => {
   edit(user); const w = db.get('SELECT * FROM workers WHERE id=? AND tenant_id=?', p.id, t); if (!w) throw new HttpError(404, 'Worker not found.');
   const facility = String(body.facility || '').trim();
@@ -207,14 +229,23 @@ add('POST', '/api/workers/:id/readiness-review', ({ t, user, p }) => {
   if (d.readiness_request) throw new HttpError(409, `${d.name} is already waiting for a readiness decision in Approvals.`);
   E.requestDecision(t, user, 'readiness_decision', null, `Assignment readiness: ${d.name}`, d.readiness_view.statement, 'onboarding', d.id); return { ok: true }; });
 add('GET', '/api/evidence', ({ t, user }) => V.listEvidence(t, user));
+// What happened to one uploaded (or moved) file, for the upload window.
+// For a copy, filename and created_at are the copy already on record, so the uploader can find it.
+function uploadResult(t, e, memo = {}) {
+  const o = e.status === 'covered' && e.covered_by && db.get('SELECT id,filename FROM evidence WHERE id=? AND tenant_id=?', e.covered_by, t);
+  const subject = e.subject_type === 'worker' ? db.get('SELECT name FROM workers WHERE id=? AND tenant_id=?', e.subject_id, t) : null;
+  return { id: e.id, filename: e.filename, status: e.status, duplicate: !!e.duplicate, created_at: e.created_at, reasons: j(e.review_reasons_json, []), subject_name: subject?.name || null,
+    covered_by: o ? { id: o.id, filename: o.filename } : null, requirement_note: Ev.requirementNote(t, e, memo), move_to: Ev.moveTarget(t, e, memo) };
+}
 add('POST', '/api/evidence', async ({ t, user, body }) => { edit(user); const ev = await Ev.intake(t, { subject_type: body.subject_type || 'worker', subject_id: body.subject_id, control_key: body.control_key || null, ...file(body), claimed: body.claimed || {}, source: body.bulk ? 'bulk_upload' : 'upload' }, user);
-  // created_at tells the uploader when a file that is already on record was first sent.
-  const one = (e) => ({ id: e.id, filename: e.filename, status: e.status, duplicate: !!e.duplicate, created_at: e.created_at, reasons: j(e.review_reasons_json, []) });
+  const memo = {}, one = (e) => uploadResult(t, e, memo);
   // A zip folder or an email comes back as every document that was in it.
   return { ...one(ev), ...(ev.files ? { files: ev.files.map(one), failed: ev.failed, skipped: ev.skipped } : {}) };
 });
 const getEv = (t, u, eid) => { const e = db.get('SELECT * FROM evidence WHERE id=? AND tenant_id=?', eid, t); if (!e) throw new HttpError(404, 'Evidence not found.'); if (!Ev.canView(u, e)) throw new HttpError(403, 'This evidence is restricted.'); return e; };
 add('POST', '/api/evidence/:id/review', ({ t, user, p, body }) => { edit(user); Ev.review(t, user, getEv(t, user, p.id), body); return { ok: true }; });
+// Moves a document uploaded for the wrong person to the worker named on it, and checks it again for them.
+add('POST', '/api/evidence/:id/move', async ({ t, user, p, body }) => { edit(user); return uploadResult(t, await Ev.move(t, user, getEv(t, user, p.id), String(body.subject_id || ''))); });
 // The first page as a picture, or the text Aegis read, shown next to the fields on the review screen.
 add('GET', '/api/evidence/:id/preview', async ({ t, user, p, res }) => {
   const e = getEv(t, user, p.id); if (!e.stored_path) throw new HttpError(404, 'Demo evidence has no file.');
@@ -311,10 +342,10 @@ add('GET', '/api/audit', ({ t, user }) => { P.assertAdmin(user); return db.all('
 const AUDIT_KINDS = {
   checks: ['CHECK_RESULT'],
   cases: ['CASE_OPENED', 'CASE_STATE', 'CASE_NOTE', 'CASE_ESCALATED', 'CASE_CLOSED', 'FINDING_REVIEWED'],
-  evidence: ['EVIDENCE_MATCHED', 'EVIDENCE_ACCEPTED', 'EVIDENCE_REJECTED', 'EVIDENCE_REVIEW', 'EVIDENCE_VIEWED', 'EVIDENCE_RECEIVED'],
+  evidence: ['EVIDENCE_MATCHED', 'EVIDENCE_ACCEPTED', 'EVIDENCE_REJECTED', 'EVIDENCE_REVIEW', 'EVIDENCE_VIEWED', 'EVIDENCE_RECEIVED', 'EVIDENCE_DUPLICATE', 'EVIDENCE_COPY', 'EVIDENCE_MOVED'],
   approvals: ['APPROVAL_REQUESTED', 'APPROVAL_DECIDED', 'APPROVAL_UPDATED', 'READINESS_REOPENED'],
   messages: ['ACTION_SENT', 'MESSAGE_SENT', 'DIGEST_SENT', 'DIGEST_OUTBOX', 'DIGEST_FAILED', 'CHAT_COMMAND', 'SLACK_TEST'],
-  records: ['WORKER_ADDED', 'ROSTER_IMPORT', 'ASSIGNMENT_CHANGED', 'HRMS_EVENT', 'HRMS_SYNC'],
+  records: ['WORKER_ADDED', 'WORKER_UPDATED', 'ROSTER_IMPORT', 'ASSIGNMENT_CHANGED', 'HRMS_EVENT', 'HRMS_SYNC'],
 };
 add('GET', '/api/audit/search', ({ t, user, q }) => {
   P.assertAdmin(user);

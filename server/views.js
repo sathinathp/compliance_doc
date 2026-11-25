@@ -97,7 +97,19 @@ function listEvidence(t, user, { acceptedFrom, acceptedThrough } = {}) {
   const rows = acceptedFrom && acceptedThrough
     ? db.all("SELECT * FROM evidence WHERE tenant_id=? AND status='accepted' AND expires_on BETWEEN ? AND ? ORDER BY expires_on,created_at DESC", t, acceptedFrom, acceptedThrough)
     : db.all('SELECT * FROM evidence WHERE tenant_id=? ORDER BY created_at DESC', t);
-  return rows.filter((e) => Ev.canView(user, e)).map((e) => ({ id: e.id, subject_name: names[e.subject_id], subject_type: e.subject_type, subject_id: e.subject_id, doc_type: e.doc_type, status: e.status, source: e.source, filename: e.filename, doc_number: e.doc_number, holder_name: e.holder_name, state: e.state, entity_name: e.entity_name, period: e.period, issued_on: e.issued_on, expires_on: e.expires_on, confidence: e.confidence, field_confidence: j(e.fields_json, {}), review_reasons: j(e.review_reasons_json, []), flags: j(e.flags_json, []), control_key: e.control_key, reviewed_by: e.reviewed_by, reject_reason: e.reject_reason, created_at: e.created_at, has_file: !!e.stored_path, preview: e.stored_path ? docread.previewKind(e.mime, e.filename) : null, can_review: e.status === 'needs_review' && Ev.canReview(user, e, controls[e.control_key]) }));
+  const visible = rows.filter((e) => Ev.canView(user, e)), byId = new Map(visible.map((e) => [e.id, e])), memo = {};
+  const link = (e) => (e ? { id: e.id, filename: e.filename } : null);
+  // Accepted documents per person and requirement, so a document waiting for review can say it looks
+  // like one already accepted, and an accepted one can list its duplicates.
+  const acceptedFor = new Map(), coveredBy = new Map();
+  for (const e of visible) {
+    if (e.status === 'accepted' && e.control_key) { const k = `${e.subject_id}|${e.control_key}`; acceptedFor.set(k, [...(acceptedFor.get(k) || []), e]); }
+    if (e.status === 'covered' && e.covered_by) coveredBy.set(e.covered_by, [...(coveredBy.get(e.covered_by) || []), link(e)]);
+  }
+  const sameAs = (e) => (e.status === 'needs_review' && e.control_key ? link((acceptedFor.get(`${e.subject_id}|${e.control_key}`) || []).find((a) => Ev.sameDocument(a, e))) : null);
+  return visible.map((e) => ({ id: e.id, subject_name: names[e.subject_id], subject_type: e.subject_type, subject_id: e.subject_id, doc_type: e.doc_type, status: e.status, source: e.source, filename: e.filename, doc_number: e.doc_number, holder_name: e.holder_name, state: e.state, entity_name: e.entity_name, period: e.period, issued_on: e.issued_on, expires_on: e.expires_on, confidence: e.confidence, field_confidence: j(e.fields_json, {}), review_reasons: j(e.review_reasons_json, []), flags: j(e.flags_json, []), control_key: e.control_key, reviewed_by: e.reviewed_by, reject_reason: e.reject_reason, created_at: e.created_at, has_file: !!e.stored_path, preview: e.stored_path ? docread.previewKind(e.mime, e.filename) : null, can_review: e.status === 'needs_review' && Ev.canReview(user, e, controls[e.control_key]),
+    covered_by: e.status === 'covered' ? link(byId.get(e.covered_by)) : null, same_as: sameAs(e), duplicates: coveredBy.get(e.id) || [],
+    copies: j(e.copies_json, []).map((c) => ({ filename: c.filename, at: c.at, by: c.by })), requirement_note: Ev.requirementNote(t, e, memo), move_to: Ev.moveTarget(t, e, memo) }));
 }
 function listApprovals(t, user, status = 'pending') {
   return db.all('SELECT * FROM approvals WHERE tenant_id=? AND status=? ORDER BY created_at DESC', t, status).filter((a) => (a.pack_key ? P.canPack(user, a.pack_key) : P.isAdmin(user)));
