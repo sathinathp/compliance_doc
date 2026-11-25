@@ -199,6 +199,36 @@ test('the review screen preview: the first page as a picture, or the text that w
   assert.equal(text.type, 'text'); assert.match(text.text, /Name on document\tSarah Jenkins, RN/);
 });
 
+test('BMP pictures open: full colour and palette kinds, stored either way up', async () => {
+  const sharp = require('sharp');
+  // A 48 x 32 picture of six 16 x 16 blocks: top row red, green, blue; bottom row white, black, white.
+  const blocks = [[[255, 0, 0], [0, 255, 0], [0, 0, 255]], [[255, 255, 255], [0, 0, 0], [255, 255, 255]]], W = 48, H = 32;
+  const colorAt = (x, y) => blocks[y >> 4][x >> 4];
+  const bmp = (bits, topDown = false) => {
+    const palette = bits === 8 ? [[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 255], [0, 0, 0]] : [];
+    const stride = Math.ceil((W * bits) / 32) * 4, start = 54 + palette.length * 4, b = Buffer.alloc(start + stride * H);
+    b.write('BM', 0, 'latin1'); b.writeUInt32LE(b.length, 2); b.writeUInt32LE(start, 10); b.writeUInt32LE(40, 14);
+    b.writeInt32LE(W, 18); b.writeInt32LE(topDown ? -H : H, 22); b.writeUInt16LE(1, 26); b.writeUInt16LE(bits, 28); b.writeUInt32LE(palette.length, 46);
+    palette.forEach(([r, g, bl], i) => { b[54 + i * 4] = bl; b[55 + i * 4] = g; b[56 + i * 4] = r; });
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const [r, g, bl] = colorAt(x, y), at = start + stride * (topDown ? y : H - 1 - y);
+      if (bits === 8) b[at + x] = palette.findIndex((p) => p[0] === r && p[1] === g && p[2] === bl);
+      else { const o = at + x * (bits / 8); b[o] = bl; b[o + 1] = g; b[o + 2] = r; }
+    }
+    return b;
+  };
+  for (const [bits, topDown] of [[24, false], [24, true], [32, false], [8, false]]) {
+    const r = await docread.read(bmp(bits, topDown), 'image/bmp', 'scan.bmp');
+    assert.equal(r.kind, 'image', `${bits}-bit`);
+    const { data, info } = await sharp(r.images[0].data).raw().toBuffer({ resolveWithObject: true });
+    assert.deepEqual([info.width, info.height], [W, H]);
+    const near = (x, y, want) => assert.ok(want.every((v, i) => Math.abs(data[((y * 16 + 8) * W + x * 16 + 8) * info.channels + i] - v) < 60), `${bits}-bit${topDown ? ' top-down' : ''} pixel ${x},${y}`);
+    near(0, 0, [255, 0, 0]); near(2, 0, [0, 0, 255]); near(1, 1, [0, 0, 0]);
+  }
+  const compressed = bmp(24); compressed.writeUInt32LE(1, 30);
+  assert.equal((await docread.read(compressed, 'image/bmp', 'rle.bmp')).kind, 'unsupported', 'a compressed BMP is refused with a message, not misread');
+});
+
 test('names: the same person, a possible match for a person to check, or a different person', () => {
   const { nameMatch } = require('../server/lib/util');
   const cases = {

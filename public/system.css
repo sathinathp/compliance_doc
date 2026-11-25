@@ -2366,6 +2366,8 @@ a.view-card-name:hover { color: var(--primary); }
   :is(html, #aegis) .chat-status:not(:empty)::before { animation: none; }
 }
 
-/* Worker forms: the fields for a new location or company appear under the pickers. */
-.place-new { margin-top: 14px; }
-.place-new .place-hint { grid-column: 1 / -1; margin: -6px 0 0; }
+/* Worker forms: the fields for a new location or company appear right under their picker. */
+.place-pickers { margin: 14px 0 20px; align-items: start; }
+.place-col, .place-new { display: grid; gap: 14px; }
+.place-col .form-group { margin-bottom: 0; }
+.place-hint { margin: 6px 0 0; }

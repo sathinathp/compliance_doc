@@ -76,10 +76,13 @@ function simplePdfText(buf) {
 }
 
 async function readPdf(buf, note) {
-  let text = '', pages = 0, scanPages = [];
-  try { ({ text, pages, scanPages } = await pdfjsText(buf)); } catch { /* damaged or unusual PDF */ }
+  let text = '', pages = 0, scanPages = [], opened = false;
+  try { ({ text, pages, scanPages } = await pdfjsText(buf)); opened = true; } catch { /* damaged or unusual PDF */ }
   if (!usable(text)) text = simplePdfText(buf);
   text = usable(text).slice(0, MAX_TEXT);
+  // Not a PDF at all, only named .pdf (a PDF says so in its first bytes). A real PDF that will not
+  // open here is still kept, because the AI may read it.
+  if (!opened && !text && !buf.subarray(0, 1024).includes('%PDF-')) return unsupported('This file is named .pdf but is not a PDF, so it cannot be opened. Save or export it as PDF again and upload it again.');
   // scanPages only matters when other pages have text; with no text at all the whole PDF is a scan.
   return { kind: 'pdf', text, pdf: buf, pages, scanPages: text ? scanPages : [], ...(note ? { note } : {}) };
 }
@@ -109,8 +112,39 @@ async function pageImages(buf, maxPages = MAX_PAGES, only = null) {
 // ---------- Pictures ----------
 // Every picture becomes an upright JPEG no larger than 2000 pixels, which every AI provider accepts
 // (phone photos can be 10 MB and sideways). TIFF scans and faxes can have several pages.
+// Windows BMP pictures, which the image library cannot open: the uncompressed kinds that scanners
+// and Paint save (1, 4, 8, 24 and 32 bits per pixel), turned into plain pixels. Compressed ones return null.
+function bmpPixels(buf) {
+  if (buf.length < 54 || buf.toString('latin1', 0, 2) !== 'BM') return null;
+  const start = buf.readUInt32LE(10), header = buf.readUInt32LE(14), width = buf.readInt32LE(18), rawHeight = buf.readInt32LE(22);
+  const bits = buf.readUInt16LE(28), compression = buf.readUInt32LE(30), height = Math.abs(rawHeight);
+  if (header < 40 || width <= 0 || !height || width * height > 120e6 || ![1, 4, 8, 24, 32].includes(bits)) return null;
+  if (!(compression === 0 || (compression === 3 && bits === 32))) return null; // RLE and other packed kinds
+  const colors = bits <= 8 ? (buf.readUInt32LE(46) || 2 ** bits) : 0, palette = 14 + header;
+  const stride = Math.ceil((width * bits) / 32) * 4;
+  if (start + stride * height > buf.length) return null;
+  const out = Buffer.alloc(width * height * 3);
+  for (let y = 0; y < height; y++) {
+    const row = start + stride * (rawHeight > 0 ? height - 1 - y : y); // most BMPs are stored bottom row first
+    for (let x = 0; x < width; x++) {
+      let at;
+      if (bits === 24) at = row + x * 3;
+      else if (bits === 32) at = row + x * 4;
+      else {
+        const index = (buf[row + ((x * bits) >> 3)] >> (8 - bits - ((x * bits) & 7))) & ((1 << bits) - 1);
+        if (index >= colors) return null;
+        at = palette + index * 4;
+      }
+      const o = (y * width + x) * 3;
+      out[o] = buf[at + 2]; out[o + 1] = buf[at + 1]; out[o + 2] = buf[at]; // stored blue, green, red
+    }
+  }
+  return { data: out, info: { width, height, channels: 3 } };
+}
 async function toJpegs(buf, maxPages = MAX_PAGES) {
   const sharp = require('sharp');
+  const bmp = bmpPixels(buf);
+  if (bmp) return [await sharp(bmp.data, { raw: bmp.info }).resize({ width: 2000, height: 2000, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer()];
   const opts = { failOn: 'none', limitInputPixels: 120e6 };
   const pages = Math.max(1, Math.min((await sharp(buf, opts).metadata()).pages || 1, maxPages));
   const out = [];

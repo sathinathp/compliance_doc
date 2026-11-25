@@ -430,6 +430,21 @@ test('a zip or an email upload becomes one piece of evidence per document, each 
   assert.deepEqual(msg.data.files.map((f) => f.filename), ['license-email.msg › Sarah_Jenkins_RN_License.pdf']);
   const broken = await admin.post('/api/evidence', { subject_type: 'worker', subject_id: worker.id, file: up('broken.zip', 'application/zip', Buffer.from('PK\u0003\u0004 not a zip')) });
   assert.equal(broken.status, 422); assert.match(broken.data.error, /could not be opened/);
+
+  // Files Aegis cannot open are refused with the reason, and nothing is stored for a reviewer.
+  const stored = () => db.get('SELECT COUNT(*) n FROM evidence').n, before = stored();
+  const program = await admin.post('/api/evidence', { subject_type: 'worker', subject_id: worker.id, file: up('setup.exe', 'application/x-msdownload', Buffer.concat([Buffer.from('MZ'), Buffer.alloc(500, 7)])) });
+  assert.equal(program.status, 422); assert.match(program.data.error, /^This file type cannot be read\. Upload a PDF/);
+  const fake = await admin.post('/api/evidence', { subject_type: 'worker', subject_id: worker.id, file: up('license.pdf', 'application/pdf', Buffer.from('just some words, renamed to .pdf')) });
+  assert.equal(fake.status, 422); assert.match(fake.data.error, /is named \.pdf but is not a PDF/);
+  const big = await admin.post('/api/evidence', { subject_type: 'worker', subject_id: worker.id, file: up('huge.pdf', 'application/pdf', Buffer.alloc(10 * 1024 * 1024 + 1, 32)) });
+  assert.equal(big.status, 413); assert.match(big.data.error, /larger than 10 MB, the most Aegis accepts/);
+  assert.equal(stored(), before, 'none of them was stored');
+  // In a zip, the unreadable file is listed as not uploaded and the good one is kept.
+  const mixed = await admin.post('/api/evidence', { subject_type: 'worker', subject_id: worker.id, file: up('mixed.zip', 'application/zip', zipOf([{ name: 'tool.exe', data: Buffer.from('MZ binary') }, { name: 'card.txt', data: Buffer.from('BLS Provider card\nName: Zip Tester\nExpires: 2028-01-31\n') }])) });
+  assert.equal(mixed.status, 200);
+  assert.deepEqual(mixed.data.files.map((f) => f.filename), ['mixed.zip › card.txt']);
+  assert.deepEqual(mixed.data.failed.map((f) => [f.filename, f.status]), [['tool.exe', 422]]);
 });
 
 // ---- The cases in the Aegis Evidence Test Kit ----

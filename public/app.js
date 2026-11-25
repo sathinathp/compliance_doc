@@ -357,6 +357,8 @@ function readHash() {
     else if (location.hash !== '#signup' && $('#signup-form')) showLogin();
     return;
   }
+  // A new page never opens under a window left from the last one (the browser's Back button, or a link inside the window).
+  closeModal();
   const [page, argument] = location.hash.slice(1).split('/');
   if (page === 'verify-email' && argument) {
     history.replaceState(null, '', '#setup');
@@ -1435,7 +1437,7 @@ function evidencePanel(e, controls = {}, rows = []) {
   const history = e.duplicates.length || e.copies.length ? h`<h4 class="inspector-sub">Other copies</h4><ul class="copy-list">${e.duplicates.map((x) => h`<li>${goTo(x)} <span class="muted">is a duplicate of this document</span></li>`)}${e.copies.map((c) => h`<li><span>${c.filename}</span> <span class="muted">uploaded again ${dt(c.at)} UTC${c.by ? ` by ${c.by}` : ''}. Same file, so it was not saved twice.</span></li>`)}</ul>` : '';
   const facts = h`<dl class="kv ev-facts"><dt>File</dt><dd>${e.filename}${e.has_file ? h` · <a class="btn-link-action" href="/api/evidence/${e.id}/file">Download</a>` : ''}</dd><dt>For</dt><dd>${e.subject_name}</dd><dt>Requirement</dt><dd>${requirement}</dd><dt>Source</dt><dd>${words(e.source)}</dd>${e.reviewed_by ? h`<dt>Reviewed by</dt><dd>${e.reviewed_by}</dd>` : ''}${e.reject_reason ? h`<dt>Rejected because</dt><dd>${e.reject_reason}</dd>` : ''}</dl>`;
   // The uploaded file itself, so the reviewer can compare every field with what the document says.
-  const doc = e.preview === 'image' ? h`<h4 class="inspector-sub">The document</h4><a class="ev-preview" href="/api/evidence/${e.id}/preview" target="_blank" rel="noopener" title="Open the first page full size"><img src="/api/evidence/${e.id}/preview" alt="First page of ${e.filename}" loading="lazy"></a><p class="muted small">Scroll to see up to three pages. Download the file to see every page.</p>`
+  const doc = e.preview === 'image' ? h`<h4 class="inspector-sub">The document</h4><a class="ev-preview" href="/api/evidence/${e.id}/preview" target="_blank" rel="noopener" title="Open the first page full size"><img src="/api/evidence/${e.id}/preview" alt="First page of ${e.filename}" loading="lazy"></a><p class="muted small" data-preview-hint>Scroll to see up to three pages. Download the file to see every page.</p>`
     : e.preview === 'text' ? h`<h4 class="inspector-sub">The document</h4><pre class="ev-preview-text" data-preview-text="${e.id}" tabindex="0" aria-label="Text of ${e.filename}">Loading the text…</pre>`
       : e.has_file ? h`<p class="muted small">Aegis cannot show this file here. Download it to open it.</p>` : '';
   const head = h`<div class="inspector-head"><div><h3 class="split-title">${words(e.doc_type)}</h3><p class="muted small">${e.subject_name}</p></div>${statePill(e.status)}</div>`;
@@ -1959,7 +1961,7 @@ const FORM = {
         const r = await api('/api/evidence', { subject_type, subject_id, control_key: d.control_key || null, bulk: many, file: await fileData(file), claimed: many ? {} : { doc_number: d.doc_number, expires_on: d.expires_on } });
         done.push(...(r.files || [r]));
         results.push(...(r.files ? r.files.map((x) => [x.filename.split(' › ').pop(), x]) : [[file.name, r]]));
-        for (const x of r.failed || []) results.push([x.filename, { state: 'failed', error: x.error }]);
+        for (const x of r.failed || []) { failed++; results.push([x.filename, { state: 'failed', error: x.error }]); }
         row(i).innerHTML = render(uploadRow(file.name, r));
       } catch (err) {
         failed++; row(i).innerHTML = render(uploadRow(file.name, { state: 'failed', error: err.message }));
@@ -1977,7 +1979,8 @@ const FORM = {
     const notes = requirementNotes(fresh);
     const total = `${nOf(results.length, 'file', 'files')}${summary ? `: ${summary}` : ''}.`;
     f.querySelector('[data-upload-title]').textContent = summary ? `Done: ${summary}` : 'Done';
-    f.querySelector('[data-upload-count]').textContent = 'Open a file to check what Aegis read, or close this window. This summary stays at the top of the Evidence inbox, and new files are marked New there.';
+    f.querySelector('[data-upload-count]').textContent = !done.length ? 'Nothing was saved. Fix the files listed below, then upload them again.'
+      : `Open a file to check what Aegis read, or close this window.${failed ? ' Files marked Not uploaded were not saved.' : ''} This summary stays at the top of the Evidence inbox, and new files are marked New there.`;
     if (notes.length) list.insertAdjacentHTML('beforebegin', render(notRequiredBox(notes)));
     const subjectName = f.elements.subject.selectedOptions[0]?.textContent || '';
     // Several files naming the same other worker get one button for all of them; a single one has its row button.
@@ -2899,20 +2902,26 @@ document.addEventListener('change', (e) => {
 const NEW_PLACE = '+new';
 function placePickers(L, { optional = false, company = false, current = '' } = {}) {
   const opt = (value, label, extra = '') => h`<option value="${value}" ${extra ? raw(extra) : ''}>${label}</option>`;
-  return h`<div class="form-grid">
+  // Each picker keeps its "new" fields right under it, so they stay together on a phone too.
+  const location = h`<div class="place-col">
       <div class="form-group"><label class="form-label" for="plLoc">Work location</label><select id="plLoc" name="facility" class="form-select" data-place-pick="location" ${optional ? '' : raw('required')}>
         ${optional ? opt('', 'Not assigned yet') : opt('', 'Choose a location', 'disabled selected')}
         ${L.facilities.map((f) => opt(f.name, `${f.name}${f.state ? ` · ${f.state}` : ''}${f.name === current ? ' (current)' : ''}`, f.name === current ? 'disabled' : ''))}
         ${opt(NEW_PLACE, 'Add a new location…')}</select></div>
-      ${company ? h`<div class="form-group"><label class="form-label" for="plEnt">Employing company</label><select id="plEnt" name="entity" class="form-select" data-place-pick="company">
-        ${opt('', 'Not set')}${L.entities.map((e) => opt(e.name, e.name))}${opt(NEW_PLACE, 'Add a new company…')}</select></div>` : ''}
-    </div>
-    <div class="form-grid place-new" data-place-new="location" hidden>
-      <div class="form-group"><label class="form-label" for="plLocName">New location name</label><input id="plLocName" name="new_facility" class="form-select" maxlength="120" autocomplete="off"></div>
-      <div class="form-group"><label class="form-label" for="plLocState">State</label><select id="plLocState" name="new_facility_state" class="form-select"><option value="">Choose a state</option>${L.states.map(([code, name]) => h`<option value="${code}">${name}</option>`)}</select></div>
-      <p class="muted small place-hint">The state decides which state rules apply to people working here.</p>
-    </div>
-    ${company ? h`<div class="form-group place-new" data-place-new="company" hidden><label class="form-label" for="plEntName">New company name</label><input id="plEntName" name="new_entity" class="form-select" maxlength="120" autocomplete="off"></div>` : ''}`;
+      <div class="place-new" data-place-new="location" hidden>
+        <div class="form-group"><label class="form-label" for="plLocName">New location name</label><input id="plLocName" name="new_facility" class="form-select" maxlength="120" autocomplete="off"></div>
+        <div class="form-group"><label class="form-label" for="plLocState">State</label><select id="plLocState" name="new_facility_state" class="form-select" aria-describedby="plLocHint"><option value="">Choose a state</option>${L.states.map(([code, name]) => h`<option value="${code}">${name}</option>`)}</select>
+          <p id="plLocHint" class="muted small place-hint">The state decides which state rules apply to people working here.</p></div>
+      </div>
+    </div>`;
+  if (!company) return h`<div class="place-pickers">${location}</div>`;
+  return h`<div class="form-grid place-pickers">${location}
+      <div class="place-col">
+        <div class="form-group"><label class="form-label" for="plEnt">Employing company</label><select id="plEnt" name="entity" class="form-select" data-place-pick="company">
+          ${opt('', 'Not set')}${L.entities.map((e) => opt(e.name, e.name))}${opt(NEW_PLACE, 'Add a new company…')}</select></div>
+        <div class="place-new" data-place-new="company" hidden><div class="form-group"><label class="form-label" for="plEntName">New company name</label><input id="plEntName" name="new_entity" class="form-select" maxlength="120" autocomplete="off"></div></div>
+      </div>
+    </div>`;
 }
 document.addEventListener('change', (e) => {
   const pick = e.target.closest?.('[data-place-pick]'); if (!pick) return;
@@ -2952,7 +2961,9 @@ new MutationObserver(loadPreviewText).observe(document.documentElement, { childL
 document.addEventListener('error', (e) => {
   const img = e.target; if (!(img instanceof HTMLImageElement) || !img.closest('.ev-preview')) return;
   const note = document.createElement('p'); note.className = 'muted small'; note.textContent = 'Aegis cannot show this file here. Download it to open it.';
-  img.closest('.ev-preview').replaceWith(note);
+  const preview = img.closest('.ev-preview');
+  preview.parentElement.querySelector('[data-preview-hint]')?.remove(); // nothing to scroll
+  preview.replaceWith(note);
 }, true);
 // Highlight the drop area while files are dragged over it. The file input covers it, so the drop itself is native.
 for (const type of ['dragenter', 'dragover', 'dragleave', 'drop']) {

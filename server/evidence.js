@@ -390,7 +390,7 @@ async function move(t, user, ev, targetId) {
 // read and matched on its own. The result is the first document, with all of them in files.
 async function intake(t, args, actor) {
   if (!args.data?.length) throw new HttpError(400, 'A file is required.');
-  if (args.data.length > 10 * 1024 * 1024) throw new HttpError(413, 'File is larger than 10 MB.');
+  if (args.data.length > 10 * 1024 * 1024) throw new HttpError(413, 'This file is larger than 10 MB, the most Aegis accepts. Make it smaller or split it, then upload it again.');
   let box;
   try { box = await docread.unpack(args.data, args.mime, args.filename); } catch (e) { throw new HttpError(422, e.message); }
   if (!box) return intakeOne(t, args, actor);
@@ -440,6 +440,9 @@ async function intakeOne(t, { subject_type, subject_id, control_key, filename, m
     return { ...dupe, copies_json: JSON.stringify(copies), duplicate: true };
   }
   const x = await extract(t, data, mime, filename);
+  // A file Aegis cannot open is not kept: there is nothing in it to review. The person is told why
+  // straight away ("Not uploaded") and can upload a readable copy.
+  if (x.kind === 'unsupported') throw new HttpError(422, x.aiNote);
   const f = { ...x.fields }, conf = { ...x.confidence }, reasons = [];
   for (const [k, v] of Object.entries(claimed)) if (v && !f[k]) { f[k] = /_on$/.test(k) ? normDate(v) : v; conf[k] = 0.5; }
   const extractedRestricted = restrictedType(f.doc_type);
