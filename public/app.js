@@ -157,7 +157,7 @@ const NAV = [
 const NAV_ORG = [['setup', 'Company setup'], ['integrations', 'Connections'], ['settings', 'Settings']];
 // Dashboards opens to its standard views (the ids match the built-in dashboards on the server).
 const DASH_VIEWS = [['builtin-readiness', 'Readiness'], ['builtin-expiring', 'Expiring soon'], ['builtin-gaps', 'Open gaps'], ['builtin-missing', 'Missing documents'], ['builtin-coverage', 'Coverage']];
-const HEAD = { overview: ['Workspace', 'Overview', 'Current status across activated packs, accepted evidence and open remediation.'], setup: ['Organization', 'Company setup', 'Get your organisation ready: bring in your people, confirm requirements, and run the first check.'], cases: ['Workspace', 'Cases', 'Each gap moves from identified to closed. Only accepted evidence closes a case.'], approvals: ['Workspace', 'Approvals', 'Consequential actions wait here for an authorized person.'], evidence: ['Workspace', 'Evidence', 'AI proposes matches and fields. Uncertain documents go to a person.'], checks: ['Records', 'Checks', 'Every result has a reason, evidence references and a control version.'], workers: ['Records', 'Workers', 'Per-pack status for each worker. One pack never hides another.'], packs: ['Records', 'Compliance packs', 'Versioned packs reviewed and activated by an authorized person.'], controls: ['Records', 'Control rules', 'Draft, preview and approve changes before they take effect.'], integrations: ['Organization', 'Connections', 'Manage workforce sync, reporting channels, and message delivery.'], dashboards: ['Reporting', 'Dashboards', 'Readiness, expirations and gaps, counted from current checks.'], reports: ['Reporting', 'Reports', 'Reports to share with clients, auditors and managers.'], notices: ['Workspace', 'Tax notices', 'Letters from tax agencies and the replies Finance approves.'], metrics: ['Reporting', 'Pilot metrics', 'How the pilot is going, measured from Aegis records.'], audit: ['Reporting', 'Audit history', 'Every check, request and decision, in order. Entries cannot be edited or deleted.'], settings: ['Organization', 'Settings', 'Users, roles, reporting channel and schedules.'] };
+const HEAD = { overview: ['Workspace', 'Overview', 'Current status across activated packs, accepted evidence and open remediation.'], setup: ['Organization', 'Company setup', 'Get your organization ready: bring in your people, confirm requirements, and run the first check.'], cases: ['Workspace', 'Cases', 'Each gap moves from identified to closed. Only accepted evidence closes a case.'], approvals: ['Workspace', 'Approvals', 'Consequential actions wait here for an authorized person.'], evidence: ['Workspace', 'Evidence', 'AI proposes matches and fields. Uncertain documents go to a person.'], checks: ['Records', 'Checks', 'Every result has a reason, evidence references and a control version.'], workers: ['Records', 'Workers', 'Per-pack status for each worker. One pack never hides another.'], packs: ['Records', 'Compliance packs', 'Versioned packs reviewed and activated by an authorized person.'], controls: ['Records', 'Control rules', 'Draft, preview and approve changes before they take effect.'], integrations: ['Organization', 'Connections', 'Manage workforce sync, reporting channels, and message delivery.'], dashboards: ['Reporting', 'Dashboards', 'Readiness, expirations and gaps, counted from current checks.'], reports: ['Reporting', 'Reports', 'Reports to share with clients, auditors and managers.'], notices: ['Workspace', 'Tax notices', 'Letters from tax agencies and the replies Finance approves.'], metrics: ['Reporting', 'Pilot metrics', 'How the pilot is going, measured from Aegis records.'], audit: ['Reporting', 'Audit history', 'Every check, request and decision, in order. Entries cannot be edited or deleted.'], settings: ['Organization', 'Settings', 'Users, roles, reporting channel and schedules.'] };
 
 // Ticked cases on the Cases page (ids). Cleared when the tab or page changes.
 const caseSel = new Set();
@@ -176,13 +176,6 @@ function lastUpload() {
 }
 function saveLastUpload(v) { try { localStorage.setItem(lastUploadKey(), JSON.stringify(v)); } catch { /* storage full or blocked: the upload window still showed it */ } }
 let navigation = 0;
-// The company's locations, from the last Setup or Workers page, for the location suggestions.
-let knownLocations = [];
-const rememberLocations = (list) => {
-  const seen = new Map(knownLocations.map((f) => [f.name, f]));
-  for (const f of list) if (f?.name) seen.set(f.name, { name: f.name, state: f.state || '' });
-  knownLocations = [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
-};
 const adminRoutes = new Set(['setup', 'settings', 'audit', 'integrations']);
 const canEdit = () => me.user.role !== 'viewer';
 // Tax notices belong to the payroll pack: Finance and administrators.
@@ -300,7 +293,7 @@ function renderNav() {
   $('#tabs').innerHTML = render(groups('tabs'));
   $('#tabsOrg').innerHTML = render(org);
   // The phone menu is one list: daily work, records, reporting, then the organisation pages.
-  $('#sheetIn').innerHTML = render(h`${groups('sheetIn')}${org.length ? h`<section class="rail-group rail-group-org" aria-label="Organisation">${org}</section>` : ''}`);
+  $('#sheetIn').innerHTML = render(h`${groups('sheetIn')}${org.length ? h`<section class="rail-group rail-group-org" aria-label="Organization">${org}</section>` : ''}`);
   setDashboardViewsOpen(dashboardViewsOpen);
   syncNav();
 }
@@ -543,7 +536,6 @@ function confirmFollowUps(ids, scopeText) {
 function setupSteps(s) {
   const st = s.steps, gapsFor = (k) => s.gap_items.filter((g) => g.step === k);
   const needsEmail = me.workspace_email?.pending;
-  rememberLocations(s.facilities);
   // Gaps on records and context are problems to fix; the packs note is guidance, so it reads as information.
   // A gap about people names them; workers without a location get a button that sets it.
   const SHOWN = 5;
@@ -836,7 +828,7 @@ function workerContact(w) {
 }
 function workerFoot(w, openN, total) {
   if (!canEdit() || w.status !== 'active') return '';
-  const move = h`<button class="btn-cancel" data-act="moveWorker" data-id="${w.id}">Change assignment</button>`;
+  const move = h`<button class="btn-cancel" data-act="moveWorker" data-id="${w.id}" data-current="${w.facility || ''}">Change location</button>`;
   const upload = (cls) => h`<button class="${cls}" data-act="uploadEvidence" data-subject="worker:${w.id}" data-name="${w.name}">Upload evidence</button>`;
   // Already asked: one open request at a time (the backend refuses a second one).
   if (w.readiness_request) return h`${move}<button class="btn-cancel" data-act="openApprovals">Waiting in Approvals</button>${upload(openN ? 'btn-submit-green' : 'btn-cancel')}`;
@@ -1000,7 +992,7 @@ const VIEWS = {
     const SHORT_DAY = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
     const when = (ts) => (String(ts).slice(0, 10) === me.today ? timeUtc(ts) : SHORT_DAY.format(new Date(ts)));
     const activityPanel = feed.length ? h`<section class="ovx-panel ovx-5" aria-labelledby="ovxAct">
-      ${head(h`<span id="ovxAct">Recent activity</span>`, 'The latest entries in the audit history', more('#audit', 'Audit history'))}
+      ${head(h`<span id="ovxAct">Recent activity</span>`, 'The latest entries in the audit history. Times are UTC.', more('#audit', 'Audit history'))}
       <ul class="ovx-act">${feed.slice(0, 6).map((e) => h`<li><time datetime="${e.ts}">${when(e.ts)}</time><i class="ovx-dot is-${AUDIT_TONE[e.type] || 'na'}" aria-hidden="true"></i><span><b>${auditLabel(e.type)}</b>${e.subject ? ` · ${e.subject}` : ''}<small>${e.action}</small></span></li>`)}</ul>
     </section>` : '';
 
@@ -1017,7 +1009,7 @@ const VIEWS = {
     return h`<div class="stack">
       <section class="panel setup-progress" aria-labelledby="setupProgress">
         <div class="setup-progress-text">
-          <h2 id="setupProgress">${done === total ? 'Setup is complete' : `${done} of ${total} steps done`}</h2>
+          <h2 id="setupProgress">${done < total ? `${done} of ${total} steps done` : toFix.length ? `Set up, with ${toFix.length === 1 ? 'one thing' : `${toFix.length} things`} to fix` : 'Setup is complete'}</h2>
           <p>${done === total ? `Aegis is checking ${plural(s.summary.workers, 'worker')} against ${plural(s.recommended.filter((p) => p.status === 'active').length, 'active pack')}.${toFix.length > 1 ? ` ${toFix.length} steps need attention: ${toFix.map((x) => x.title.toLowerCase()).join('; ')}.` : fix ? ` One step needs attention: ${fix.title.toLowerCase()}.` : ' You can change any step below.'}` : `Next: ${next ? next.title.toLowerCase() : 'finish the steps above'}.`}</p>
         </div>
         <ol class="setup-meter" aria-hidden="true">${steps.map((x) => h`<li class="${x.done ? 'is-done' : x === next ? 'is-current' : ''}"></li>`)}</ol>
@@ -1076,7 +1068,6 @@ const VIEWS = {
     const openOf = (w) => (w.checks?.fail || 0) + (w.checks?.unknown || 0);
     const rows = (await api('/api/workers')).sort((a, b) => openOf(b) - openOf(a) || a.name.localeCompare(b.name));
     const withGaps = rows.filter((w) => openOf(w)).length;
-    rememberLocations(rows.filter((w) => w.facility).map((w) => ({ name: w.facility, state: w.state })));
     return card('All workers', `${rows.length} workers${withGaps ? ` · ${withGaps} with open checks` : ''}. A tick means the pack passes; only problems are highlighted.`, table(['Worker', 'Location', 'Onboarding', 'Healthcare', 'Immigration', 'Payroll', 'Overall', 'Open', 'Readiness'], rows.map((w) => h`<tr class="click" data-act="workerDetail" data-id="${w.id}"><td><button class="row-title" data-act="workerDetail" data-id="${w.id}">${w.name}</button>${w.status !== 'active' ? h` <span class="pill pill-na">${words(w.status)}</span>` : ''}<div class="case-sub">${w.role || 'No role'}</div></td><td class="${w.facility ? '' : 'muted'}">${w.facility || 'No location assigned'}</td><td class="result-cell">${quietStatus(w.packs.onboarding)}</td><td class="result-cell">${quietStatus(w.packs.healthcare)}</td><td class="result-cell">${quietStatus(w.packs.immigration)}</td><td class="result-cell">${quietStatus(w.packs.payroll)}</td><td class="result-cell">${quietStatus(w.overall)}</td><td class="open-cell">${openOf(w) ? h`<b>${openOf(w)}</b>` : h`<span class="muted">0</span>`}</td><td class="${w.readiness === 'blocked' ? 'text-fail' : 'muted'}">${words(w.readiness)}</td></tr>`), ['No workers yet', 'Add a worker, import a roster, or connect your HR system under Connections.']));
   },
   async evidence() {
@@ -1653,10 +1644,11 @@ const ACT = {
       <div class="readiness-note ${openN || !list.length ? 'is-open' : 'is-clear'}"><b>${!list.length ? 'No applicable checks yet' : openN ? `${openN} of ${list.length} visible checks still open` : 'All visible checks pass'}</b><span>${rv.statement}${w.readiness_request ? ` Waiting in Approvals since ${date(w.readiness_request.created_at)}, asked by ${w.readiness_request.requested_by}.` : ''}</span></div>
       ${table(['Requirement', 'Result', 'Why', ''], list.map((c) => h`<tr><td>${c.control_name}<div class="case-sub">${words(c.pack_key)}</div></td><td>${statusPill(c.status)}</td><td class="small">${c.reason}</td><td class="row-action">${canEdit() && (c.status !== 'pass' || /expir/.test(c.code || '')) ? h`<button class="btn-link-action" data-act="uploadEvidence" data-subject="worker:${w.id}" data-control="${c.control_key}" data-name="${w.name}">Upload</button>` : ''}</td></tr>`), 'No checks yet.')}`, workerFoot(w, openN, list.length), true);
   },
-  // Suggests the locations the company already has, so a typo does not create a new one.
-  moveWorker(el, ev) {
+  // The company's own locations, so a typo never creates a new one.
+  async moveWorker(el, ev) {
     ev?.stopPropagation();
-    openModal(el.dataset.title || 'Change assignment', 'Aegis re-runs the checks that apply to the new location.', h`<form data-form="move" data-id="${el.dataset.id}"><div class="form-group"><label class="form-label" for="mvFacility">Location</label><input id="mvFacility" name="facility" class="form-select" list="mvLocations" autocomplete="off" required><datalist id="mvLocations">${knownLocations.map((f) => h`<option value="${f.name}">${f.state || ''}</option>`)}</datalist></div><div class="form-group"><label class="form-label" for="mvState">State</label><input id="mvState" name="facility_state" class="form-select" maxlength="2" placeholder="${knownLocations.length ? 'Filled in for a known location' : ''}"></div><button class="btn-submit-green">Save</button></form>`);
+    const L = await api('/api/locations');
+    openModal(el.dataset.title || 'Change location', 'Aegis runs the checks for the new location again.', h`<form data-form="move" data-id="${el.dataset.id}">${placePickers(L, { current: el.dataset.current || '' })}<button class="btn-submit-green">Save</button></form>`);
   },
   openApprovals() { closeModal(); location.hash = 'approvals'; },
   editEmail(el, ev) {
@@ -1718,7 +1710,11 @@ const ACT = {
     if (route === 'evidence') await refresh(); else { location.hash = 'evidence'; await new Promise((ok) => setTimeout(ok, 500)); }
     document.querySelector('.evidence-layout tr.selected')?.scrollIntoView({ block: 'center', behavior: 'smooth' });
   },
-  addWorker() { openModal('Add Worker', 'Added workers are checked against activated packs.', h`<form data-form="addWorker"><div class="form-grid"><div class="form-group"><label class="form-label">Full name</label><input name="name" class="form-select" required></div><div class="form-group"><label class="form-label">Email</label><input name="email" type="email" class="form-select"></div><div class="form-group"><label class="form-label">Role</label><input name="role" class="form-select" required></div><div class="form-group"><label class="form-label">Category</label><select name="category" class="form-select"><option value="clinical">Clinical</option><option value="corporate">Corporate</option></select></div><div class="form-group"><label class="form-label">License type</label><select name="license_type" class="form-select"><option value="">None</option><option>RN</option><option>NP</option><option>MD</option><option>PT</option></select></div><div class="form-group"><label class="form-label">Hire date</label><input name="hire_date" type="date" class="form-select" value="${me.today}"></div><div class="form-group"><label class="form-label">Facility</label><input name="facility" class="form-select"></div><div class="form-group"><label class="form-label">State</label><input name="facility_state" maxlength="2" class="form-select"></div><div class="form-group"><label class="form-label">Employing entity</label><input name="entity" class="form-select"></div></div><button class="btn-submit-green">Save worker</button></form>`, null, true); },
+  async addWorker() {
+    const L = await api('/api/locations');
+    openModal('Add worker', 'Aegis checks a new worker against your active packs as soon as they are saved.', h`<form data-form="addWorker"><div class="form-grid"><div class="form-group"><label class="form-label" for="awName">Full name</label><input id="awName" name="name" class="form-select" required maxlength="120" autocomplete="off"></div><div class="form-group"><label class="form-label" for="awEmail">Work email</label><input id="awEmail" name="email" type="email" class="form-select" autocomplete="off"></div><div class="form-group"><label class="form-label" for="awRole">Job title</label><input id="awRole" name="role" class="form-select" required maxlength="120"></div><div class="form-group"><label class="form-label" for="awCat">Category</label><select id="awCat" name="category" class="form-select"><option value="clinical">Clinical</option><option value="corporate">Corporate</option></select></div><div class="form-group"><label class="form-label" for="awLic">License type</label><select id="awLic" name="license_type" class="form-select"><option value="">None</option><option>RN</option><option>NP</option><option>MD</option><option>PT</option></select></div><div class="form-group"><label class="form-label" for="awHire">Hire date</label><input id="awHire" name="hire_date" type="date" class="form-select" value="${me.today}"></div></div>
+      ${placePickers(L, { optional: true, company: true })}<button class="btn-submit-green">Save worker</button></form>`, null, true);
+  },
   importRoster() { importPreview = null; openModal('Import Worker Roster', 'Excel or CSV. You review the mapping before anything is saved.', h`<form data-form="importFile"><div class="drop-zone-box"><input type="file" name="file" accept=".csv,.xlsx" required aria-label="Roster file"><span class="subtext mt">Columns like Name, Email, Role, Facility, State, License Type, Hire Date</span></div><button class="btn-submit-green mt">Preview import</button></form>`); },
   async commitImport(el) { const r = await api(`/api/import/${el.dataset.id}/commit`, {}); toast(`${r.created} added, ${r.updated} updated.`, 'success'); closeModal(); after(); },
   // Opened from the page header (nothing chosen yet), or from a case or a worker,
@@ -1731,7 +1727,7 @@ const ACT = {
     openModal(pre.name ? `Upload evidence for ${pre.name}` : 'Upload evidence', 'Upload one file, or several at once. Aegis reads each one and suggests what it is; unclear ones go to a person.', h`<form data-form="upload" class="upload-form">
       <div class="form-grid">
         <div class="form-group"><label class="form-label" for="upSubject">Who is this for</label><select id="upSubject" name="subject" class="form-select" required>${ws.map((w) => h`<option value="worker:${w.id}" ${sel(pre.subject === `worker:${w.id}`)}>${w.name}</option>`)}${setup.entities.map((e) => h`<option value="entity:${e.id}" ${sel(pre.subject === `entity:${e.id}`)}>${e.name} (company)</option>`)}</select></div>
-        <div class="form-group"><label class="form-label" for="upControl">Requirement</label><select id="upControl" name="control_key" class="form-select"><option value="">Let Aegis match each file</option>${ctl.controls.filter((c) => c.remediation && c.type !== 'field_required').map((c) => h`<option value="${c.key}" ${sel(pre.control === c.key)}>${words(c.pack)}: ${c.name}</option>`)}</select></div>
+        <div class="form-group"><label class="form-label" for="upControl">Requirement</label><select id="upControl" name="control_key" class="form-select"><option value="">Let Aegis match each file</option>${ctl.controls.filter((c) => c.remediation && c.type !== 'field_required').map((c) => h`<option value="${c.key}" data-for="${c.subject}" ${sel(pre.control === c.key)}>${words(c.pack)}: ${c.name}</option>`)}</select></div>
       </div>
       <div class="form-group"><span class="form-label">Files</span>
         <label class="upload-drop" data-upload-drop>
@@ -1744,6 +1740,7 @@ const ACT = {
       </div>
       <div class="form-grid" data-single-only><div class="form-group"><label class="form-label">Document number (optional)</label><input name="doc_number" class="form-select"></div><div class="form-group"><label class="form-label">Expires (optional)</label><input name="expires_on" type="date" class="form-select"></div></div>
       <button class="btn-submit-green" data-upload-go>Upload</button></form>`);
+    fitRequirements(document.getElementById('upSubject'));
   },
   // Older links may still ask for "bulk upload"; it is the same window now.
   bulkUpload() { return ACT.uploadEvidence(); },
@@ -1931,21 +1928,19 @@ const FORM = {
   async chat(d, f) {
     if (await sendChat(d.text) && f.elements.text.value === d.text) f.reset();
   },
-  async addWorker(d) { await api('/api/workers', d); toast('Worker added. Checks are running.', 'success'); closeModal(); setTimeout(after, 1200); },
+  async addWorker(d) { await api('/api/workers', placeFields(d)); toast('Worker added. Checks are running.', 'success'); closeModal(); setTimeout(after, 1200); },
   async editEmail(d, f) {
     const r = await api(`/api/workers/${f.dataset.id}/email`, { email: d.email });
     toast(r.changed ? `Email saved for ${f.dataset.name}. Document requests can now reach them.` : 'No change: that is already their email.', 'success');
     if (f.dataset.back) ACT.workerDetail({ dataset: { id: f.dataset.id } }); else { closeModal(); refresh(); }
   },
   async move(d, f) {
-    const known = knownLocations.find((x) => x.name.toLowerCase() === d.facility.trim().toLowerCase());
-    const body = known ? { facility: known.name, facility_state: d.facility_state || known.state || '' } : d;
-    await api(`/api/workers/${f.dataset.id}/assignment`, body); toast('Location saved. Checks are running.', 'success'); closeModal(); setTimeout(after, 1200);
+    await api(`/api/workers/${f.dataset.id}/assignment`, placeFields(d)); toast('Location saved. Checks are running.', 'success'); closeModal(); setTimeout(after, 1200);
   },
   async note(d, f) { await api(`/api/cases/${f.dataset.id}/note`, d); toast('Note added.', 'success'); ACT.caseDetail({ dataset: { id: f.dataset.id } }); },
   async importFile(d, f) {
     const p = await api('/api/import/preview', { file: await fileData(f.elements.file.files[0]) });
-    openModal(`Review ${p.filename}`, `${p.total} worker(s) ready. Nothing is saved yet.`, h`${p.errors.length ? h`<div class="alert-box">${p.errors.length} row(s) will be skipped: ${p.errors.map((e) => `row ${e.row}: ${e.error}`).join('; ')}</div>` : ''}${p.unmapped.length ? h`<p class="small muted mb">Ignored columns: ${p.unmapped.join(', ')}</p>` : ''}<p class="small mb">Missing: ${p.missing.facility} location, ${p.missing.email} email, ${p.missing.hire_date} hire date. These will show as data gaps.</p>${table(['Name', 'Email', 'Role', 'Facility', 'Hire date'], p.sample.map((r) => h`<tr><td>${r.name}</td><td>${r.email}</td><td>${r.role}</td><td>${r.facility}</td><td>${r.hire_date}</td></tr>`), '')}`, h`<button class="btn-cancel" data-act="closeModal">Cancel</button><button class="btn-submit-green" data-act="commitImport" data-id="${p.id}">Import ${p.total} worker(s)</button>`, true);
+    openModal(`Review ${p.filename}`, `${plural(p.total, 'worker')} ready. Nothing is saved yet.`, h`${p.errors.length ? h`<div class="alert-box">${plural(p.errors.length, 'row')} will be skipped: ${p.errors.map((e) => `row ${e.row}: ${e.error}`).join('; ')}</div>` : ''}${p.unmapped.length ? h`<p class="small muted mb">Ignored columns: ${p.unmapped.join(', ')}</p>` : ''}<p class="small mb">Missing: ${p.missing.facility} location, ${p.missing.email} email, ${p.missing.hire_date} hire date. These will show as data gaps.</p>${table(['Name', 'Email', 'Role', 'Facility', 'Hire date'], p.sample.map((r) => h`<tr><td>${r.name}</td><td>${r.email}</td><td>${r.role}</td><td>${r.facility}</td><td>${r.hire_date}</td></tr>`), '')}`, h`<button class="btn-cancel" data-act="closeModal">Cancel</button><button class="btn-submit-green" data-act="commitImport" data-id="${p.id}">Import ${p.total} worker(s)</button>`, true);
   },
   // The upload window stays open and shows what happened to each file: accepted, sent to review
   // (with the reason), already on record, or not uploaded. One file failing does not stop the rest.
@@ -2650,7 +2645,7 @@ async function showLogin() {
 }
 
 const SIGNUP_FIELDS = [
-  { name: 'org_name', label: 'Organisation name', autocomplete: 'organization', min: 2, max: 120, error: 'Enter an organisation name of 2 to 120 characters.' },
+  { name: 'org_name', label: 'Organization name', autocomplete: 'organization', min: 2, max: 120, error: 'Enter an organization name of 2 to 120 characters.' },
   { name: 'admin_name', label: 'Your full name', autocomplete: 'name', min: 2, max: 120, error: 'Enter your full name of 2 to 120 characters.' },
   { name: 'email', label: 'Work email', autocomplete: 'email', type: 'email', max: 254, error: 'Enter a valid work email.' },
   { name: 'password', label: 'Password', autocomplete: 'new-password', type: 'password', min: 12, max: 128, error: 'Use a password of 12 to 128 characters.' },
@@ -2660,7 +2655,7 @@ function renderSignup() {
   const desk = $('#loginScreen .main-desk');
   desk.innerHTML = render(h`
     <h1 tabindex="-1">Create a workspace</h1>
-    <p class="lead">Set up your organisation in Aegis. You’ll be the first administrator.</p>
+    <p class="lead">Set up your organization in Aegis. You’ll be the first administrator.</p>
     <form id="signup-form" class="form-desk" novalidate>
       ${SIGNUP_FIELDS.map((f) => h`<div>
         <label for="new-${f.name}">${f.label}</label>
@@ -2899,6 +2894,49 @@ document.addEventListener('change', (e) => {
   list.innerHTML = render(files.map((f) => h`<li><span class="upload-file-name">${f.name}</span><span class="upload-file-size">${fileSize(f.size)}</span></li>`));
   form.querySelector('[data-upload-go]').textContent = n > 1 ? `Upload ${n} files` : 'Upload';
 });
+// Worker forms: pick a location and employing company from the company's own lists. A new one is
+// added only when someone chooses "Add a new …" and spells it out, with the state for a location.
+const NEW_PLACE = '+new';
+function placePickers(L, { optional = false, company = false, current = '' } = {}) {
+  const opt = (value, label, extra = '') => h`<option value="${value}" ${extra ? raw(extra) : ''}>${label}</option>`;
+  return h`<div class="form-grid">
+      <div class="form-group"><label class="form-label" for="plLoc">Work location</label><select id="plLoc" name="facility" class="form-select" data-place-pick="location" ${optional ? '' : raw('required')}>
+        ${optional ? opt('', 'Not assigned yet') : opt('', 'Choose a location', 'disabled selected')}
+        ${L.facilities.map((f) => opt(f.name, `${f.name}${f.state ? ` · ${f.state}` : ''}${f.name === current ? ' (current)' : ''}`, f.name === current ? 'disabled' : ''))}
+        ${opt(NEW_PLACE, 'Add a new location…')}</select></div>
+      ${company ? h`<div class="form-group"><label class="form-label" for="plEnt">Employing company</label><select id="plEnt" name="entity" class="form-select" data-place-pick="company">
+        ${opt('', 'Not set')}${L.entities.map((e) => opt(e.name, e.name))}${opt(NEW_PLACE, 'Add a new company…')}</select></div>` : ''}
+    </div>
+    <div class="form-grid place-new" data-place-new="location" hidden>
+      <div class="form-group"><label class="form-label" for="plLocName">New location name</label><input id="plLocName" name="new_facility" class="form-select" maxlength="120" autocomplete="off"></div>
+      <div class="form-group"><label class="form-label" for="plLocState">State</label><select id="plLocState" name="new_facility_state" class="form-select"><option value="">Choose a state</option>${L.states.map(([code, name]) => h`<option value="${code}">${name}</option>`)}</select></div>
+      <p class="muted small place-hint">The state decides which state rules apply to people working here.</p>
+    </div>
+    ${company ? h`<div class="form-group place-new" data-place-new="company" hidden><label class="form-label" for="plEntName">New company name</label><input id="plEntName" name="new_entity" class="form-select" maxlength="120" autocomplete="off"></div>` : ''}`;
+}
+document.addEventListener('change', (e) => {
+  const pick = e.target.closest?.('[data-place-pick]'); if (!pick) return;
+  const box = pick.form.querySelector(`[data-place-new="${pick.dataset.placePick}"]`), on = pick.value === NEW_PLACE;
+  box.hidden = !on;
+  for (const field of box.querySelectorAll('input, select')) field.required = on;
+  if (on) box.querySelector('input')?.focus();
+});
+// What the server is sent: the chosen place, or the new one spelled out.
+function placeFields(d) {
+  const out = { ...d };
+  if (out.facility === NEW_PLACE) Object.assign(out, { facility: d.new_facility, facility_state: d.new_facility_state });
+  if (out.entity === NEW_PLACE) out.entity = d.new_entity;
+  for (const k of ['new_facility', 'new_facility_state', 'new_entity']) delete out[k];
+  return out;
+}
+// Upload window: a person's requirements for a person, a company's for a company.
+function fitRequirements(subject) {
+  const control = subject?.form?.elements.control_key; if (!control) return;
+  const kind = subject.value.split(':')[0];
+  for (const o of control.options) if (o.dataset.for) o.hidden = o.disabled = o.dataset.for !== kind;
+  if (control.selectedOptions[0]?.disabled) control.value = '';
+}
+document.addEventListener('change', (e) => { if (e.target.id === 'upSubject') fitRequirements(e.target); });
 // Evidence review: fill in the text of a document when its panel appears, and say so plainly when a
 // preview cannot be shown. textContent keeps document text as text, never as page markup.
 const previewText = new Map();

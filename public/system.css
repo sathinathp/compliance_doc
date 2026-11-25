@@ -2365,3 +2365,7 @@ a.view-card-name:hover { color: var(--primary); }
   :is(html, #aegis) .chat-drawer { transition: none; transform: none; }
   :is(html, #aegis) .chat-status:not(:empty)::before { animation: none; }
 }
+
+/* Worker forms: the fields for a new location or company appear under the pickers. */
+.place-new { margin-top: 14px; }
+.place-new .place-hint { grid-column: 1 / -1; margin: -6px 0 0; }

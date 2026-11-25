@@ -1,7 +1,7 @@
 'use strict';
 // Deterministic control evaluator. No AI here: every result is Pass, Fail, Unknown or Not applicable,
 // with a reason and evidence references. Missing or stale evidence can never yield Pass.
-const { addDays, daysBetween, nameMatch } = require('./lib/util');
+const { addDays, daysBetween, count, nameMatch } = require('./lib/util');
 
 const NA = (reason) => ({ status: 'not_applicable', code: 'not_applicable', reason, evidence_ids: [], action_needed: false, gap_kind: null });
 const unknown = (code, reason, gap_kind, extra = {}) => ({ status: 'unknown', code, reason, evidence_ids: [], action_needed: true, gap_kind, ...extra });
@@ -50,10 +50,10 @@ function evaluate(c, s, ctx) {
       const dated = withExp.filter((x) => x.exp).sort((a, b) => b.exp.localeCompare(a.exp));
       if (!dated.length) return unknown('evidence_incomplete', 'Accepted evidence has no expiration or issue date, so currency cannot be confirmed.', 'evidence');
       const best = dated[0], days = daysBetween(today, best.exp);
-      if (days < 0) return fail('expired', `${c.name} expired ${-days} day(s) ago on ${best.exp}.${pending.length ? ' A replacement is awaiting review.' : ''}`, pending.length ? 'review' : 'evidence', { evidence_ids: [best.e.id, ...pending.map((e) => e.id)], due: best.exp });
+      if (days < 0) return fail('expired', `${c.name} expired ${count(-days, 'day')} ago on ${best.exp}.${pending.length ? ' A replacement is awaiting review.' : ''}`, pending.length ? 'review' : 'evidence', { evidence_ids: [best.e.id, ...pending.map((e) => e.id)], due: best.exp });
       if (c.params?.state_must_match && ctx.facility && best.e.state && best.e.state !== ctx.facility.state)
         return unknown('state_mismatch', `License state ${best.e.state} does not match work state ${ctx.facility.state}. Specialist review needed.`, 'review', { evidence_ids: [best.e.id] });
-      if (days <= warn) return pass('expiring', `${c.name} is valid but expires in ${days} day(s) on ${best.exp}.`, [best.e.id], { action_needed: true, gap_kind: pending.length ? 'review' : 'evidence', due: best.exp, days });
+      if (days <= warn) return pass('expiring', `${c.name} is valid but expires in ${count(days, 'day')} on ${best.exp}.`, [best.e.id], { action_needed: true, gap_kind: pending.length ? 'review' : 'evidence', due: best.exp, days });
       return pass('current', `${c.name} is current until ${best.exp}.`, [best.e.id]);
     }
     case 'document_required': {

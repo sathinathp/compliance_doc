@@ -103,7 +103,7 @@ test('HRMS sync reads every page, maps fields, skips unsafe records, and keeps t
   assert.equal(cara.category, 'clinical');
   assert.ok(db.get("SELECT 1 AS x FROM facilities WHERE tenant_id=? AND name='Northstar General' AND state='TX'", t));
   assert.ok(!db.get("SELECT 1 AS x FROM workers WHERE tenant_id=? AND email='nobody@northstar.test'", t), 'a record without a name is not guessed');
-  assert.match(db.get('SELECT last_error FROM connectors WHERE id=?', conId).last_error, /1 record\(s\) skipped/);
+  assert.match(db.get('SELECT last_error FROM connectors WHERE id=?', conId).last_error, /1 record skipped/);
 
   // A second sync changes nothing and creates no duplicates.
   const again = await admin.post(`/api/connectors/${conId}/sync`);

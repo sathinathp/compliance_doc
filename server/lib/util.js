@@ -14,6 +14,14 @@ const shortId = (p) => `${p}-${crypto.randomBytes(3).toString('hex').toUpperCase
 const sha256 = (x) => crypto.createHash('sha256').update(x).digest('hex');
 const token = () => crypto.randomBytes(32).toString('base64url');
 const addDays = (d, n) => new Date(new Date(d + 'T00:00:00Z').getTime() + n * 864e5).toISOString().slice(0, 10);
+// US states and territories by name, and the two-letter code for a name or code ("Texas", "tx").
+const US_STATES = { alabama: 'AL', alaska: 'AK', arizona: 'AZ', arkansas: 'AR', california: 'CA', colorado: 'CO', connecticut: 'CT', delaware: 'DE', 'district of columbia': 'DC', florida: 'FL', georgia: 'GA', hawaii: 'HI', idaho: 'ID', illinois: 'IL', indiana: 'IN', iowa: 'IA', kansas: 'KS', kentucky: 'KY', louisiana: 'LA', maine: 'ME', maryland: 'MD', massachusetts: 'MA', michigan: 'MI', minnesota: 'MN', mississippi: 'MS', missouri: 'MO', montana: 'MT', nebraska: 'NE', nevada: 'NV', 'new hampshire': 'NH', 'new jersey': 'NJ', 'new mexico': 'NM', 'new york': 'NY', 'north carolina': 'NC', 'north dakota': 'ND', ohio: 'OH', oklahoma: 'OK', oregon: 'OR', pennsylvania: 'PA', 'rhode island': 'RI', 'south carolina': 'SC', 'south dakota': 'SD', tennessee: 'TN', texas: 'TX', utah: 'UT', vermont: 'VT', virginia: 'VA', washington: 'WA', 'west virginia': 'WV', wisconsin: 'WI', wyoming: 'WY', 'puerto rico': 'PR' };
+const STATE_CODES = new Set(Object.values(US_STATES));
+const stateCode = (v) => { const s = String(v || '').trim(); return STATE_CODES.has(s.toUpperCase()) && s.length === 2 ? s.toUpperCase() : US_STATES[s.toLowerCase()] || null; };
+// A place name as people mean it: "  St. Jude   Medical " and "st. jude medical" are one place.
+const placeKey = (v) => String(v || '').trim().replace(/\s+/g, ' ').toLowerCase();
+// "1 day", "3 days": a count with its noun, never "day(s)".
+const count = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const daysBetween = (a, b) => Math.round((new Date(b + 'T00:00:00Z') - new Date(a + 'T00:00:00Z')) / 864e5);
 // ---- Comparing the name on a document with the name on the worker record ----
 // Credentials and suffixes after a name ("Sarah Jenkins, RN") and titles before it ("Dr.") are not part of it.
@@ -172,4 +180,4 @@ const csvCell = (v) => {
   if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`; // stops spreadsheet formula injection
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
-module.exports = { clock, id, shortId, sha256, token, addDays, daysBetween, sameName, nameMatch, j, hashPassword, checkPassword, setSecret, encrypt, decrypt, parseCsv, parseXlsx, normDate, csvCell };
+module.exports = { clock, id, shortId, sha256, token, addDays, daysBetween, count, US_STATES, stateCode, placeKey, sameName, nameMatch, j, hashPassword, checkPassword, setSecret, encrypt, decrypt, parseCsv, parseXlsx, normDate, csvCell };

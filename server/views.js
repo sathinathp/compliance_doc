@@ -1,6 +1,6 @@
 'use strict';
 // Read models. Dashboards, reports and chat all use these same queries, so they cannot disagree.
-const db = require('./lib/db'), { clock, j, daysBetween, addDays, csvCell } = require('./lib/util');
+const db = require('./lib/db'), { clock, j, count, daysBetween, addDays, csvCell } = require('./lib/util');
 const P = require('./platform'), R = require('./registry'), E = require('./engine');
 const { canSeeRestricted } = P;
 const llm = require('./llm'), Ev = require('./evidence'), docread = require('./lib/docread');
@@ -44,7 +44,7 @@ function packRows(t) {
 }
 function coverage(t) {
   const rows = allChecks(t), a = tally(rows), packs = packRows(t).filter((p) => p.status === 'active');
-  return { ...a, packs: packs.map((p) => p.name), as_of: clock.iso(), scope_statement: packs.length ? `${a.total} applicable checks in ${packs.length} activated pack(s). Obligations outside these packs have not been assessed.` : 'No packs are activated, so nothing has been assessed.', all_pass: a.total > 0 && a.pass === a.total };
+  return { ...a, packs: packs.map((p) => p.name), as_of: clock.iso(), scope_statement: packs.length ? `${a.total} applicable checks in ${count(packs.length, 'activated pack')}. Obligations outside these packs have not been assessed.` : 'No packs are activated, so nothing has been assessed.', all_pass: a.total > 0 && a.pass === a.total };
 }
 function listCases(t, user, f = {}) {
   let rows = db.all(`SELECT c.*, u.name owner_name FROM cases c LEFT JOIN users u ON u.id=c.owner_user_id WHERE c.tenant_id=? ${f.closed ? 'AND c.closed_at IS NOT NULL' : 'AND c.closed_at IS NULL'} ORDER BY CASE c.priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, c.due_date`, t);
@@ -307,7 +307,7 @@ function setupState(t) {
 }
 function digestText(t) {
   const c = coverage(t), open = db.all(`SELECT * FROM cases WHERE tenant_id=? AND ${E.OPEN}`, t), pend = db.get("SELECT COUNT(*) n FROM approvals WHERE tenant_id=? AND status='pending'", t).n;
-  return `Aegis digest for ${clock.today()}\n${c.pass} pass, ${c.fail} fail, ${c.unknown} unknown across ${c.total} applicable checks.\n${open.length} open case(s), ${open.filter((x) => x.escalated).length} escalated. ${pend} awaiting approval.\n${c.scope_statement}`;
+  return `Aegis digest for ${clock.today()}\n${c.pass} pass, ${c.fail} fail, ${c.unknown} unknown across ${c.total} applicable checks.\n${count(open.length, 'open case')}, ${open.filter((x) => x.escalated).length} escalated. ${pend} awaiting approval.\n${c.scope_statement}`;
 }
 function health(t) {
   return { ai_error: llm.lastError(t), jobs: { queued: db.get("SELECT COUNT(*) n FROM jobs WHERE tenant_id=? AND status='queued'", t).n, dead: db.all("SELECT id,type,last_error,attempts,finished_at FROM jobs WHERE tenant_id=? AND status='dead' ORDER BY finished_at DESC LIMIT 20", t) }, failed_actions: db.all("SELECT id,type,recipient,error FROM actions WHERE tenant_id=? AND error IS NOT NULL AND status='queued' LIMIT 20", t), connectors: db.all('SELECT id,type,name,status,last_sync_at,last_error,records,capabilities_json FROM connectors WHERE tenant_id=?', t).map((c) => ({ ...c, capabilities: j(c.capabilities_json, []) })), events: db.all('SELECT type,status,received_at,error FROM events WHERE tenant_id=? ORDER BY received_at DESC LIMIT 10', t), schedules: db.all('SELECT * FROM schedules WHERE tenant_id=?', t), audit: P.verifyAudit(t) };

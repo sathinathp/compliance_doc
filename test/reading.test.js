@@ -51,6 +51,21 @@ test('field rules find the holder, not the training center, and the right dates'
   assert.equal(sameLine.holder_name, 'Jane Doe'); assert.equal(sameLine.issued_on, '2026-01-05'); assert.equal(sameLine.expires_on, '2028-01-05');
 });
 
+test('every document type is recognised by the words people title it with', () => {
+  const titles = {
+    'Professional license': 'professional_license', 'BLS card': 'bls_card', 'ACLS card': 'acls_card', 'TB screening': 'tb_screening',
+    'Flu vaccination': 'flu_vaccine', 'Influenza vaccine record': 'flu_vaccine', 'Flu shot': 'flu_vaccine', 'Flu immunization': 'flu_vaccine',
+    'Facility orientation': 'facility_orientation', 'Handbook acknowledgment': 'handbook_ack', 'Security training': 'security_training',
+    'I-9 record': 'i9_record', 'Work authorization': 'work_authorization', 'Work Authorisation': 'work_authorization', 'Employment Authorization Document': 'work_authorization',
+    'W-4': 'w4', 'Payroll filing receipt': 'payroll_filing_receipt',
+  };
+  for (const [title, want] of Object.entries(titles)) {
+    const r = heuristicExtract(`SAMPLE DOCUMENT RECORD\n${title}\nName on document\tAva Thompson`);
+    assert.equal(r.fields.doc_type, want, title); assert.equal(r.confidence.doc_type, 0.9, `${title}: only one type is named`);
+  }
+  assert.equal(heuristicExtract('Fluid balance chart').fields.doc_type, undefined, '"flu" must be a whole word');
+});
+
 test('uncertain readings are marked uncertain', () => {
   const ambiguous = heuristicExtract('ACLS Provider\nExpiration Date: 03/04/2027');
   assert.equal(ambiguous.fields.expires_on, '2027-03-04'); assert.ok(ambiguous.confidence.expires_on < 0.9);

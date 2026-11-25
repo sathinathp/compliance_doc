@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const sandbox = require('./lib/sandbox');
 const W = require('./lib/workspace');
 const CoworkerPolicy = require('./coworker-policy');
-const db = require('./lib/db'), { clock, id, sha256, token, j, hashPassword, checkPassword } = require('./lib/util');
+const db = require('./lib/db'), { clock, id, sha256, token, j, count, US_STATES, hashPassword, checkPassword } = require('./lib/util');
 const docread = require('./lib/docread');
 const P = require('./platform'), R = require('./registry'), E = require('./engine'), Ev = require('./evidence'), C = require('./connectors'), V = require('./views'), Chat = require('./chat'), llm = require('./llm'), mock = require('./mock-hrms'), channels = require('./channels'), Slack = require('./slack');
 const { HttpError } = P;
@@ -52,7 +52,7 @@ add('POST', '/api/signup', ({ req, res, body }) => {
   const field = (key) => typeof body?.[key] === 'string' ? body[key] : '';
   const orgName = field('org_name').trim(), adminName = field('admin_name').trim();
   const email = field('email').trim().toLowerCase(), password = field('password');
-  if (orgName.length < 2 || orgName.length > 120) throw new HttpError(400, 'Enter an organisation name of 2 to 120 characters.');
+  if (orgName.length < 2 || orgName.length > 120) throw new HttpError(400, 'Enter an organization name of 2 to 120 characters.');
   if (adminName.length < 2 || adminName.length > 120) throw new HttpError(400, 'Enter a full name of 2 to 120 characters.');
   if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new HttpError(400, 'Enter a valid work email.');
   if (password.length < 12 || password.length > 128) throw new HttpError(400, 'Use a password of 12 to 128 characters.');
@@ -192,11 +192,19 @@ add('POST', '/api/cases/:id/verdict', ({ t, user, p, body }) => { edit(user); co
 add('POST', '/api/cases/:id/decision', ({ t, user, p, body }) => { edit(user); const c = getCase(t, p.id); seen(user, c); P.assertPack(user, c.pack_key); E.requestDecision(t, user, 'assignment_review', c, `${body.title || 'Decision'}: ${c.subject_name}`, `${c.gap} ${body.detail || ''}`.trim(), c.pack_key, c.id); return { ok: true }; });
 add('GET', '/api/workers', ({ t, user }) => V.listWorkers(t, user));
 add('GET', '/api/workers/:id', ({ t, user, p }) => V.workerDetail(t, user, p.id));
+// The company's locations and employing companies, for the pickers on the worker forms.
+const STATE_LIST = Object.entries(US_STATES).map(([n, code]) => [code, n.replace(/\b\w/g, (c) => c.toUpperCase()).replace(' Of ', ' of ')]).sort((a, b) => a[1].localeCompare(b[1]));
+add('GET', '/api/locations', ({ t }) => ({
+  facilities: db.all('SELECT name, state FROM facilities WHERE tenant_id=? ORDER BY name', t),
+  entities: db.all('SELECT name FROM entities WHERE tenant_id=? ORDER BY name', t),
+  states: STATE_LIST,
+}));
 add('POST', '/api/workers', ({ t, user, body }) => {
   edit(user); if (!P.isAdmin(user) && user.role !== 'hr') throw new HttpError(403, 'HR or administrator role required.');
   const name = String(body.name || '').trim();
   if (!name) throw new HttpError(400, 'Name is required.');
-  const r = C.upsertWorker(t, { name, email: String(body.email || '').trim(), role: body.role, license_type: body.license_type || null, category: body.category, dept: body.dept, facility: body.facility, facility_state: body.facility_state, entity: body.entity, hire_date: body.hire_date || clock.today(), work_auth_expires: body.work_auth_expires, attrs: {} }, 'manual', user);
+  const places = C.placesFrom(t, body);
+  const r = C.upsertWorker(t, { name, email: String(body.email || '').trim(), role: body.role, license_type: body.license_type || null, category: body.category, dept: body.dept, ...places, hire_date: body.hire_date || clock.today(), work_auth_expires: body.work_auth_expires, attrs: {} }, 'manual', user);
   return r;
 });
 // Adds or changes a worker's email, so document requests can reach them. HR and administrators only,
@@ -218,9 +226,9 @@ add('POST', '/api/workers/:id/email', ({ t, user, p, body }) => {
 });
 add('POST', '/api/workers/:id/assignment', ({ t, user, p, body }) => {
   edit(user); const w = db.get('SELECT * FROM workers WHERE id=? AND tenant_id=?', p.id, t); if (!w) throw new HttpError(404, 'Worker not found.');
-  const facility = String(body.facility || '').trim();
-  if (!facility) throw new HttpError(400, 'Facility is required.');
-  C.changeAssignment(t, w, facility, body.facility_state, user);
+  if (!String(body.facility || '').trim()) throw new HttpError(400, 'Choose a location.');
+  const { facility, facility_state } = C.placesFrom(t, body);
+  C.changeAssignment(t, w, facility, facility_state, user);
   return { ok: true };
 });
 add('POST', '/api/workers/:id/readiness-review', ({ t, user, p }) => {
@@ -270,7 +278,7 @@ add('GET', '/api/packs', ({ t }) => V.packRows(t));
 add('POST', '/api/packs/:key/activate', ({ t, user, p, body }) => { R.activatePack(t, user, p.key, body); return { ok: true }; });
 add('POST', '/api/packs/:key/mode', ({ t, user, p, body }) => { E.setMode(t, user, p.key, body.mode); return { ok: true }; });
 add('GET', '/api/controls', ({ t, user }) => ({
-  controls: R.effectiveControls(t).filter((c) => !c.restricted || P.canSeeRestricted(user)).map((c) => ({ key: c.key, name: c.name, pack: c.pack_key, requirement_type: c.requirement_type, type: c.type, version: c.version_label, overridden: !!c.overridden, custom: !!c.custom, remediation: c.remediation, params: c.params })),
+  controls: R.effectiveControls(t).filter((c) => !c.restricted || P.canSeeRestricted(user)).map((c) => ({ key: c.key, name: c.name, pack: c.pack_key, subject: c.subject, requirement_type: c.requirement_type, type: c.type, version: c.version_label, overridden: !!c.overridden, custom: !!c.custom, remediation: c.remediation, params: c.params })),
   changes: db.all('SELECT * FROM control_changes WHERE tenant_id=? ORDER BY created_at DESC', t)
     .filter((c) => P.canPack(user, c.pack_key) && (!R.packDef(c.pack_key)?.restricted || P.canSeeRestricted(user)))
     .map((c) => ({ ...c, preview: j(c.preview_json) })),
@@ -483,7 +491,7 @@ add('POST', '/api/users/:id/deactivate', ({ t, user, p }) => {
   if (target.role === 'admin' && activeAdmins(t) <= 1) throw new HttpError(409, 'This is the last active administrator.');
   db.tx(() => { db.update('users', target.id, { disabled_at: clock.iso() }); endSessions(target.id); });
   const open = Number(db.get('SELECT COUNT(*) AS n FROM cases WHERE tenant_id=? AND owner_user_id=? AND closed_at IS NULL', t, target.id).n);
-  P.audit(t, 'USER_DEACTIVATED', target.email, `Account deactivated and signed out everywhere.${open ? ` Still named as owner of ${open} open case(s).` : ''}`, user);
+  P.audit(t, 'USER_DEACTIVATED', target.email, `Account deactivated and signed out everywhere.${open ? ` Still named as owner of ${count(open, 'open case')}.` : ''}`, user);
   return { ok: true, open_cases: open };
 });
 add('POST', '/api/users/:id/reactivate', ({ t, user, p }) => {

@@ -1,18 +1,15 @@
 'use strict';
 // Evidence intake: store privately, extract, match, then accept or send to review.
 // "Document uploaded" never means "requirement satisfied": the evaluator decides that.
-const db = require('./lib/db'), storage = require('./lib/storage'), docread = require('./lib/docread'), { clock, id, sha256, normDate, sameName, nameMatch, j } = require('./lib/util');
+const db = require('./lib/db'), storage = require('./lib/storage'), docread = require('./lib/docread'), { clock, id, sha256, normDate, sameName, nameMatch, j, US_STATES, stateCode } = require('./lib/util');
 const P = require('./platform'), R = require('./registry'), { latestDuePeriod, applies } = require('./evaluator'), llm = require('./llm');
 const { HttpError, SYSTEM } = P;
-const DOC_KEYWORDS = [['professional_license', /(registered nurse|nursing|medical|physical therapy|professional)\s+licen[sc]e|licen[sc]e (type|class)/i], ['acls_card', /\bACLS\b|advanced cardiovascular/i], ['bls_card', /\bBLS\b|basic life support/i], ['tb_screening', /\bTB\b|tuberculosis|quantiferon/i], ['flu_vaccine', /influenza|flu (vaccine|shot)/i], ['facility_orientation', /facility orientation/i], ['handbook_ack', /handbook|policy acknowledg/i], ['security_training', /security (awareness )?training/i], ['i9_record', /\bI-9\b|employment eligibility/i], ['work_authorization', /employment authorization|\bEAD\b/i], ['w4', /\bW-?4\b|withholding certificate/i], ['payroll_filing_receipt', /form 941|payroll filing|filing receipt|acknowledg(e)?ment of filing/i]];
+const DOC_KEYWORDS = [['professional_license', /(registered nurse|nursing|medical|physical therapy|professional)\s+licen[sc]e|licen[sc]e (type|class)/i], ['acls_card', /\bACLS\b|advanced cardiovascular/i], ['bls_card', /\bBLS\b|basic life support/i], ['tb_screening', /\bTB\b|tuberculosis|quantiferon/i], ['flu_vaccine', /influenza|\bflu (vaccin(e|ation)|shot|immuni[sz]ation)/i], ['facility_orientation', /facility orientation/i], ['handbook_ack', /handbook|policy acknowledg/i], ['security_training', /security (awareness )?training/i], ['i9_record', /\bI-9\b|employment eligibility/i], ['work_authorization', /(employment|work) authori[sz]ation|\bEAD\b/i], ['w4', /\bW-?4\b|withholding certificate/i], ['payroll_filing_receipt', /form 941|payroll filing|filing receipt|acknowledg(e)?ment of filing/i]];
 const INJECTION = [/ignore (all |any |the )?(previous|prior|above) (instructions|prompts)/i, /(system|assistant)\s*:/i, /(mark|set|treat)\s+(this|the|all)?\s*(document|case|check|control|evidence)?\s*(as)?\s*(approved|passed|verified|compliant|closed)/i, /you are (now )?(an?|the) /i, /do not (flag|review|escalate)/i];
 
 // ---- Reading fields from document text with fixed rules ----
 // Each rule looks for a label the way people write it on a form. A label must start a line or a
 // table cell, so "Training Center Name:" is never read as the holder's name.
-const US_STATES = { alabama: 'AL', alaska: 'AK', arizona: 'AZ', arkansas: 'AR', california: 'CA', colorado: 'CO', connecticut: 'CT', delaware: 'DE', 'district of columbia': 'DC', florida: 'FL', georgia: 'GA', hawaii: 'HI', idaho: 'ID', illinois: 'IL', indiana: 'IN', iowa: 'IA', kansas: 'KS', kentucky: 'KY', louisiana: 'LA', maine: 'ME', maryland: 'MD', massachusetts: 'MA', michigan: 'MI', minnesota: 'MN', mississippi: 'MS', missouri: 'MO', montana: 'MT', nebraska: 'NE', nevada: 'NV', 'new hampshire': 'NH', 'new jersey': 'NJ', 'new mexico': 'NM', 'new york': 'NY', 'north carolina': 'NC', 'north dakota': 'ND', ohio: 'OH', oklahoma: 'OK', oregon: 'OR', pennsylvania: 'PA', 'rhode island': 'RI', 'south carolina': 'SC', 'south dakota': 'SD', tennessee: 'TN', texas: 'TX', utah: 'UT', vermont: 'VT', virginia: 'VA', washington: 'WA', 'west virginia': 'WV', wisconsin: 'WI', wyoming: 'WY', 'puerto rico': 'PR' };
-const STATE_CODES = new Set(Object.values(US_STATES));
-const stateCode = (v) => { const s = String(v || '').trim(); return STATE_CODES.has(s.toUpperCase()) && s.length === 2 ? s.toUpperCase() : US_STATES[s.toLowerCase()] || null; };
 const DATE = String.raw`(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[\/.\-]\d{1,2}[\/.\-](?:\d{4}|\d{2})\b|\d{1,2}[\/.\-]\d{4}\b|[A-Za-z]{3,9}\.? \d{1,2}(?:st|nd|rd|th)?,? \d{4}|\d{1,2}(?:st|nd|rd|th)?[ \-][A-Za-z]{3,9}\.?,?[ \-]\d{4}|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?,? \d{4})`;
 // A label and its date on the same line: "Expires: 2028-12-31", "Issued<TAB>2025-01-15". These rules never
 // take a date from another line; a label alone on its line is handled by readLayout below.
@@ -267,6 +264,20 @@ function subjectOf(t, type, sid) {
 // Field names as a reviewer would say them.
 const FIELD_NAMES = { doc_type: 'document type', expires_on: 'expiry date', doc_number: 'document number', holder_name: "holder's name", issued_on: 'issue date', entity_name: 'company name', period: 'reporting period', state: 'issuing state' };
 const fieldName = (k) => FIELD_NAMES[k] || k.replace(/_/g, ' ');
+// Document types as people say them, for the reasons shown to reviewers.
+const DOC_NAMES = { professional_license: 'professional license', bls_card: 'BLS card', acls_card: 'ACLS card', tb_screening: 'TB screening', flu_vaccine: 'flu vaccination record', facility_orientation: 'facility orientation record', handbook_ack: 'handbook acknowledgment', security_training: 'security training record', i9_record: 'I-9 record', work_authorization: 'work authorization document', w4: 'W-4', payroll_filing_receipt: 'payroll filing receipt' };
+const docName = (type) => DOC_NAMES[type] || String(type).replace(/_/g, ' ');
+const withArticle = (s) => `${/^([aeio]|I-9|ACLS)/i.test(s) ? 'an' : 'a'} ${s}`;
+const capital = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+// Why a document counts toward no requirement, in words a reviewer can act on.
+function unmatched(t, docType, subjectType, subjectName) {
+  if (!docType) return 'Aegis could not tell what kind of document this is. Choose the document type below, or reject it.';
+  const doc = withArticle(docName(docType));
+  const other = R.effectiveControls(t).find((c) => c.subject !== subjectType && c.evidence?.doc_types?.includes(docType));
+  if (other?.subject === 'entity') return `${capital(doc)} is a company document, so it does not count for ${subjectName}. Reject it here and upload it for the company it belongs to.`;
+  if (other) return `${capital(doc)} belongs to a worker, so it does not count for ${subjectName}. Reject it here and upload it for the person named on it.`;
+  return `No active compliance pack asks for ${doc}, so it does not count toward any check. Turn on the pack that needs it, or reject it.`;
+}
 const listWords = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}`);
 
 // ---- Duplicates ----
@@ -435,10 +446,10 @@ async function intakeOne(t, { subject_type, subject_id, control_key, filename, m
   let ctrl = controls.find((c) => c.evidence?.doc_types?.includes(f.doc_type) && (!hinted || c.key === hinted.key));
   if (!ctrl && hinted) {
     ctrl = hinted;
-    if (f.doc_type) reasons.push(`Document looks like ${f.doc_type.replace(/_/g, ' ')}, not ${hinted.name}.`);
-    else reasons.push('Document type could not be read from the file.');
+    if (f.doc_type) reasons.push(`This looks like ${withArticle(docName(f.doc_type))}, not the ${/^.[A-Z0-9]/.test(hinted.name) ? hinted.name : hinted.name.charAt(0).toLowerCase() + hinted.name.slice(1)} requirement it was uploaded for.`);
+    else reasons.push('Aegis could not tell what kind of document this is. Check it is the right one for this requirement.');
   }
-  if (!ctrl) reasons.push('Document could not be matched to an active control.');
+  if (!ctrl) reasons.push(unmatched(t, f.doc_type, subject_type, subject.name));
   else if (actor?.type === 'user') P.assertPack(actor, ctrl.pack_key);
   if (extractedRestricted && actor?.type === 'user' && !P.canSeeRestricted(actor)) throw new HttpError(403, 'This document needs a restricted evidence reviewer.');
   if (extractedRestricted && ctrl && !ctrl.restricted) {
@@ -458,15 +469,17 @@ async function intakeOne(t, { subject_type, subject_id, control_key, filename, m
   if (ctrl) {
     // One plain sentence for what could not be read, one for what needs checking.
     const missing = [], unsure = [];
-    const explained = new Set([...x.ambiguous.map((d) => d.field), ...x.scanRead, ...x.notOnPage, ...x.disagreements]);
+    // A name that is already reported as someone else's is not also reported as uncertain.
+    const explained = new Set([...x.ambiguous.map((d) => d.field), ...x.scanRead, ...x.notOnPage, ...x.disagreements, ...(holder === 'same' ? [] : ['holder_name'])]);
     for (const k of ctrl.evidence.required_fields || []) if (!f[k]) missing.push(fieldName(k)); else if ((conf[k] || 0) < 0.9 && !explained.has(k)) unsure.push(fieldName(k));
     if (missing.length) reasons.push(`Could not read the ${listWords(missing)}.`);
     if (unsure.length) reasons.push(`Please check the ${listWords(unsure)}; the reading is uncertain.`);
     if (holder === 'different') reasons.push(`Name on document (${f.holder_name}) does not match ${subject.name}.`);
     if (holder === 'possible') reasons.push(`Check the name: the document says “${f.holder_name}” and the worker is ${subject.name}. Only part of the name matches, so make sure it is the same person.`);
     if (f.expires_on && f.expires_on < clock.today()) reasons.push('Document had already expired when it was received.');
-    if (ctrl.type === 'periodic_filing') { const { period } = latestDuePeriod(clock.today()); if (f.entity_name !== subject.name || f.period !== period) reasons.push(`Entity or reporting period does not match the control (expected ${subject.name}, ${period}).`); }
-    if (!ctrl.evidence.auto_accept) reasons.push('This control requires owner review.');
+    if (ctrl.type === 'periodic_filing') { const { period } = latestDuePeriod(clock.today()); if (f.entity_name !== subject.name || f.period !== period) reasons.push(`Check the company and reporting period: this requirement needs ${subject.name} for ${period}, and the document says ${f.entity_name || 'no company'} for ${f.period || 'no period'}.`); }
+    // Someone else's document cannot be accepted at all, so who approves it is beside the point.
+    if (!ctrl.evidence.auto_accept && holder !== 'different') reasons.push('This requirement always needs a person to approve it.');
   }
   // An accepted copy may stand in for this document only when nothing but a person's confirmation is
   // missing: no instruction-like text, no clash between the AI and the page, and the worker's own name.

@@ -1,7 +1,7 @@
 'use strict';
 // Pack registry: versioned packs, tenant activation, customer overrides and custom controls.
 const fs = require('fs'), path = require('path');
-const db = require('./lib/db'), { clock, id, j } = require('./lib/util'), P = require('./platform'), { evaluate } = require('./evaluator');
+const db = require('./lib/db'), { clock, id, j, count } = require('./lib/util'), P = require('./platform'), { evaluate } = require('./evaluator');
 const { HttpError } = P;
 
 function loadPacks() {
@@ -103,7 +103,7 @@ function draftControl(t, user, input, loadCtx) {
   } else for (const c of targets) {
     add('override', c.key, c.pack_key, parsed.patch, previewControl(t, merge(c, parsed.patch), loadCtx));
   }
-  P.audit(t, 'CONTROL_DRAFTED', 'Control registry', `Drafted ${made.length} control change(s): ${input.text || 'form'}`, user);
+  P.audit(t, 'CONTROL_DRAFTED', 'Control registry', `Drafted ${count(made.length, 'control change')}: ${input.text || 'form'}`, user);
   return made;
 }
 function submitDraft(t, user, cid) {
