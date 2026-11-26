@@ -137,7 +137,7 @@ const server = http.createServer(async (req, res) => {
       if (!u) throw new P.HttpError(401, 'Please sign in.');
       if (req.method !== 'GET' && req.headers['x-aegis-client'] !== 'web') throw new P.HttpError(403, 'Missing client header.');
       ctx.user = { ...u, type: 'user' }; ctx.t = u.tenant_id;
-      if (req.method !== 'GET' && /^\/api\/(?:connectors|integrations\/slack)(?:\/|$)/.test(url.pathname)) W.requireVerified(ctx.t);
+      if (req.method !== 'GET' && /^\/api\/(?:connectors|integrations\/(?:slack|email))(?:\/|$)/.test(url.pathname)) W.requireVerified(ctx.t);
     }
     if (sandbox.blocksIntegration(req.method, url.pathname)) throw new P.HttpError(403, 'The sandbox uses the sample HRMS and the local message outbox.');
     const out = await route.fn(ctx);

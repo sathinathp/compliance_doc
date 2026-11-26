@@ -118,12 +118,14 @@ All settings come from `.env` (copied from `.env.example`, which explains each o
 | `PORT` | Port to listen on. Default 4100. |
 | `AEGIS_BASE_URL` | Public HTTPS address, used in links sent to workers. |
 | `AEGIS_DEMO` | `1` loads demo data. Must be `0` in production. |
+| `AEGIS_SIGNUP` | `1` shows **Create a workspace** on the sign-in page. The confirmation link is emailed when server email is set up, or printed in the terminal on a computer without email. Production needs email. |
 | `AEGIS_SECRET` | Encrypts documents and saved keys. At least 32 random characters; never change it. |
 | `AEGIS_DATA` | Folder for documents, backups and (SQLite only) the database file. |
 | `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE` | PostgreSQL connection. Or one `DATABASE_URL`. Without them, development uses SQLite. |
 | `AEGIS_LLM_PROVIDER`, `AEGIS_LLM_FALLBACK` | Main and fallback AI provider, for example `anthropic` and `deepseek`. |
 | `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY` | AI keys. |
-| `SMTP_*` or `RESEND_API_KEY`, `EMAIL_FROM` | Email delivery. |
+| `AEGIS_MICROSOFT_CLIENT_ID`, `AEGIS_MICROSOFT_CLIENT_SECRET`, `AEGIS_GOOGLE_CLIENT_ID`, `AEGIS_GOOGLE_CLIENT_SECRET` | Turn on **Continue with Microsoft / Google** on the sign-in and sign-up pages, and connecting Outlook or Gmail in **Connections → Email**. Aegis is registered once with each; the redirect address is `<AEGIS_BASE_URL>/api/oauth/callback`. Without these keys the buttons are hidden and only SMTP is offered. |
+| `SMTP_*` or `RESEND_API_KEY`, `EMAIL_FROM` | Server-wide email, used for companies that have not connected their own mailbox. |
 | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_SIGNING_SECRET` | Slack for local development. In production each company connects Slack in the app. |
 | `NODE_ENV=production` | Turns on the startup checks: HTTPS address, strong secret, PostgreSQL reachable, demo off. |
 
@@ -144,7 +146,9 @@ server/
   llm.js              AI providers, Claude first and DeepSeek fallback
   chat.js             coworker chat
   connectors.js       HRMS sync and roster import
-  channels.js         email and outbox; slack.js: Slack
+  channels.js         message delivery and outbox; slack.js: Slack
+  email.js            each company’s own mailbox: Outlook, Gmail or SMTP
+  sso.js              sign in or sign up with Microsoft or Google
   views.js            dashboards, reports, metrics
   backup.js           backup and restore commands
   lib/

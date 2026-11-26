@@ -47,7 +47,7 @@ test('sandbox workspace sign-up, email verification and tenant isolation', async
     const t = db.get('SELECT id FROM tenants WHERE slug=?', me.tenant.slug).id;
     assert.equal(me.tenant.kind, 'customer');
     assert.equal(me.user.role, 'admin');
-    assert.deepEqual(me.workspace_email, { pending: true, can_verify: true });
+    assert.deepEqual(me.workspace_email, { pending: true, can_verify: true, delivery: 'local' });
     assert.deepEqual(Object.values((await owner.get('/api/setup')).data.steps), [false, false, false, false, false]);
     assert.equal(db.get('SELECT kind FROM schedules WHERE tenant_id=?', t).kind, 'digest');
     assert.deepEqual((await owner.get('/api/audit')).data.map((e) => e.type), ['WORKSPACE_CREATED']);

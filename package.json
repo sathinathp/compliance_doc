@@ -12,7 +12,7 @@
     "provision:bluebix": "node --no-warnings server/index.js --provision-bluebix",
     "backup": "node --no-warnings server/backup.js backup",
     "restore": "node --no-warnings server/backup.js restore",
-    "test": "node --no-warnings --test test/workflow.test.js test/ai.test.js test/reading.test.js test/production.test.js test/slack.test.js test/pilot.test.js test/lock.test.js test/users.test.js test/backup.test.js"
+    "test": "node --no-warnings --test test/workflow.test.js test/ai.test.js test/reading.test.js test/production.test.js test/slack.test.js test/pilot.test.js test/lock.test.js test/users.test.js test/backup.test.js test/email.test.js test/sso.test.js"
   },
   "dependencies": {
     "@kenjiuno/msgreader": "^1.29.0",

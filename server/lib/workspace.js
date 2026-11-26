@@ -5,7 +5,16 @@ const { clock, hashPassword, id, sha256, token } = require('./util');
 const { audit, HttpError } = require('../platform');
 
 const CONFIRM_EMAIL = 'Confirm your work email first.';
-const enabled = () => sandbox.isActive() || (process.env.NODE_ENV === 'test' && process.env.AEGIS_SIGNUP === '1');
+// Sign-up is on in the sandbox, or when AEGIS_SIGNUP=1. In production the startup checks also
+// require server email, so the confirmation email can really be sent.
+// Where the confirmation email goes:
+//   sandbox  the pretend inbox inside the sandbox
+//   email    a real email, through the server's email service (Resend or SMTP in .env)
+//   local    this computer has no email set up (never in production): the link is printed in the
+//            terminal running Aegis and kept in a local test inbox
+const serverEmail = () => !!process.env.RESEND_API_KEY || !!process.env.SMTP_HOST;
+const enabled = () => sandbox.isActive() || (process.env.AEGIS_SIGNUP === '1' && (process.env.NODE_ENV !== 'production' || serverEmail()));
+const delivery = () => (sandbox.isActive() ? 'sandbox' : serverEmail() ? 'email' : 'local');
 const verification = (t) => db.get('SELECT * FROM workspace_verifications WHERE tenant_id=?', t);
 const pending = (t) => !!db.get('SELECT 1 AS x FROM workspace_verifications WHERE tenant_id=? AND verified_at IS NULL', t);
 function requireVerified(t) {
@@ -52,7 +61,29 @@ function deliverTestEmail(userId, message) {
   for (const [key, mail] of inbox) if (mail.expiresAt <= now) inbox.delete(key);
   inbox.set(userId, message);
 }
+// Sends (or keeps) the confirmation email. Returns { sent: true } or { sent: false, error }.
+async function sendConfirmation(t, userId, message) {
+  const mode = delivery();
+  if (mode !== 'email') {
+    deliverTestEmail(userId, message);
+    if (mode === 'local') console.log(`[sign-up] No email is set up on this computer. Confirmation link: ${base()}/#verify-email/${message.raw}`);
+    return { sent: true };
+  }
+  const user = db.get('SELECT name,email FROM users WHERE id=?', userId), org = db.get('SELECT name FROM tenants WHERE id=?', t);
+  const first = String(user.name).split(/\s+/)[0];
+  const text = `Hi ${first},\n\nConfirm your email to finish setting up ${org.name} in Aegis:\n\n${base()}/#verify-email/${message.raw}\n\nThe link works for 30 minutes. Until you confirm, you can add workers and run checks, but Aegis won't send anything to your people.\n\nIf you didn't create this workspace, you can ignore this email.`;
+  try {
+    await require('../channels').sendSystemEmail(user.email, 'Confirm your email for Aegis', text);
+    return { sent: true };
+  } catch (e) {
+    console.error('[sign-up] confirmation email failed:', e.message);
+    return { sent: false, error: 'We couldn’t send the confirmation email. Try again in a minute.' };
+  }
+}
+const base = () => (process.env.AEGIS_BASE_URL || `http://localhost:${process.env.PORT || 4100}`).replace(/\/+$/, '');
+
 function testEmail(t, userId) {
+  if (delivery() === 'email') return { link: null };
   const message = inbox.get(userId);
   const state = verification(t);
   return message && state?.user_id === userId && state.token_hash === sha256(message.raw) && message.expiresAt > new Date().toISOString()
@@ -70,4 +101,4 @@ function verifyEmail(t, user, raw) {
   inbox.delete(user.id);
 }
 
-module.exports = { enabled, verification, pending, requireVerified, CONFIRM_EMAIL, createWorkspace, prepareEmail, deliverTestEmail, testEmail, verifyEmail };
+module.exports = { enabled, delivery, sendConfirmation, verification, pending, requireVerified, CONFIRM_EMAIL, createWorkspace, prepareEmail, deliverTestEmail, testEmail, verifyEmail };

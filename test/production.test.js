@@ -203,6 +203,9 @@ test('production refuses to start with unsafe settings', () => {
   assert.equal(productionProblems({ ...good, AEGIS_DEMO: '1' }).length, 1);
   assert.equal(productionProblems({ ...good, AEGIS_SECRET: 'change-me' }).length, 1);
   assert.equal(productionProblems({ ...good, AEGIS_BASE_URL: 'http://aegis.example.com' }).length, 1);
+  // Sign-up in production needs real email, so new organizations can confirm their address.
+  assert.match(productionProblems({ ...good, AEGIS_SIGNUP: '1' })[0], /AEGIS_SIGNUP=1 needs server email/);
+  assert.deepEqual(productionProblems({ ...good, AEGIS_SIGNUP: '1', RESEND_API_KEY: 're_test' }), []);
 
   const r = spawnSync(process.execPath, [path.join(__dirname, '..', 'server', 'index.js')], { env: { ...process.env, NODE_ENV: 'production', AEGIS_DEMO: '1', AEGIS_SECRET: 'short', AEGIS_BASE_URL: 'http://x', AEGIS_DATA: path.join(dir, 'prod') }, encoding: 'utf8', timeout: 20000 });
   assert.equal(r.status, 1);

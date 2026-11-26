@@ -10,6 +10,7 @@ function productionProblems(env = process.env) {
   if (!secret) out.push('AEGIS_SECRET is not set. It encrypts documents and connector keys, so it must be set and kept safe. Make one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
   else if (secret === 'change-me' || secret.length < 32) out.push('AEGIS_SECRET is too short or still the example value. Use at least 32 random characters.');
   if (!/^https:\/\//.test(env.AEGIS_BASE_URL || '')) out.push('AEGIS_BASE_URL must start with https:// (worker links and secure cookies depend on it).');
+  if (env.AEGIS_SIGNUP === '1' && !env.RESEND_API_KEY && !env.SMTP_HOST) out.push('AEGIS_SIGNUP=1 needs server email (RESEND_API_KEY or SMTP_HOST), so new organizations can confirm their email address.');
   return out;
 }
 

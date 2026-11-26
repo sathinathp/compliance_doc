@@ -5,7 +5,7 @@ const W = require('./lib/workspace');
 const CoworkerPolicy = require('./coworker-policy');
 const db = require('./lib/db'), { clock, id, sha256, token, j, count, US_STATES, hashPassword, checkPassword } = require('./lib/util');
 const docread = require('./lib/docread');
-const P = require('./platform'), R = require('./registry'), E = require('./engine'), Ev = require('./evidence'), C = require('./connectors'), V = require('./views'), Chat = require('./chat'), llm = require('./llm'), mock = require('./mock-hrms'), channels = require('./channels'), Slack = require('./slack');
+const P = require('./platform'), R = require('./registry'), E = require('./engine'), Ev = require('./evidence'), C = require('./connectors'), V = require('./views'), Chat = require('./chat'), llm = require('./llm'), mock = require('./mock-hrms'), channels = require('./channels'), Slack = require('./slack'), Email = require('./email'), SSO = require('./sso');
 const { HttpError } = P;
 const routes = [];
 const add = (m, p, fn, o = {}) => { const keys = []; const re = new RegExp('^' + p.replace(/:([a-z_]+)/g, (_, k) => { keys.push(k); return '([^/]+)'; }) + '$'); routes.push({ m, re, keys, fn, o }); };
@@ -16,7 +16,7 @@ const getCase = (t, cid) => { const c = db.get('SELECT * FROM cases WHERE id=? A
 const seen = (u, c) => { if (c.restricted && !P.canSeeRestricted(u)) throw new HttpError(403, 'This case is restricted.'); };
 
 // ---- public
-add('GET', '/api/public/info', () => ({ signup: W.enabled(), demo: demo(), accounts: demo() ? [['sathinath@bluebix.demo', 'Bluebix admin (populated pilot)'], ['admin@northstar.demo', 'Northstar admin (blank external test)'], ['health@bluebix.demo', 'Healthcare compliance'], ['hr@bluebix.demo', 'HR (cannot see immigration)'], ['immigration@bluebix.demo', 'Immigration owner'], ['finance@bluebix.demo', 'Finance'], ['viewer@bluebix.demo', 'Read only']] : [], demo_password: demo() ? 'demo1234' : null }), { public: true });
+add('GET', '/api/public/info', () => ({ signup: W.enabled(), sso: SSO.available(), demo: demo(), accounts: demo() ? [['sathinath@bluebix.demo', 'Bluebix admin (populated pilot)'], ['admin@northstar.demo', 'Northstar admin (blank external test)'], ['health@bluebix.demo', 'Healthcare compliance'], ['hr@bluebix.demo', 'HR (cannot see immigration)'], ['immigration@bluebix.demo', 'Immigration owner'], ['finance@bluebix.demo', 'Finance'], ['viewer@bluebix.demo', 'Read only']] : [], demo_password: demo() ? 'demo1234' : null }), { public: true });
 const attempts = new Map();
 add('POST', '/api/login', ({ body, res }) => {
   const key = String(body.email || '').toLowerCase(), a = attempts.get(key) || { n: 0, at: Date.now() };
@@ -40,7 +40,7 @@ const signupAttempts = new Map();
 function requireSignup() {
   if (!W.enabled()) throw new HttpError(404, 'Workspace sign-up is unavailable.');
 }
-add('POST', '/api/signup', ({ req, res, body }) => {
+add('POST', '/api/signup', async ({ req, res, body }) => {
   requireSignup();
   if (req.headers['x-aegis-client'] !== 'web') throw new HttpError(403, 'Missing client header.');
   const now = Date.now();
@@ -50,30 +50,63 @@ add('POST', '/api/signup', ({ req, res, body }) => {
   if (++attempt.count > 20) throw new HttpError(429, 'Too many sign-up attempts. Try again in 15 minutes.');
   signupAttempts.set(address, attempt);
   const field = (key) => typeof body?.[key] === 'string' ? body[key] : '';
+  // Signing up after "Continue with Microsoft/Google": the email comes from them and is already confirmed.
+  const sso = field('sso') ? SSO.peekSignup(field('sso')) : null;
+  if (field('sso') && !sso) throw new HttpError(410, 'This sign-up has expired. Continue with Microsoft or Google again.');
   const orgName = field('org_name').trim(), adminName = field('admin_name').trim();
-  const email = field('email').trim().toLowerCase(), password = field('password');
+  const email = sso ? sso.email : field('email').trim().toLowerCase();
+  // People who sign up with Microsoft or Google sign in with them too; this password is never shown.
+  const password = sso ? token() : field('password');
   if (orgName.length < 2 || orgName.length > 120) throw new HttpError(400, 'Enter an organization name of 2 to 120 characters.');
   if (adminName.length < 2 || adminName.length > 120) throw new HttpError(400, 'Enter a full name of 2 to 120 characters.');
   if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new HttpError(400, 'Enter a valid work email.');
   if (password.length < 12 || password.length > 128) throw new HttpError(400, 'Use a password of 12 to 128 characters.');
+  if (sso) {
+    const made = db.tx(() => {
+      const { tenantId, userId } = W.createWorkspace({ orgName, adminName, email, password });
+      P.audit(tenantId, 'EMAIL_VERIFIED', adminName, `Signed up with ${SSO.LOGIN[sso.provider].name}, which confirmed ${email}.`, { name: adminName });
+      return createSession(userId);
+    });
+    SSO.takeSignup(field('sso'));
+    res.setHeader('set-cookie', sessionCookie(made, 43200));
+    return { ok: true, email_sent: false, email_confirmed_by: sso.provider };
+  }
   const signup = db.tx(() => {
     const { tenantId, userId } = W.createWorkspace({ orgName, adminName, email, password });
-    return { userId, session: createSession(userId), email: W.prepareEmail(tenantId, userId, { initial: true }) };
+    return { tenantId, userId, session: createSession(userId), email: W.prepareEmail(tenantId, userId, { initial: true }) };
   });
-  W.deliverTestEmail(signup.userId, signup.email);
   res.setHeader('set-cookie', sessionCookie(signup.session, 43200));
-  return { ok: true };
+  // The workspace exists even if the email fails; "Resend email" tries again.
+  const sent = await W.sendConfirmation(signup.tenantId, signup.userId, signup.email);
+  return { ok: true, email_sent: sent.sent, ...(sent.error ? { email_error: sent.error } : {}) };
+}, { public: true });
+// "Continue with Microsoft/Google": the button links here, and the browser goes on to their sign-in page.
+add('GET', '/api/auth/:provider', ({ p, res }) => {
+  let to;
+  try { to = SSO.start(p.provider); } catch (e) { to = `/#sso-error/${e.code || 'failed'}`; }
+  res.writeHead(302, { location: to, 'cache-control': 'no-store' });
+  res.end();
+  return res;
+}, { public: true });
+// The details Microsoft or Google confirmed, to fill in the sign-up form.
+add('GET', '/api/signup/sso/:handle', ({ p, res }) => {
+  requireSignup();
+  res.setHeader('Cache-Control', 'no-store');
+  const s = SSO.peekSignup(p.handle);
+  if (!s) throw new HttpError(410, 'This sign-up has expired. Continue with Microsoft or Google again.');
+  return { email: s.email, name: s.name, provider: s.provider, provider_name: SSO.LOGIN[s.provider].name };
 }, { public: true });
 add('GET', '/api/verify-email/inbox', ({ t, user, res }) => {
   requireSignup();
   res.setHeader('Cache-Control', 'no-store');
   return W.testEmail(t, user.id);
 });
-add('POST', '/api/verify-email/resend', ({ t, user }) => {
+add('POST', '/api/verify-email/resend', async ({ t, user }) => {
   requireSignup();
   const state = W.verification(t);
   if (!state || state.user_id !== user.id || state.verified_at) throw new HttpError(409, 'There is no email waiting for verification for this account.');
-  W.deliverTestEmail(user.id, W.prepareEmail(t, user.id));
+  const sent = await W.sendConfirmation(t, user.id, W.prepareEmail(t, user.id));
+  if (!sent.sent) throw new HttpError(502, sent.error);
   return { ok: true };
 });
 add('POST', '/api/verify-email', ({ t, user, body }) => {
@@ -92,7 +125,7 @@ add('GET', '/api/me', ({ t, user }) => {
   return {
     user: { id: user.id, name: user.name, email: user.email, role: user.role, role_label: P.ROLE_LABEL[user.role], can_restricted: P.canSeeRestricted(user), is_admin: P.isAdmin(user) },
     tenant: tn, demo: demo() && !verification, sandbox: sandbox.isActive(), today: clock.today(),
-    workspace_email: verification ? { pending: !verification.verified_at, can_verify: verification.user_id === user.id && W.enabled() } : null,
+    workspace_email: verification ? { pending: !verification.verified_at, can_verify: verification.user_id === user.id && W.enabled(), delivery: W.delivery() } : null,
   };
 });
 const tokenCase = (raw) => {
@@ -564,7 +597,7 @@ add('POST', '/api/ai/remove', ({ t, user }) => { P.assertAdmin(user); llm.remove
 // ---- Integrations page: chat connections. Keys are write-only, tested before saving and stored encrypted.
 const alertsChannel = (t) => j(db.get('SELECT channel_json FROM tenants WHERE id=?', t).channel_json, {});
 const TEAMS = { available: false, needs: ['App ID', 'Client secret', 'Tenant ID'], note: 'Teams is being built. Your Microsoft 365 administrator registers the Aegis bot in the Teams Developer Portal and gives you these three values.' };
-const integrations = (t) => { const ch = alertsChannel(t); return { slack: Slack.status(t, ch.type === 'slack' ? ch.channel : null), email: { configured: channels.emailConfigured() }, teams: TEAMS, events_url: `${(process.env.AEGIS_BASE_URL || '').replace(/\/+$/, '')}/api/webhooks/slack/${db.get('SELECT slug FROM tenants WHERE id=?', t).slug}` }; };
+const integrations = (t) => { const ch = alertsChannel(t); return { slack: Slack.status(t, ch.type === 'slack' ? ch.channel : null), email: { ...Email.status(t), configured: Email.connected(t) || channels.emailConfigured(), server: channels.emailConfigured() }, teams: TEAMS, events_url: `${(process.env.AEGIS_BASE_URL || '').replace(/\/+$/, '')}/api/webhooks/slack/${db.get('SELECT slug FROM tenants WHERE id=?', t).slug}` }; };
 add('GET', '/api/integrations', ({ t, user }) => { P.assertAdmin(user); return integrations(t); });
 add('POST', '/api/integrations/slack', async ({ t, user, body }) => {
   P.assertAdmin(user);
@@ -592,6 +625,80 @@ add('POST', '/api/integrations/slack/remove', ({ t, user }) => {
   Slack.remove(t);
   db.update('tenants', t, { channel_json: JSON.stringify({ type: 'outbox', channel: alertsChannel(t).channel || '#compliance-alerts' }) });
   P.audit(t, 'SLACK_REMOVED', 'Slack', 'Slack disconnected. Messages stay in the Aegis outbox until a chat tool is connected.', user);
+  return integrations(t);
+});
+
+// ---- Email: each company connects its own mailbox (server/email.js).
+// Microsoft and Google: the browser goes to their sign-in page and comes back to the callback below.
+add('POST', '/api/integrations/email/sign-in', ({ t, user, body }) => {
+  P.assertAdmin(user);
+  try { return Email.startSignIn(t, user, body); } catch (e) { throw new HttpError(422, e.message); }
+});
+// Microsoft and Google send the browser back here, both after connecting a company mailbox and after
+// "Continue with Microsoft/Google". The one-time state says which of the two it was.
+const redirect = (res, to) => { res.writeHead(302, { location: to, 'cache-control': 'no-store' }); res.end(); return res; };
+add('GET', '/api/oauth/callback', async ({ q, res }) => {
+  if (Email.ownsState(q.get('state'))) {
+    let outcome = 'email-connected';
+    try {
+      const r = await Email.finishSignIn(q);
+      P.audit(r.tenant, r.replaced ? 'EMAIL_UPDATED' : 'EMAIL_CONNECTED', 'Email', `${r.provider_label} connected. Worker messages are sent from ${r.sender_name} <${r.address}>${r.shared_mailbox ? ` (shared mailbox, signed in as ${r.account})` : ''}.`, { name: r.user_name });
+    } catch (e) {
+      outcome = 'email-failed';
+      if (e.tenant) {
+        Email.recordSignInError(e.tenant, e.message);
+        P.audit(e.tenant, 'EMAIL_CONNECT_FAILED', 'Email', e.message, { name: e.user_name || 'Administrator' });
+      } else console.error('[email] sign-in callback:', e.message);
+    }
+    return redirect(res, `/#integrations/${outcome}`);
+  }
+  let person;
+  try { person = await SSO.finish(q); } catch (e) {
+    if (!(e instanceof SSO.SignInError)) console.error('[sign-in]', e.message);
+    return redirect(res, `/#sso-error/${e.code || 'failed'}`);
+  }
+  const u = person.emails.map((e) => db.get('SELECT * FROM users WHERE lower(email)=?', e)).find(Boolean);
+  if (u) {
+    if (u.disabled_at) return redirect(res, '/#sso-error/disabled');
+    // Microsoft or Google just proved this email, so a waiting email confirmation is done too.
+    const confirmed = db.run('UPDATE workspace_verifications SET verified_at=?, token_hash=NULL, expires_at=NULL WHERE tenant_id=? AND user_id=? AND verified_at IS NULL', clock.iso(), u.tenant_id, u.id);
+    if (confirmed.changes) P.audit(u.tenant_id, 'EMAIL_VERIFIED', u.name, `Signed in with ${SSO.LOGIN[person.provider].name}, which confirmed ${u.email}.`, { name: u.name });
+    res.setHeader('set-cookie', sessionCookie(createSession(u.id), 43200));
+    return redirect(res, '/#overview');
+  }
+  if (W.enabled()) return redirect(res, `/#signup/sso/${SSO.holdSignup(person)}`);
+  return redirect(res, '/#sso-error/no-account');
+}, { public: true });
+add('POST', '/api/integrations/email/smtp', async ({ t, user, body }) => {
+  P.assertAdmin(user);
+  let r;
+  try { r = await Email.saveSmtp(t, user, body); } catch (e) { throw new HttpError(422, e.message); }
+  P.audit(t, r.replaced ? 'EMAIL_UPDATED' : 'EMAIL_CONNECTED', 'Email', `Email server ${r.host} connected. Worker messages are sent from ${r.sender_name} <${r.address}>.`, user);
+  return integrations(t);
+});
+add('POST', '/api/integrations/email/details', ({ t, user, body }) => {
+  P.assertAdmin(user);
+  let r;
+  try { r = Email.updateDetails(t, user, body); } catch (e) { throw new HttpError(422, e.message); }
+  P.audit(t, 'EMAIL_UPDATED', 'Email', `Sender changed to ${r.sender_name} <${r.address}>${r.reply_to ? `, replies to ${r.reply_to}` : ''}.`, user);
+  return integrations(t);
+});
+add('POST', '/api/integrations/email/test', async ({ t, user, body }) => {
+  P.assertAdmin(user);
+  const to = String(body.to || user.email || '').trim();
+  let r;
+  try { r = await Email.sendTest(t, to); } catch (e) {
+    P.audit(t, 'EMAIL_TEST', 'Email', `Test email to ${to} failed: ${e.message}`, user);
+    throw new HttpError(422, e.message);
+  }
+  P.audit(t, 'EMAIL_TEST', 'Email', `Test email sent to ${r.to} from ${r.from}.`, user);
+  return r;
+});
+add('POST', '/api/integrations/email/remove', ({ t, user }) => {
+  P.assertAdmin(user);
+  if (!Email.connected(t)) throw new HttpError(409, 'Email is not connected.');
+  Email.remove(t);
+  P.audit(t, 'EMAIL_REMOVED', 'Email', channels.emailConfigured() ? 'Email disconnected. Worker messages go through the server email service.' : 'Email disconnected. Worker messages stay in the Aegis outbox until email is connected.', user);
   return integrations(t);
 });
 

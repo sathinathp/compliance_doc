@@ -353,8 +353,9 @@ document.addEventListener('scroll', hideRailTip, true);
 
 function readHash() {
   if (!me) {
-    if (location.hash === '#signup' && signupEnabled && $('#loginScreen .main-desk') && !$('#signup-form')) renderSignup();
-    else if (location.hash !== '#signup' && $('#signup-form')) showLogin();
+    const toSignup = location.hash.startsWith('#signup');
+    if (toSignup && signupEnabled && $('#loginScreen .main-desk')) renderSignup();
+    else if (!toSignup && $('#signup-form')) showLogin();
     return;
   }
   // A new page never opens under a window left from the last one (the browser's Back button, or a link inside the window).
@@ -366,6 +367,12 @@ function readHash() {
     showVerifyEmail(argument);
     return;
   }
+  if (page === 'sso-error') {
+    history.replaceState(null, '', '#overview');
+    toast(SSO_ERRORS[argument] || SSO_ERRORS.failed, 'warning');
+    go('overview');
+    return;
+  }
   go(Object.hasOwn(VIEWS, page) ? page : 'overview', argument || null);
 }
 
@@ -373,12 +380,18 @@ function renderVerificationNotice() {
   const banner = $('#workspaceVerification');
   const verification = me.workspace_email;
   banner.hidden = !verification?.pending;
+  const where = {
+    sandbox: h`A confirmation email for <b>${me.user.email}</b> is in your sandbox inbox.`,
+    local: h`Email isn’t set up on this computer, so the confirmation link for <b>${me.user.email}</b> is in the terminal running Aegis and in the test inbox.`,
+    email: h`We sent a confirmation link to <b>${me.user.email}</b>. It works for 30 minutes. Check your junk folder if it hasn’t arrived.`,
+  }[verification?.delivery] || '';
+  const inboxLabel = verification?.delivery === 'sandbox' ? 'Open sandbox inbox' : 'Open test inbox';
   banner.innerHTML = !verification?.pending ? '' : render(h`
     <div><strong>Confirm your work email</strong>
-      <p>${verification.can_verify ? h`A verification email for <b>${me.user.email}</b> is in your sandbox inbox.` : 'Ask the first workspace administrator to confirm their work email.'}
+      <p>${verification.can_verify ? where : 'Ask the first workspace administrator to confirm their work email.'}
         You can add workers, import a roster, and run checks in validation mode. Connections and follow-ups require verification.</p>
     </div>
-    ${verification.can_verify ? h`<div class="verification-actions"><button class="btn" data-act="openVerificationInbox">Open sandbox inbox</button><button class="btn-link-action" data-act="resendVerification">Resend email</button></div>` : ''}
+    ${verification.can_verify ? h`<div class="verification-actions">${verification.delivery !== 'email' ? h`<button class="btn" data-act="openVerificationInbox">${inboxLabel}</button>` : ''}<button class="btn-link-action" data-act="resendVerification">Resend email</button></div>` : ''}
   `);
 }
 
@@ -638,12 +651,12 @@ for (const [k, list] of Object.entries({
   checks: ['CHECK_RESULT'], cases: ['CASE_OPENED', 'CASE_STATE', 'CASE_NOTE', 'CASE_ESCALATED', 'CASE_CLOSED', 'FINDING_REVIEWED'],
   evidence: ['EVIDENCE_MATCHED', 'EVIDENCE_ACCEPTED', 'EVIDENCE_REJECTED', 'EVIDENCE_REVIEW', 'EVIDENCE_VIEWED', 'EVIDENCE_RECEIVED', 'EVIDENCE_DUPLICATE', 'EVIDENCE_COPY', 'EVIDENCE_MOVED'],
   approvals: ['APPROVAL_REQUESTED', 'APPROVAL_DECIDED', 'APPROVAL_UPDATED', 'READINESS_REOPENED'],
-  messages: ['ACTION_SENT', 'MESSAGE_SENT', 'DIGEST_SENT', 'DIGEST_OUTBOX', 'DIGEST_FAILED', 'CHAT_COMMAND', 'SLACK_TEST'],
+  messages: ['ACTION_SENT', 'MESSAGE_SENT', 'DIGEST_SENT', 'DIGEST_OUTBOX', 'DIGEST_FAILED', 'CHAT_COMMAND', 'SLACK_TEST', 'EMAIL_TEST'],
   records: ['WORKER_ADDED', 'WORKER_UPDATED', 'ROSTER_IMPORT', 'ASSIGNMENT_CHANGED', 'HRMS_EVENT', 'HRMS_SYNC'],
 })) for (const t of list) AUDIT_KIND[t] = k;
 const auditKindOf = (t) => AUDIT_KIND[t] || 'settings';
 const auditLabel = (t) => AUDIT_LABEL[t] || words(String(t).toLowerCase());
-const AUDIT_TONE = { EVIDENCE_REJECTED: 'fail', CASE_ESCALATED: 'fail', DIGEST_FAILED: 'fail', CONNECTOR_ERROR: 'fail', AI_ERROR: 'fail', READINESS_REOPENED: 'warn', EVIDENCE_REVIEW: 'warn', EVIDENCE_ACCEPTED: 'pass', EVIDENCE_MATCHED: 'pass', CASE_CLOSED: 'pass' };
+const AUDIT_TONE = { EVIDENCE_REJECTED: 'fail', CASE_ESCALATED: 'fail', DIGEST_FAILED: 'fail', CONNECTOR_ERROR: 'fail', AI_ERROR: 'fail', EMAIL_CONNECT_FAILED: 'fail', READINESS_REOPENED: 'warn', EVIDENCE_REVIEW: 'warn', EVIDENCE_ACCEPTED: 'pass', EVIDENCE_MATCHED: 'pass', CASE_CLOSED: 'pass' };
 const timeUtc = (iso) => new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' }).format(new Date(iso));
 const dayLabel = (d) => (d === me.today ? 'Today' : d === addDaysLocal(me.today, -1) ? 'Yesterday' : date(d));
 const addDaysLocal = (d, n) => { const x = new Date(`${d}T00:00:00Z`); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
@@ -1097,7 +1110,14 @@ const VIEWS = {
     ${card('Active Controls', 'Reviewed pack requirements stay separate from customer overrides.', table(['Control', 'Pack', 'Requirement', 'Schedule', 'Version', 'Source'], d.controls.map((c) => h`<tr><td><strong>${c.name}</strong><div class="mono muted">${c.key}</div></td><td><span class="priority-pill pill-low">${c.pack}</span></td><td class="muted">${words(c.requirement_type)}</td><td class="small">${c.remediation?.request_days_before !== undefined ? `${c.remediation.request_days_before}d before expiry; ` : ''}${c.remediation?.max_reminders !== undefined ? `escalate after ${c.remediation.max_reminders}` : 'owner task'}</td><td class="mono">${c.version}</td><td>${c.custom ? h`<span class="pill pill-blue">Custom</span>` : c.overridden ? h`<span class="pill pill-warn">Override</span>` : h`<span class="pill pill-na">Pack</span>`}</td></tr>`), ['No active controls', 'Activate a compliance pack to see its rules here.']))}
     ${card('Change History', 'Drafts, approvals and superseded versions.', table(['Change', 'Control', 'Request', 'Status', 'By'], d.changes.map((c) => h`<tr><td>${c.kind}</td><td class="mono">${c.control_key}</td><td class="small">${c.source_text}</td><td>${statePill(c.status)}</td><td class="muted">${c.created_by}${c.approved_by ? ` → ${c.approved_by}` : ''}</td></tr>`), ['No rule changes yet', 'Drafted and approved changes to rules are listed here.']))}</div>`;
   },
-  async integrations() {
+  async integrations(arg) {
+    // Microsoft and Google send people back to #integrations/email-connected or #integrations/email-failed.
+    if (arg === 'email-connected' || arg === 'email-failed') {
+      history.replaceState(null, '', '#integrations');
+      routeArg = null;
+      if (arg === 'email-connected') toast('Email connected. Send a test email to check it.', 'success');
+      else toast('Email was not connected. The reason is shown in the Email row.', 'warning');
+    }
     const [health, messages, connections] = await Promise.all([api('/api/health'), api('/api/messages'), api('/api/integrations')]);
     const failures = [
       ...health.connectors.filter((c) => c.last_error).map((c) => ['HR system', c.name, c.last_error]),
@@ -1111,7 +1131,7 @@ const VIEWS = {
       ${connectionStatus(failures)}
       ${me.sandbox ? h`<p class="setup-note is-info"><b>Sandbox</b>Workforce sync uses sample data, and messages stay in the outbox.</p>` : ''}
       ${me.workspace_email?.pending ? h`<p class="setup-note"><b>Confirm your email first</b>Connections can be added once the workspace email is confirmed.</p>` : ''}
-      ${card('Connected tools', 'The systems this workspace uses. Keys are stored encrypted and never shown again.', h`<ul class="tool-list">${[...hrRows(health.connectors, ready), slackRow(connections.slack, ready), emailRow(connections.email)]}</ul>`, ready ? h`<button class="btn-card-outline" data-act="addConnector">Add HR system</button>` : '')}
+      ${card('Connected tools', 'The systems this workspace uses. Keys are stored encrypted and never shown again.', h`<ul class="tool-list">${[...hrRows(health.connectors, ready), slackRow(connections.slack, ready), emailRow(connections.email, ready)]}</ul>`, ready ? h`<button class="btn-card-outline" data-act="addConnector">Add HR system</button>` : '')}
       ${failures.length ? card('Needs attention', 'Fix these to keep records and messages flowing.', table(['Item', 'Source', 'What happened'], failures.map(([kind, item, error]) => h`<tr><td><span class="row-title is-static">${item || 'Unnamed item'}</span></td><td class="nowrap">${kind}</td><td class="small">${error || 'The service did not say what went wrong.'}</td></tr>`), ''), '') : ''}
       ${messageOutbox(messages)}
     </div>`;
@@ -1301,11 +1321,63 @@ function slackRow(slack, ready) {
       : h`<button class="btn-submit-green" data-act="slackConfig" data-channel="${slack.channel || '#compliance-alerts'}" data-replace="">Connect</button>`) : '',
   });
 }
-function emailRow(email) {
+// The company's own mailbox. Kept between the Connections page and the email windows it opens.
+let emailState = null;
+const PROVIDER_NAME = { microsoft: 'Microsoft', google: 'Google', smtp: 'your email server' };
+const PROVIDER_SHORT = { microsoft: 'Outlook', google: 'Gmail', smtp: 'Email server' };
+function emailRow(email, ready) {
+  emailState = email;
+  const on = email.connected;
+  const state = on && email.last_error ? ['Needs attention', 'pill-warn'] : on ? ['Connected', 'pill-pass'] : email.server ? ['Server email', 'pill-na'] : ['Not connected', 'pill-na'];
+  const meta = on
+    ? h`${email.address}<br>${PROVIDER_SHORT[email.provider] || email.provider_label}${email.last_sent_at ? `, last sent ${dt(email.last_sent_at)} UTC` : ', nothing sent yet'}${email.last_error ? h`<br><span class="text-warn">${email.last_error}</span>` : ''}`
+    : email.last_error ? h`<span class="text-warn">${email.last_error}</span>`
+      : email.server ? 'Sent from the Aegis server’s address. Connect your company mailbox so workers see your name.'
+        : 'Until connected, requests stay in the outbox.';
   return toolRow({
-    name: 'Email', what: 'Sends document requests and reminders to workers.', state: email?.configured ? ['Set up', 'pill-pass'] : ['Not set up', 'pill-na'],
-    meta: email?.configured ? 'Delivered through the server’s email service.' : 'Requests stay in the outbox. Your Aegis administrator sets email up on the server.',
+    name: 'Email', what: 'Sends document requests and reminders to workers from your company’s address.', state, meta,
+    actions: ready ? (on
+      ? manageMenu([
+        h`<button role="menuitem" data-act="emailTest">Send a test email</button>`,
+        h`<button role="menuitem" data-act="emailDetails">Change sender name or reply address</button>`,
+        h`<button role="menuitem" data-act="emailConnect">Connect a different mailbox</button>`,
+        h`<button role="menuitem" class="is-danger" data-act="emailDisconnect">Disconnect</button>`,
+      ])
+      : h`<button class="btn-submit-green" data-act="emailConnect">Connect</button>`) : '',
   });
+}
+const optionalNote = h`<span class="muted">(optional)</span>`;
+function emailSenderFields(e) {
+  return h`<div class="form-group"><label class="form-label" for="emSender">Sender name</label><input id="emSender" name="sender_name" class="form-select" maxlength="80" value="${e.sender_name || e.default_sender}" required><span class="subtext">Workers see this name in their inbox, for example “${e.default_sender}”.</span></div>
+    <div class="form-group"><label class="form-label" for="emReply">Reply-to address ${optionalNote}</label><input id="emReply" name="reply_to" type="email" class="form-select" value="${e.reply_to || ''}" placeholder="hr@company.com"><span class="subtext">Where worker replies go. Leave blank to send replies to the sending mailbox.</span></div>`;
+}
+function emailSignInDialog(provider) {
+  const e = emailState, ms = provider === 'microsoft', who = PROVIDER_NAME[provider];
+  openModal(ms ? 'Connect Microsoft 365' : 'Connect Google Workspace', `You’ll sign in on ${who}’s own page. Aegis never sees your password.`,
+    h`<form class="stack" data-form="emailSignIn">
+      <input type="hidden" name="provider" value="${provider}">
+      ${emailSenderFields(e)}
+      ${ms ? h`<div class="form-group"><label class="form-label" for="emShared">Send from a shared mailbox ${optionalNote}</label><input id="emShared" name="shared_mailbox" type="email" class="form-select" value="${e.provider === 'microsoft' ? e.shared_mailbox || '' : ''}" placeholder="compliance@company.com"><span class="subtext">Recommended, so requests keep working when people change roles. The account you sign in with needs “Send As” permission on it. Leave blank to send from the account you sign in with.</span></div>` : ''}
+      <div class="setup-note is-info"><b>What happens next</b>${who} asks you to sign in and to allow Aegis to send email for you. Aegis can only send. It can’t read, change or delete your mail, and you can remove its access at any time in your ${who} account.</div>
+      <div class="row"><button class="btn-cancel" type="button" data-act="emailConnect">Back</button><button class="btn-submit-green">Continue to ${who}</button></div>
+    </form>`);
+}
+function emailSmtpDialog() {
+  const e = emailState, s = e.provider === 'smtp' ? e : {};
+  openModal('Connect your email server', 'For providers other than Microsoft 365 and Google. Aegis tests the connection before saving.',
+    h`<form class="stack" data-form="emailSmtp">
+      <div class="form-group"><label class="form-label" for="emAddress">Send from</label><input id="emAddress" name="address" type="email" class="form-select" value="${s.address || ''}" placeholder="compliance@company.com" required></div>
+      ${emailSenderFields(e)}
+      <div class="form-grid">
+        <div class="form-group"><label class="form-label" for="emHost">Email server</label><input id="emHost" name="host" class="form-select" value="${s.host || ''}" placeholder="smtp.company.com" required></div>
+        <div class="form-group"><label class="form-label" for="emPort">Port</label><input id="emPort" name="port" type="number" min="1" max="65535" class="form-select" value="${s.port || 587}" required></div>
+        <div class="form-group"><label class="form-label" for="emSecurity">Security</label><select id="emSecurity" name="security" class="form-select">${[['starttls', 'STARTTLS (usually port 587)'], ['ssl', 'SSL/TLS (usually port 465)'], ['none', 'None (not recommended)']].map(([k, l]) => h`<option value="${k}" ${(s.security || 'starttls') === k ? raw('selected') : ''}>${l}</option>`)}</select></div>
+        <div class="form-group"><label class="form-label" for="emUser">Username</label><input id="emUser" name="username" class="form-select" value="${s.username || ''}" autocomplete="off" placeholder="Usually the email address"></div>
+        <div class="form-group"><label class="form-label" for="emPass">Password</label><input id="emPass" name="password" type="password" class="form-select" autocomplete="new-password" placeholder="${s.has_password ? 'Leave blank to keep the saved password' : 'App password if your provider asks for one'}"></div>
+      </div>
+      <p class="muted small">The password is stored encrypted and never shown again.</p>
+      <div class="row"><button class="btn-cancel" type="button" data-act="emailConnect">Back</button><button class="btn-submit-green">Test and save</button></div>
+    </form>`);
 }
 const outboxFilter = { query: '', channel: '' };
 const OUTBOX_PAGE = 10;
@@ -1517,7 +1589,7 @@ async function selectPersonaInWorkspace(p) {
 const ACT = {
   async openVerificationInbox() {
     const { link } = await api('/api/verify-email/inbox');
-    openModal('Sandbox inbox', me.user.email, link ? h`
+    openModal(me.workspace_email?.delivery === 'sandbox' ? 'Sandbox inbox' : 'Test inbox', me.user.email, link ? h`
       <h4>Confirm your Aegis work email</h4>
       <p>Confirm this address to finish setting up your workspace. This link expires 30 minutes after it was requested.</p>
     ` : h`<p>No current verification email. Request a fresh link to continue.</p>`, link
@@ -1528,8 +1600,9 @@ const ACT = {
     el.disabled = true;
     try {
       await api('/api/verify-email/resend', {});
-      toast('A new email is in your sandbox inbox.', 'success');
-      if ($('#modal').classList.contains('open')) await ACT.openVerificationInbox();
+      const mode = me.workspace_email?.delivery;
+      toast(mode === 'email' ? `A new confirmation link was sent to ${me.user.email}.` : mode === 'sandbox' ? 'A new email is in your sandbox inbox.' : 'A new link is in the test inbox and the terminal.', 'success');
+      if (mode !== 'email' && $('#modal').classList.contains('open')) await ACT.openVerificationInbox();
     } finally { el.disabled = false; }
   },
   toggleMenu: () => $('#sheet')?.classList.toggle('open'),
@@ -1822,6 +1895,44 @@ const ACT = {
     openModal('Disconnect Slack?', 'New reporting messages will go to the Aegis outbox.', '',
       h`<button class="btn-cancel" data-act="closeModal">Cancel</button><button class="btn-danger" data-act="confirmSlackDisconnect">Disconnect</button>`);
   },
+  emailConnect() {
+    const a = emailState.available;
+    const option = (key, title, what, unavailable) => h`<li><button type="button" class="provider-option" data-act="emailChoose" data-provider="${key}" ${a[key] ? '' : raw('disabled')}>
+      <b>${title}</b><span>${what}</span>${a[key] ? '' : h`<small>${unavailable}</small>`}</button></li>`;
+    openModal('Connect email', 'Workers get requests from your company’s address, and their replies come back to you.',
+      h`<ul class="provider-list">
+        ${option('microsoft', 'Microsoft 365 (Outlook)', 'Sign in with your work Microsoft account. Best for companies on Outlook.', 'Not available yet. Aegis needs to be registered with Microsoft on this server first.')}
+        ${option('google', 'Google Workspace (Gmail)', 'Sign in with your Google work account.', 'Not available yet. Aegis needs to be registered with Google on this server first.')}
+        ${option('smtp', 'Other email provider', 'Enter your email server details (SMTP).', 'Not available on this server.')}
+      </ul>`);
+  },
+  emailChoose(el) {
+    if (el.dataset.provider === 'smtp') emailSmtpDialog();
+    else emailSignInDialog(el.dataset.provider);
+  },
+  emailTest() {
+    openModal('Send a test email', `Sent from ${emailState.sender_name} <${emailState.address}>.`,
+      h`<form class="stack" data-form="emailTest">
+        <div class="form-group"><label class="form-label" for="emTo">Send to</label><input id="emTo" name="to" type="email" class="form-select" value="${me.user.email || ''}" required><span class="subtext">Try a different address too, such as a personal one, to see what workers see.</span></div>
+        <div class="row"><button class="btn-cancel" type="button" data-act="closeModal">Cancel</button><button class="btn-submit-green">Send test email</button></div>
+      </form>`);
+  },
+  emailDetails() {
+    openModal('Sender name and reply address', `Messages are still sent from ${emailState.address}.`,
+      h`<form class="stack" data-form="emailDetails">${emailSenderFields(emailState)}
+        <div class="row"><button class="btn-cancel" type="button" data-act="closeModal">Cancel</button><button class="btn-submit-green">Save</button></div>
+      </form>`);
+  },
+  emailDisconnect() {
+    openModal('Disconnect email?', emailState.server ? 'New requests will be sent from the Aegis server’s address instead of yours.' : 'New requests to workers will stay in the Aegis outbox until email is connected again.', '',
+      h`<button class="btn-cancel" data-act="closeModal">Cancel</button><button class="btn-danger" data-act="confirmEmailDisconnect">Disconnect</button>`);
+  },
+  async confirmEmailDisconnect() {
+    await api('/api/integrations/email/remove', {});
+    toast('Email disconnected.', 'success');
+    closeModal();
+    refresh();
+  },
   async confirmSlackDisconnect() {
     await api('/api/integrations/slack/remove', {});
     toast('Slack disconnected.', 'success');
@@ -2016,6 +2127,28 @@ const FORM = {
     if (submitter?.value !== 'save') return;
     await api(endpoint, settings);
     toast('HRMS connection saved.', 'success');
+    closeModal();
+    refresh();
+  },
+  async emailSignIn(d) {
+    const { url } = await api('/api/integrations/email/sign-in', d);
+    location.assign(url);
+  },
+  async emailSmtp(d) {
+    await api('/api/integrations/email/smtp', d);
+    toast('Email connected. Send a test email to check it.', 'success');
+    closeModal();
+    refresh();
+  },
+  async emailTest(d) {
+    const r = await api('/api/integrations/email/test', d);
+    toast(`Test email sent to ${r.to}. Check the inbox, and the junk folder too.`, 'success');
+    closeModal();
+    refresh();
+  },
+  async emailDetails(d) {
+    await api('/api/integrations/email/details', d);
+    toast('Sender details saved.', 'success');
     closeModal();
     refresh();
   },
@@ -2471,7 +2604,7 @@ async function submitBadgeLogin() {
     return;
   }
 
-  if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Checking your badge…'; }
+  if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Signing in…'; }
 
   try {
     await api('/api/login', { email: em, password: pw });
@@ -2507,125 +2640,79 @@ async function showLogin() {
   const info = await fetch('/api/public/info').then((r) => r.json()).catch(() => ({}));
   demoEnabled = info.demo === true;
   signupEnabled = info.signup === true;
+  ssoAvailable = info.sso || {};
   demoPassword = info.demo_password || '';
 
   $('#loginScreen').innerHTML = `
-    <div class="page badge-page">
-      <!-- Left: the hanging badge on lanyard -->
-      <aside class="stand" aria-label="Badge preview">
-        <div class="hanger" id="hanger">
-          <div class="tilt" id="tilt">
-            <div class="strap"><span>aegis&nbsp;&nbsp;aegis&nbsp;&nbsp;aegis&nbsp;&nbsp;aegis&nbsp;&nbsp;aegis&nbsp;&nbsp;aegis</span></div>
-            <div class="clip"></div>
-            <div class="holder">
-              <div class="badge">
-                <div class="band">
-                  <span class="org">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6l7-3z"/></svg>
-                    Aegis
-                  </span>
-                  <small>Compliance workspace</small>
-                </div>
-                <div class="photo" id="bInit">?</div>
-                <div class="who">
-                  <div class="name" id="bName">Your name here</div>
-                  <div class="role" id="bRole">Not signed in</div>
-                  <div class="mail" id="bMail"></div>
-                </div>
-                <div class="zones">
-                  <p>Records this badge opens</p>
-                  <div class="zgrid" id="bZones"></div>
-                </div>
-                <svg class="barcode" id="bCode" preserveAspectRatio="none" aria-hidden="true"></svg>
-                <div class="stamp" id="stamp">Cleared</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </aside>
+    <div class="auth">
+      <main class="auth-main">
+        <a class="auth-logo" href="#" aria-label="Aegis">${AUTH_MARK}<span>Aegis</span></a>
 
-      <!-- Right: the sign-in desk -->
-      <main class="desk">
-        <div class="top top-desk">
-          <div class="logo desk-logo">
-            <b><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6l7-3z"/><path d="M9 12l2 2 4-4"/></svg></b>
-            Aegis
-          </div>
-        </div>
+        <section class="auth-panel main-desk" aria-labelledby="authTitle">
+          <h1 id="authTitle" tabindex="-1">Sign in to Aegis</h1>
+          <p class="auth-lead">Welcome back. Use your work email to open your compliance workspace.</p>
 
-        <section class="main main-desk">
-          <h1>Sign in to Aegis</h1>
-          <p class="lead">Use your work account to access your compliance workspace.</p>
-
-          <form id="form" class="form-desk" novalidate>
-            <div>
+          <form id="form" class="auth-form" novalidate>
+            <div class="auth-field">
               <label for="email">Work email</label>
               <input id="email" type="email" placeholder="name@company.com" autocomplete="username" />
             </div>
-            <div>
-              <label for="password">Password</label>
-              <div class="pw">
-                <input id="password" type="password" autocomplete="current-password" />
-                <button type="button" id="toggle" aria-pressed="false">Show</button>
+            <div class="auth-field">
+              <div class="auth-label-row">
+                <label for="password">Password</label>
+                <button type="button" class="auth-text-btn" id="forgot" aria-expanded="false" aria-controls="forgotHelp">Forgot password?</button>
               </div>
+              <div class="auth-password">
+                <input id="password" type="password" autocomplete="current-password" />
+                <button type="button" id="toggle" class="auth-text-btn" aria-pressed="false" aria-label="Show password">Show</button>
+              </div>
+              <p class="auth-help" id="forgotHelp" hidden>Ask an administrator in your workspace to reset it in Settings, under Users and roles. You’ll get a new temporary password.</p>
             </div>
-            <button class="primary primary-badge-btn" id="submit" type="submit">Sign in</button>
+            <button class="auth-primary" id="submit" type="submit">Sign in</button>
+            <p class="status status-desk" id="status" role="status" aria-live="polite"></p>
           </form>
-          ${signupEnabled ? `<p class="auth-switch"><a href="#signup">Create a workspace</a></p>` : ''}
 
-          ${demoEnabled ? `<div class="or or-divider">Sample workspaces</div>
-          <button class="demo demo-trigger" type="button" data-act="quickLogin" data-e="sathinath@bluebix.demo">Open Bluebix sandbox</button>
-          <button class="demo demo-trigger mt" id="openRack" type="button" aria-haspopup="dialog">
-            <span class="swatch" id="swatch">${PERSONAS.map(p => `<i style="background:${p.color}"></i>`).join('')}</span>
-            Use a demo badge
-            <span class="count">6 roles</span>
-          </button>
-          <button class="demo demo-trigger mt" type="button" data-act="quickLogin" data-e="admin@northstar.demo">Try empty company setup</button>` : ''}
+          ${ssoButtons('signin')}
 
-          <p class="status status-desk" id="status" role="status" aria-live="polite"></p>
+          ${signupEnabled ? `<p class="auth-switch">New to Aegis? <a href="#signup">Create a workspace</a></p>` : ''}
+
+          ${demoEnabled ? `<div class="auth-divider"><span>Sample workspaces</span></div>
+          <div class="auth-demo">
+            <button class="auth-secondary" type="button" data-act="quickLogin" data-e="sathinath@bluebix.demo">Open Bluebix sandbox<small>Populated healthcare pilot</small></button>
+            <button class="auth-secondary" id="openRack" type="button" aria-haspopup="dialog">Sign in as a role<small>6 demo roles</small></button>
+            <button class="auth-secondary" type="button" data-act="quickLogin" data-e="admin@northstar.demo">Try empty company setup<small>Blank organization</small></button>
+          </div>` : ''}
         </section>
 
-        <p class="fine">Contact your workspace administrator for sign-in help.</p>
+        <footer class="auth-foot">Trouble signing in? Contact your workspace administrator.</footer>
       </main>
+      ${authAside()}
     </div>
   `;
 
   renderDemoRack();
-  updateHangingBadge(BLANK_BADGE);
-  setupTiltListener();
 
   const emailInput = $('#email');
   const passInput = $('#password');
   const formEl = $('#form');
   const toggleBtn = $('#toggle');
+  const forgotBtn = $('#forgot');
   const openRackBtn = $('#openRack');
   const closeRackBtn = $('#closeRack');
   const overlayEl = $('#overlay');
 
   if (emailInput) {
     emailInput.addEventListener('input', () => {
-      const val = emailInput.value.trim();
-      const found = demoEnabled && PERSONAS.find((p) => p.email.toLowerCase() === val.toLowerCase());
-      if (found) {
-        currentPersona = found;
-        updateHangingBadge({ name: found.name, role: found.roleName, email: found.email, color: found.color, z: found.z });
-      } else {
-        currentPersona = null;
-        const local = val.split('@')[0].replace(/[._-]+/g, ' ').trim();
-        const name = local ? local.replace(/\b\w/g, (c) => c.toUpperCase()) : BLANK_BADGE.name;
-        updateHangingBadge({ ...BLANK_BADGE, name, role: val ? 'Signing in' : BLANK_BADGE.role, email: val });
-      }
-      const stamp = $('#stamp');
-      if (stamp) stamp.classList.remove('hit');
+      const val = emailInput.value.trim().toLowerCase();
+      currentPersona = (demoEnabled && PERSONAS.find((p) => p.email.toLowerCase() === val)) || null;
     });
   }
-
-  if (toggleBtn && passInput) {
-    toggleBtn.onclick = () => {
-      const isPw = passInput.type === 'password';
-      passInput.type = isPw ? 'text' : 'password';
-      toggleBtn.textContent = isPw ? 'Hide' : 'Show';
-      toggleBtn.setAttribute('aria-pressed', String(isPw));
+  if (toggleBtn && passInput) bindPasswordToggle(toggleBtn, passInput);
+  if (forgotBtn) {
+    forgotBtn.onclick = () => {
+      const help = $('#forgotHelp'), open = help.hidden;
+      help.hidden = !open;
+      forgotBtn.setAttribute('aria-expanded', String(open));
     };
   }
 
@@ -2644,41 +2731,107 @@ async function showLogin() {
       if (e.target === overlayEl) closeDemoRack();
     });
   }
-  if (signupEnabled && location.hash === '#signup') renderSignup();
+  if (signupEnabled && location.hash.startsWith('#signup')) renderSignup();
+  const ssoError = location.hash.match(/^#sso-error\/([\w-]+)$/);
+  if (ssoError) {
+    history.replaceState(null, '', '#');
+    const status = $('#status');
+    status.className = 'status status-desk err';
+    status.textContent = SSO_ERRORS[ssoError[1]] || SSO_ERRORS.failed;
+  }
+}
+
+const AUTH_MARK = '<b aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6l7-3z"/><path d="M9 12l2 2 4-4"/></svg></b>';
+function bindPasswordToggle(button, input) {
+  button.onclick = () => {
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    button.textContent = show ? 'Hide' : 'Show';
+    button.setAttribute('aria-pressed', String(show));
+    button.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+  };
+}
+
+// The right-hand side of the sign-in and sign-up screens: what Aegis does, shown with one real case.
+function authAside(mode = 'signin') {
+  const step = (state, title, detail, time) => `<li class="is-${state}"><span class="auth-dot" aria-hidden="true"></span><div><b>${title}</b><small>${detail}</small></div><time>${time}</time></li>`;
+  const facts = [
+    ['<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>', 'Documents encrypted at rest'],
+    ['<path d="M9 12l2 2 4-4"/><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6l7-3z"/>', 'Fixed rules decide compliance'],
+    ['<path d="M4 6h16M4 12h16M4 18h10"/>', 'Every step in a tamper-evident log'],
+  ];
+  return `<aside class="auth-aside" aria-label="About Aegis">
+    <div class="auth-aside-inner">
+      <h2>${mode === 'signup' ? 'From first upload to closed case, without the chasing.' : 'Compliance that follows up for you.'}</h2>
+      <p>Aegis checks every worker against your requirements, asks for what’s missing, reads what comes back, and closes a case only on accepted evidence.</p>
+      <figure class="auth-case" aria-label="Example case in Aegis">
+        <div class="auth-case-head">
+          <div><b>BLS provider card</b><small>Priya Nair, RN, Riverside Clinic</small></div>
+          <span class="auth-pill">Closed</span>
+        </div>
+        <ol class="auth-steps">
+          ${step('done', 'Gap found', 'Card expires in 12 days', 'Mon')}
+          ${step('done', 'Requested by email', 'From your company’s compliance mailbox', 'Mon')}
+          ${step('done', 'Reminder sent', 'No reply after 3 days', 'Thu')}
+          ${step('done', 'Document read', 'Name and expiry date match', 'Fri')}
+          ${step('pass', 'Accepted and closed', 'Valid until March 2029', 'Fri')}
+        </ol>
+      </figure>
+      <ul class="auth-facts">${facts.map(([icon, text]) => `<li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icon}</svg>${text}</li>`).join('')}</ul>
+    </div>
+  </aside>`;
 }
 
 const SIGNUP_FIELDS = [
-  { name: 'org_name', label: 'Organization name', autocomplete: 'organization', min: 2, max: 120, error: 'Enter an organization name of 2 to 120 characters.' },
-  { name: 'admin_name', label: 'Your full name', autocomplete: 'name', min: 2, max: 120, error: 'Enter your full name of 2 to 120 characters.' },
-  { name: 'email', label: 'Work email', autocomplete: 'email', type: 'email', max: 254, error: 'Enter a valid work email.' },
+  { name: 'org_name', label: 'Organization name', autocomplete: 'organization', placeholder: 'Acme Health Staffing', min: 2, max: 120, error: 'Enter an organization name of 2 to 120 characters.' },
+  { name: 'admin_name', label: 'Your full name', autocomplete: 'name', placeholder: 'Jordan Lee', min: 2, max: 120, error: 'Enter your full name of 2 to 120 characters.' },
+  { name: 'email', label: 'Work email', autocomplete: 'email', type: 'email', placeholder: 'name@company.com', max: 254, error: 'Enter a valid work email.' },
   { name: 'password', label: 'Password', autocomplete: 'new-password', type: 'password', min: 12, max: 128, error: 'Use a password of 12 to 128 characters.' },
 ];
 
-function renderSignup() {
+// #signup is the plain form. #signup/sso/<handle> comes back from Microsoft or Google with the person's
+// confirmed name and email, so only the organization name is left to fill in.
+async function renderSignup() {
   const desk = $('#loginScreen .main-desk');
+  const handle = (location.hash.match(/^#signup\/sso\/([\w-]+)$/) || [])[1];
+  let sso = null, ssoProblem = '';
+  if (handle) {
+    try { sso = await api(`/api/signup/sso/${handle}`); } catch (e) { ssoProblem = e.message; }
+    if (!sso) history.replaceState(null, '', '#signup');
+  }
+  if (!$('#loginScreen .main-desk')) return;
+  const fields = sso ? SIGNUP_FIELDS.filter((f) => f.name === 'org_name' || f.name === 'admin_name') : SIGNUP_FIELDS;
+  const field = (f) => h`<div class="auth-field">
+    <label for="new-${f.name}">${f.label}</label>
+    ${f.name === 'password'
+      ? h`<div class="auth-password"><input id="new-${f.name}" name="${f.name}" type="password" autocomplete="${f.autocomplete}" maxlength="${f.max}" aria-describedby="error-${f.name} signup-password-hint" required><button type="button" class="auth-text-btn" id="signupToggle" aria-pressed="false" aria-label="Show password">Show</button></div>`
+      : h`<input id="new-${f.name}" name="${f.name}" type="${f.type || 'text'}" autocomplete="${f.autocomplete}" maxlength="${f.max}" placeholder="${f.placeholder || ''}" value="${f.name === 'admin_name' && sso ? sso.name : ''}" aria-describedby="error-${f.name}" required>`}
+    ${f.name === 'password' ? h`<p id="signup-password-hint" class="auth-help">At least 12 characters. A short sentence works well.</p>` : ''}
+    <p id="error-${f.name}" class="signup-error" aria-live="polite"></p>
+  </div>`;
   desk.innerHTML = render(h`
-    <h1 tabindex="-1">Create a workspace</h1>
-    <p class="lead">Set up your organization in Aegis. You’ll be the first administrator.</p>
-    <form id="signup-form" class="form-desk" novalidate>
-      ${SIGNUP_FIELDS.map((f) => h`<div>
-        <label for="new-${f.name}">${f.label}</label>
-        <input id="new-${f.name}" name="${f.name}" type="${f.type || 'text'}" autocomplete="${f.autocomplete}" maxlength="${f.max}"
-          aria-describedby="error-${f.name}${f.name === 'password' ? ' signup-password-hint' : ''}" required>
-        ${f.name === 'password' ? h`<p id="signup-password-hint" class="signup-hint">Use at least 12 characters.</p>` : ''}
-        <p id="error-${f.name}" class="signup-error" aria-live="polite"></p>
-      </div>`)}
-      <button class="primary primary-badge-btn" type="submit">Create workspace</button>
+    <h1 id="authTitle" tabindex="-1">Create your workspace</h1>
+    <p class="auth-lead">${sso ? 'Almost done. Name your organization to finish.' : 'Set up your organization in Aegis. You’ll be its first administrator, and you can invite your team after.'}</p>
+    ${sso ? h`<div class="auth-identity">${raw(PROVIDER_LOGO[sso.provider])}<div><b>${sso.email}</b><small>Confirmed by ${sso.provider_name}. You’ll sign in with ${sso.provider_name}.</small></div><a class="auth-text-btn" href="#signup">Use a different account</a></div>` : raw(ssoButtons('signup'))}
+    ${ssoProblem ? h`<p class="status status-desk err">${ssoProblem}</p>` : ''}
+    <form id="signup-form" class="auth-form" novalidate>
+      ${fields.map(field)}
+      <button class="auth-primary" type="submit">Create workspace</button>
       <p class="signup-error" id="signup-error" role="alert"></p>
+      <p class="auth-fine">${sso ? 'Nothing is sent to your workers until you connect email and turn on requests.' : 'We’ll email you a link to confirm your address. Nothing is sent to your workers until you connect email and turn on requests.'}</p>
     </form>
     <p class="auth-switch">Already have an account? <a href="#">Sign in</a></p>
   `);
+  const aside = $('#loginScreen .auth-aside');
+  if (aside) aside.outerHTML = authAside('signup');
+  if ($('#signupToggle')) bindPasswordToggle($('#signupToggle'), $('#new-password'));
   window.scrollTo(0, 0);
   desk.querySelector('h1').focus({ preventScroll: true });
   $('#signup-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     const form = event.currentTarget, values = Object.fromEntries(new FormData(form));
     let firstInvalid = null;
-    for (const f of SIGNUP_FIELDS) {
+    for (const f of fields) {
       const input = form.elements[f.name];
       const value = f.name === 'password' ? values[f.name] : values[f.name].trim();
       values[f.name] = value;
@@ -2688,6 +2841,7 @@ function renderSignup() {
       if (!valid && !firstInvalid) firstInvalid = input;
     }
     if (firstInvalid) { firstInvalid.focus(); return; }
+    if (sso) values.sso = handle;
     const error = $('#signup-error'), submit = form.querySelector('button[type="submit"]');
     error.textContent = '';
     submit.disabled = true;
@@ -2700,6 +2854,30 @@ function renderSignup() {
     } finally { submit.disabled = false; }
   });
 }
+
+// "Continue with Microsoft/Google", shown only for providers Aegis is registered with on this server.
+const PROVIDER_LOGO = {
+  microsoft: '<svg width="18" height="18" viewBox="0 0 21 21" aria-hidden="true"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>',
+  google: '<svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>',
+};
+let ssoAvailable = {};
+function ssoButtons(mode) {
+  const list = [['microsoft', 'Microsoft'], ['google', 'Google']].filter(([k]) => ssoAvailable[k]);
+  if (!list.length) return '';
+  const buttons = list.map(([k, name]) => `<a class="auth-provider" href="/api/auth/${k}">${PROVIDER_LOGO[k]}<span>Continue with ${name}</span></a>`).join('');
+  return mode === 'signup'
+    ? `<div class="auth-providers">${buttons}</div><div class="auth-divider"><span>or sign up with your email</span></div>`
+    : `<div class="auth-divider"><span>or</span></div><div class="auth-providers">${buttons}</div>`;
+}
+const SSO_ERRORS = {
+  'no-account': 'No Aegis account uses that email yet. Ask your workspace administrator to add you.',
+  disabled: 'This account has been deactivated. Ask your administrator.',
+  cancelled: 'Sign-in was cancelled. Try again, or use your email and password.',
+  consent: 'Your organization needs to approve Aegis before you can sign in this way. Ask your IT administrator, or use your email and password.',
+  expired: 'That sign-in took too long. Try again.',
+  unavailable: 'That sign-in option isn’t set up on this server. Use your email and password.',
+  failed: 'Sign-in didn’t work. Try again, or use your email and password.',
+};
 
 ACT.quickLogin = async (el) => {
   if (!demoEnabled) return;

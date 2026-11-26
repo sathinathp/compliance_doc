@@ -1,12 +1,13 @@
 'use strict';
 // Channels: Slack, Email (SMTP / Resend), and In-App Outbox.
-const db = require('./lib/db'), { clock, id, j, sha256 } = require('./lib/util'), slack = require('./slack');
+const db = require('./lib/db'), { clock, id, j, sha256 } = require('./lib/util'), slack = require('./slack'), Email = require('./email');
 const hooks = { failNext: 0 };
 
 let nodemailer = null;
 try { nodemailer = require('nodemailer'); } catch {}
 
-// True when worker emails can actually go out: through Resend, or through SMTP.
+// True when the server itself can send worker emails: through Resend, or through SMTP set in .env.
+// A company's own connected mailbox (server/email.js) is checked separately and is used first.
 const emailConfigured = () => !!process.env.RESEND_API_KEY || (!!nodemailer && !!process.env.SMTP_HOST);
 
 let cachedTransporter = null;
@@ -22,14 +23,12 @@ function getTransporter() {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_PASS || process.env.SMTP_PASSWORD
     } : undefined,
-    tls: {
-      ciphers: 'SSLv3'
-    }
   });
   return cachedTransporter;
 }
 
-async function sendEmail(to, subject, text) {
+// `ownHtml` is a finished HTML version; without it, SMTP wraps the text in the request layout below.
+async function sendEmail(to, subject, text, ownHtml) {
   // 1. Resend API
   if (process.env.RESEND_API_KEY) {
     const from = process.env.EMAIL_FROM || 'Aegis Compliance <compliance@aegis.app>';
@@ -39,7 +38,7 @@ async function sendEmail(to, subject, text) {
         authorization: `Bearer ${process.env.RESEND_API_KEY}`,
         'content-type': 'application/json'
       },
-      body: JSON.stringify({ from, to: [to], subject, text })
+      body: JSON.stringify({ from, to: [to], subject, text, ...(ownHtml ? { html: ownHtml } : {}) })
     });
     const out = await res.json();
     if (!res.ok) throw new Error(`Resend error: ${out.message || res.status}`);
@@ -51,7 +50,7 @@ async function sendEmail(to, subject, text) {
   if (transporter) {
     const from = process.env.EMAIL_FROM || process.env.SMTP_FROM || process.env.SMTP_USER || 'compliance@aegis.app';
     const linkMatch = text.match(/https?:\/\/[^\s]+/);
-    const html = `
+    const html = ownHtml || `
       <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 8px; background: #ffffff;">
         <div style="margin-bottom: 20px;">
           <h2 style="color: #0f172a; margin: 0 0 8px 0; font-size: 20px;">Aegis Compliance Coworker</h2>
@@ -96,10 +95,12 @@ async function deliver(tenant, action, maySend = () => true) {
     ref = await slack.postMessage(tenant.id, slackId, action.body);
     channel = 'slack';
   }
-  // Try Email (if recipient has an email address)
+  // Try Email (if recipient has an email address): the company's own connected mailbox first,
+  // then the server's email service, if one is set up.
   else if (action.recipient_email || (!Object.hasOwn(action, 'recipient_email') && action.recipient?.includes('@'))) {
     const to = action.recipient_email || action.recipient;
-    const emailRef = await sendEmail(to, action.subject, action.body).catch((e) => {
+    const emailRef = await Email.send(tenant.id, { to, subject: action.subject, text: action.body })
+      .then((ref) => ref ?? sendEmail(to, action.subject, action.body)).catch((e) => {
       throw new Error(`Email to ${to} failed: ${e.message}`);
     });
     if (emailRef) {
@@ -147,4 +148,13 @@ async function post(tenant, recipient, subject, body) {
   return channel;
 }
 
-module.exports = { deliver, post, verifySlack: slack.verify, hooks, sha256, emailConfigured };
+// Aegis's own account emails (confirm your email, and later password resets and invites), sent through
+// the server's email service. Throws if none is set up, so callers decide what to show.
+async function sendSystemEmail(to, subject, text) {
+  if (!emailConfigured()) throw new Error('No server email is set up.');
+  const ref = await sendEmail(to, subject, text, Email.simpleHtml(text));
+  if (!ref && process.env.NODE_ENV !== 'test') throw new Error('The email service did not accept the message.');
+  return ref;
+}
+
+module.exports = { deliver, post, verifySlack: slack.verify, hooks, sha256, emailConfigured, sendSystemEmail };
