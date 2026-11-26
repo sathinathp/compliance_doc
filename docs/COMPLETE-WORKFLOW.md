@@ -83,7 +83,7 @@ These need your input or accounts. They were not available in this build.
 |---|---|---|
 | Real HRMS API | Connector is ready and configurable. The mock in `server/mock-hrms.js` stands in until the key arrives | API URL, key and a sample response. Then follow `docs/HRMS-CONNECTOR.md` (no code change) |
 | Pack content | Starter rules, marked for review | Compliance, immigration and finance owners must confirm each rule and source |
-| Document reading | Text and text-based PDF work without AI | Paste a DeepSeek or Claude key in Settings > AI Engine for photos and chat. Neither has been run against the live service yet. DeepSeek cannot read scanned PDFs |
+| Document reading | PDF (typed, scanned, mixed), Word, RTF, OpenDocument, Pages, photos, HEIC, TIFF, email and zip are read; text-based files work without AI | Set `AEGIS_LLM_PROVIDER=anthropic` and `AEGIS_LLM_FALLBACK=deepseek` with both keys in `.env`. Both have been checked against the live services with sample documents; test with the coworker's real files |
 | Slack | Coded, not tested against a live workspace | Bot token and signing secret |
 | Email to workers | Built (SMTP or Resend), not tested against a live provider. Without settings, messages stay in the outbox | SMTP settings or a Resend key in `.env` |
 | Primary-source license checks | Not built | State board or vendor integration |

@@ -20,4 +20,9 @@ async function get(storedPath) {
   return decrypt(fs.readFileSync(storedPath));
 }
 
-module.exports = { put, get };
+// Deletes a stored file. A file that is already gone is not an error.
+async function remove(storedPath) {
+  if (storedPath) fs.rmSync(storedPath, { force: true });
+}
+
+module.exports = { put, get, remove };

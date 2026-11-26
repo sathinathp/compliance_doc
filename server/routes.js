@@ -3,13 +3,14 @@ const crypto = require('crypto');
 const sandbox = require('./lib/sandbox');
 const W = require('./lib/workspace');
 const CoworkerPolicy = require('./coworker-policy');
-const db = require('./lib/db'), { clock, id, sha256, token, j, hashPassword, checkPassword } = require('./lib/util');
+const db = require('./lib/db'), { clock, id, sha256, token, j, count, US_STATES, hashPassword, checkPassword } = require('./lib/util');
+const docread = require('./lib/docread');
 const P = require('./platform'), R = require('./registry'), E = require('./engine'), Ev = require('./evidence'), C = require('./connectors'), V = require('./views'), Chat = require('./chat'), llm = require('./llm'), mock = require('./mock-hrms'), channels = require('./channels'), Slack = require('./slack');
 const { HttpError } = P;
 const routes = [];
 const add = (m, p, fn, o = {}) => { const keys = []; const re = new RegExp('^' + p.replace(/:([a-z_]+)/g, (_, k) => { keys.push(k); return '([^/]+)'; }) + '$'); routes.push({ m, re, keys, fn, o }); };
 const demo = () => process.env.AEGIS_DEMO === '1';
-const file = (b) => { if (!b.file?.data) throw new HttpError(400, 'A file is required.'); return { filename: String(b.file.name || 'upload').slice(0, 200), mime: String(b.file.mime || 'application/octet-stream'), data: Buffer.from(b.file.data, 'base64') }; };
+const file = (b) => { if (b.file && !b.file.data) throw new HttpError(400, 'This file is empty, so there is nothing to read.'); if (!b.file?.data) throw new HttpError(400, 'A file is required.'); return { filename: String(b.file.name || 'upload').slice(0, 200), mime: String(b.file.mime || 'application/octet-stream'), data: Buffer.from(b.file.data, 'base64') }; };
 const edit = (u) => { if (u.role === 'viewer') throw new HttpError(403, 'Read-only role.'); };
 const getCase = (t, cid) => { const c = db.get('SELECT * FROM cases WHERE id=? AND tenant_id=?', cid, t); if (!c) throw new HttpError(404, 'Case not found.'); return c; };
 const seen = (u, c) => { if (c.restricted && !P.canSeeRestricted(u)) throw new HttpError(403, 'This case is restricted.'); };
@@ -51,7 +52,7 @@ add('POST', '/api/signup', ({ req, res, body }) => {
   const field = (key) => typeof body?.[key] === 'string' ? body[key] : '';
   const orgName = field('org_name').trim(), adminName = field('admin_name').trim();
   const email = field('email').trim().toLowerCase(), password = field('password');
-  if (orgName.length < 2 || orgName.length > 120) throw new HttpError(400, 'Enter an organisation name of 2 to 120 characters.');
+  if (orgName.length < 2 || orgName.length > 120) throw new HttpError(400, 'Enter an organization name of 2 to 120 characters.');
   if (adminName.length < 2 || adminName.length > 120) throw new HttpError(400, 'Enter a full name of 2 to 120 characters.');
   if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new HttpError(400, 'Enter a valid work email.');
   if (password.length < 12 || password.length > 128) throw new HttpError(400, 'Use a password of 12 to 128 characters.');
@@ -108,7 +109,12 @@ add('POST', '/api/submit/:token', async ({ p, body }) => {
   if (n > 20) throw new HttpError(429, 'Too many uploads. Please contact your coordinator.');
   const c = tokenCase(p.token), f = file(body);
   const ev = await Ev.intake(c.tenant_id, { subject_type: c.subject_type, subject_id: c.subject_id, control_key: c.control_key, ...f, source: 'secure_link', case_id: c.id }, { name: c.subject_name });
-  return { received: true, status: ev.status === 'accepted' ? 'Your document was accepted and the check is being rerun.' : 'Thanks. Your document was received and is waiting for review.' };
+  // A worker is told plainly when they sent something Aegis already has, so they do not send it again.
+  const done = ev.status === 'accepted' || ev.status === 'covered';
+  const status = ev.duplicate ? (done ? 'We already have this file, and it is accepted. There is nothing more to do.' : 'We already have this file. It is waiting for review, so there is no need to send it again.')
+    : ev.status === 'covered' ? 'Thanks. This document is already on file and accepted, so there is nothing more to do.'
+      : ev.status === 'accepted' ? 'Your document was accepted and the check is being rerun.' : 'Thanks. Your document was received and is waiting for review.';
+  return { received: true, status };
 }, { public: true });
 
 // ---- webhooks: authenticated by signature, not by session
@@ -186,18 +192,43 @@ add('POST', '/api/cases/:id/verdict', ({ t, user, p, body }) => { edit(user); co
 add('POST', '/api/cases/:id/decision', ({ t, user, p, body }) => { edit(user); const c = getCase(t, p.id); seen(user, c); P.assertPack(user, c.pack_key); E.requestDecision(t, user, 'assignment_review', c, `${body.title || 'Decision'}: ${c.subject_name}`, `${c.gap} ${body.detail || ''}`.trim(), c.pack_key, c.id); return { ok: true }; });
 add('GET', '/api/workers', ({ t, user }) => V.listWorkers(t, user));
 add('GET', '/api/workers/:id', ({ t, user, p }) => V.workerDetail(t, user, p.id));
+// The company's locations and employing companies, for the pickers on the worker forms.
+const STATE_LIST = Object.entries(US_STATES).map(([n, code]) => [code, n.replace(/\b\w/g, (c) => c.toUpperCase()).replace(' Of ', ' of ')]).sort((a, b) => a[1].localeCompare(b[1]));
+add('GET', '/api/locations', ({ t }) => ({
+  facilities: db.all('SELECT name, state FROM facilities WHERE tenant_id=? ORDER BY name', t),
+  entities: db.all('SELECT name FROM entities WHERE tenant_id=? ORDER BY name', t),
+  states: STATE_LIST,
+}));
 add('POST', '/api/workers', ({ t, user, body }) => {
   edit(user); if (!P.isAdmin(user) && user.role !== 'hr') throw new HttpError(403, 'HR or administrator role required.');
   const name = String(body.name || '').trim();
   if (!name) throw new HttpError(400, 'Name is required.');
-  const r = C.upsertWorker(t, { name, email: String(body.email || '').trim(), role: body.role, license_type: body.license_type || null, category: body.category, dept: body.dept, facility: body.facility, facility_state: body.facility_state, entity: body.entity, hire_date: body.hire_date || clock.today(), work_auth_expires: body.work_auth_expires, attrs: {} }, 'manual', user);
+  const places = C.placesFrom(t, body);
+  const r = C.upsertWorker(t, { name, email: String(body.email || '').trim(), role: body.role, license_type: body.license_type || null, category: body.category, dept: body.dept, ...places, hire_date: body.hire_date || clock.today(), work_auth_expires: body.work_auth_expires, attrs: {} }, 'manual', user);
   return r;
+});
+// Adds or changes a worker's email, so document requests can reach them. HR and administrators only,
+// like adding a worker. The address itself stays out of the audit log, which cannot be edited later.
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+add('POST', '/api/workers/:id/email', ({ t, user, p, body }) => {
+  edit(user); if (!P.isAdmin(user) && user.role !== 'hr') throw new HttpError(403, 'HR or administrator role required.');
+  const w = db.get('SELECT * FROM workers WHERE id=? AND tenant_id=?', p.id, t); if (!w) throw new HttpError(404, 'Worker not found.');
+  const email = String(body.email || '').trim();
+  if (!email) throw new HttpError(400, 'Enter an email address.');
+  if (email.length > 254 || !EMAIL.test(email)) throw new HttpError(400, 'Enter a valid email address, like name@company.com.');
+  const other = db.get('SELECT name FROM workers WHERE tenant_id=? AND lower(email)=lower(?) AND id<>?', t, email, w.id);
+  if (other) throw new HttpError(409, `${other.name} already uses this email address. Each worker needs their own.`);
+  if (w.email === email) return { ok: true, email, changed: false };
+  db.update('workers', w.id, { email, updated_at: clock.iso() });
+  P.audit(t, 'WORKER_UPDATED', w.name, w.email ? 'Email address changed.' : 'Email address added. Document requests can now reach them.', user);
+  P.enqueue(t, 'evaluate_subject', { type: 'worker', id: w.id, trigger: 'worker_updated' }, { dedupe: `eval:worker:${w.id}` });
+  return { ok: true, email, changed: true };
 });
 add('POST', '/api/workers/:id/assignment', ({ t, user, p, body }) => {
   edit(user); const w = db.get('SELECT * FROM workers WHERE id=? AND tenant_id=?', p.id, t); if (!w) throw new HttpError(404, 'Worker not found.');
-  const facility = String(body.facility || '').trim();
-  if (!facility) throw new HttpError(400, 'Facility is required.');
-  C.changeAssignment(t, w, facility, body.facility_state, user);
+  if (!String(body.facility || '').trim()) throw new HttpError(400, 'Choose a location.');
+  const { facility, facility_state } = C.placesFrom(t, body);
+  C.changeAssignment(t, w, facility, facility_state, user);
   return { ok: true };
 });
 add('POST', '/api/workers/:id/readiness-review', ({ t, user, p }) => {
@@ -206,9 +237,34 @@ add('POST', '/api/workers/:id/readiness-review', ({ t, user, p }) => {
   if (d.readiness_request) throw new HttpError(409, `${d.name} is already waiting for a readiness decision in Approvals.`);
   E.requestDecision(t, user, 'readiness_decision', null, `Assignment readiness: ${d.name}`, d.readiness_view.statement, 'onboarding', d.id); return { ok: true }; });
 add('GET', '/api/evidence', ({ t, user }) => V.listEvidence(t, user));
-add('POST', '/api/evidence', async ({ t, user, body }) => { edit(user); const ev = await Ev.intake(t, { subject_type: body.subject_type || 'worker', subject_id: body.subject_id, control_key: body.control_key || null, ...file(body), claimed: body.claimed || {}, source: body.bulk ? 'bulk_upload' : 'upload' }, user); return { id: ev.id, status: ev.status, duplicate: !!ev.duplicate, reasons: j(ev.review_reasons_json, []) }; });
+// What happened to one uploaded (or moved) file, for the upload window.
+// For a copy, filename and created_at are the copy already on record, so the uploader can find it.
+function uploadResult(t, e, memo = {}) {
+  const o = e.status === 'covered' && e.covered_by && db.get('SELECT id,filename FROM evidence WHERE id=? AND tenant_id=?', e.covered_by, t);
+  const subject = e.subject_type === 'worker' ? db.get('SELECT name FROM workers WHERE id=? AND tenant_id=?', e.subject_id, t) : null;
+  return { id: e.id, filename: e.filename, status: e.status, duplicate: !!e.duplicate, created_at: e.created_at, reasons: j(e.review_reasons_json, []), subject_name: subject?.name || null,
+    covered_by: o ? { id: o.id, filename: o.filename } : null, requirement_note: Ev.requirementNote(t, e, memo), move_to: Ev.moveTarget(t, e, memo) };
+}
+add('POST', '/api/evidence', async ({ t, user, body }) => { edit(user); const ev = await Ev.intake(t, { subject_type: body.subject_type || 'worker', subject_id: body.subject_id, control_key: body.control_key || null, ...file(body), claimed: body.claimed || {}, source: body.bulk ? 'bulk_upload' : 'upload' }, user);
+  const memo = {}, one = (e) => uploadResult(t, e, memo);
+  // A zip folder or an email comes back as every document that was in it.
+  return { ...one(ev), ...(ev.files ? { files: ev.files.map(one), failed: ev.failed, skipped: ev.skipped } : {}) };
+});
 const getEv = (t, u, eid) => { const e = db.get('SELECT * FROM evidence WHERE id=? AND tenant_id=?', eid, t); if (!e) throw new HttpError(404, 'Evidence not found.'); if (!Ev.canView(u, e)) throw new HttpError(403, 'This evidence is restricted.'); return e; };
 add('POST', '/api/evidence/:id/review', ({ t, user, p, body }) => { edit(user); Ev.review(t, user, getEv(t, user, p.id), body); return { ok: true }; });
+// Moves a document uploaded for the wrong person to the worker named on it, and checks it again for them.
+add('POST', '/api/evidence/:id/move', async ({ t, user, p, body }) => { edit(user); return uploadResult(t, await Ev.move(t, user, getEv(t, user, p.id), String(body.subject_id || ''))); });
+// The first page as a picture, or the text Aegis read, shown next to the fields on the review screen.
+add('GET', '/api/evidence/:id/preview', async ({ t, user, p, res }) => {
+  const e = getEv(t, user, p.id); if (!e.stored_path) throw new HttpError(404, 'Demo evidence has no file.');
+  let data;
+  try { data = await Ev.readFile(e); } catch (err) { console.error('[storage]', err.message); throw new HttpError(503, 'The document could not be read from storage.'); }
+  const view = await docread.preview(data, e.mime, e.filename);
+  if (!view) throw new HttpError(415, 'Aegis cannot show this file. Download it to open it.');
+  P.audit(t, 'EVIDENCE_VIEWED', e.filename, 'Document preview shown.', user);
+  if (view.type === 'text') return { text: view.text };
+  res.writeHead(200, { 'content-type': view.mediaType || 'image/jpeg', 'cache-control': 'private, max-age=300', 'content-disposition': 'inline' }); res.end(view.data); return res;
+});
 add('GET', '/api/evidence/:id/file', async ({ t, user, p, res }) => {
   const e = getEv(t, user, p.id); if (!e.stored_path) throw new HttpError(404, 'Demo evidence has no file.');
   let data;
@@ -222,7 +278,7 @@ add('GET', '/api/packs', ({ t }) => V.packRows(t));
 add('POST', '/api/packs/:key/activate', ({ t, user, p, body }) => { R.activatePack(t, user, p.key, body); return { ok: true }; });
 add('POST', '/api/packs/:key/mode', ({ t, user, p, body }) => { E.setMode(t, user, p.key, body.mode); return { ok: true }; });
 add('GET', '/api/controls', ({ t, user }) => ({
-  controls: R.effectiveControls(t).filter((c) => !c.restricted || P.canSeeRestricted(user)).map((c) => ({ key: c.key, name: c.name, pack: c.pack_key, requirement_type: c.requirement_type, type: c.type, version: c.version_label, overridden: !!c.overridden, custom: !!c.custom, remediation: c.remediation, params: c.params })),
+  controls: R.effectiveControls(t).filter((c) => !c.restricted || P.canSeeRestricted(user)).map((c) => ({ key: c.key, name: c.name, pack: c.pack_key, subject: c.subject, requirement_type: c.requirement_type, type: c.type, version: c.version_label, overridden: !!c.overridden, custom: !!c.custom, remediation: c.remediation, params: c.params })),
   changes: db.all('SELECT * FROM control_changes WHERE tenant_id=? ORDER BY created_at DESC', t)
     .filter((c) => P.canPack(user, c.pack_key) && (!R.packDef(c.pack_key)?.restricted || P.canSeeRestricted(user)))
     .map((c) => ({ ...c, preview: j(c.preview_json) })),
@@ -294,10 +350,10 @@ add('GET', '/api/audit', ({ t, user }) => { P.assertAdmin(user); return db.all('
 const AUDIT_KINDS = {
   checks: ['CHECK_RESULT'],
   cases: ['CASE_OPENED', 'CASE_STATE', 'CASE_NOTE', 'CASE_ESCALATED', 'CASE_CLOSED', 'FINDING_REVIEWED'],
-  evidence: ['EVIDENCE_MATCHED', 'EVIDENCE_ACCEPTED', 'EVIDENCE_REJECTED', 'EVIDENCE_REVIEW', 'EVIDENCE_VIEWED', 'EVIDENCE_RECEIVED'],
+  evidence: ['EVIDENCE_MATCHED', 'EVIDENCE_ACCEPTED', 'EVIDENCE_REJECTED', 'EVIDENCE_REVIEW', 'EVIDENCE_VIEWED', 'EVIDENCE_RECEIVED', 'EVIDENCE_DUPLICATE', 'EVIDENCE_COPY', 'EVIDENCE_MOVED'],
   approvals: ['APPROVAL_REQUESTED', 'APPROVAL_DECIDED', 'APPROVAL_UPDATED', 'READINESS_REOPENED'],
   messages: ['ACTION_SENT', 'MESSAGE_SENT', 'DIGEST_SENT', 'DIGEST_OUTBOX', 'DIGEST_FAILED', 'CHAT_COMMAND', 'SLACK_TEST'],
-  records: ['WORKER_ADDED', 'ROSTER_IMPORT', 'ASSIGNMENT_CHANGED', 'HRMS_EVENT', 'HRMS_SYNC'],
+  records: ['WORKER_ADDED', 'WORKER_UPDATED', 'ROSTER_IMPORT', 'ASSIGNMENT_CHANGED', 'HRMS_EVENT', 'HRMS_SYNC'],
 };
 add('GET', '/api/audit/search', ({ t, user, q }) => {
   P.assertAdmin(user);
@@ -435,7 +491,7 @@ add('POST', '/api/users/:id/deactivate', ({ t, user, p }) => {
   if (target.role === 'admin' && activeAdmins(t) <= 1) throw new HttpError(409, 'This is the last active administrator.');
   db.tx(() => { db.update('users', target.id, { disabled_at: clock.iso() }); endSessions(target.id); });
   const open = Number(db.get('SELECT COUNT(*) AS n FROM cases WHERE tenant_id=? AND owner_user_id=? AND closed_at IS NULL', t, target.id).n);
-  P.audit(t, 'USER_DEACTIVATED', target.email, `Account deactivated and signed out everywhere.${open ? ` Still named as owner of ${open} open case(s).` : ''}`, user);
+  P.audit(t, 'USER_DEACTIVATED', target.email, `Account deactivated and signed out everywhere.${open ? ` Still named as owner of ${count(open, 'open case')}.` : ''}`, user);
   return { ok: true, open_cases: open };
 });
 add('POST', '/api/users/:id/reactivate', ({ t, user, p }) => {

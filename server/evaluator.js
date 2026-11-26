@@ -1,7 +1,7 @@
 'use strict';
 // Deterministic control evaluator. No AI here: every result is Pass, Fail, Unknown or Not applicable,
 // with a reason and evidence references. Missing or stale evidence can never yield Pass.
-const { addDays, daysBetween, sameName } = require('./lib/util');
+const { addDays, daysBetween, count, nameMatch } = require('./lib/util');
 
 const NA = (reason) => ({ status: 'not_applicable', code: 'not_applicable', reason, evidence_ids: [], action_needed: false, gap_kind: null });
 const unknown = (code, reason, gap_kind, extra = {}) => ({ status: 'unknown', code, reason, evidence_ids: [], action_needed: true, gap_kind, ...extra });
@@ -36,7 +36,8 @@ function evaluate(c, s, ctx) {
   if (ap.ok === null) return unknown('missing_context', ap.why, 'data');
   const today = ctx.today, docTypes = c.evidence?.doc_types || [];
   const ev = (ctx.evidence || []).filter((e) => docTypes.includes(e.doc_type));
-  const wrongHolder = (e) => c.subject === 'worker' && e.holder_name && s.name && !sameName(e.holder_name, s.name);
+  // A possible match ("Alex" for Alex Patel) counts once a person accepted it; a different person never does.
+  const wrongHolder = (e) => c.subject === 'worker' && e.holder_name && s.name && nameMatch(e.holder_name, s.name) === 'different';
   const accepted = ev.filter((e) => e.status === 'accepted' && !wrongHolder(e));
   const pending = (ctx.evidence || []).filter((e) => e.status === 'needs_review' && (docTypes.includes(e.doc_type) || e.control_key === c.key));
   const review = (msg) => unknown('awaiting_review', msg, 'review', { evidence_ids: pending.map((e) => e.id) });
@@ -49,10 +50,10 @@ function evaluate(c, s, ctx) {
       const dated = withExp.filter((x) => x.exp).sort((a, b) => b.exp.localeCompare(a.exp));
       if (!dated.length) return unknown('evidence_incomplete', 'Accepted evidence has no expiration or issue date, so currency cannot be confirmed.', 'evidence');
       const best = dated[0], days = daysBetween(today, best.exp);
-      if (days < 0) return fail('expired', `${c.name} expired ${-days} day(s) ago on ${best.exp}.${pending.length ? ' A replacement is awaiting review.' : ''}`, pending.length ? 'review' : 'evidence', { evidence_ids: [best.e.id, ...pending.map((e) => e.id)], due: best.exp });
+      if (days < 0) return fail('expired', `${c.name} expired ${count(-days, 'day')} ago on ${best.exp}.${pending.length ? ' A replacement is awaiting review.' : ''}`, pending.length ? 'review' : 'evidence', { evidence_ids: [best.e.id, ...pending.map((e) => e.id)], due: best.exp });
       if (c.params?.state_must_match && ctx.facility && best.e.state && best.e.state !== ctx.facility.state)
         return unknown('state_mismatch', `License state ${best.e.state} does not match work state ${ctx.facility.state}. Specialist review needed.`, 'review', { evidence_ids: [best.e.id] });
-      if (days <= warn) return pass('expiring', `${c.name} is valid but expires in ${days} day(s) on ${best.exp}.`, [best.e.id], { action_needed: true, gap_kind: pending.length ? 'review' : 'evidence', due: best.exp, days });
+      if (days <= warn) return pass('expiring', `${c.name} is valid but expires in ${count(days, 'day')} on ${best.exp}.`, [best.e.id], { action_needed: true, gap_kind: pending.length ? 'review' : 'evidence', due: best.exp, days });
       return pass('current', `${c.name} is current until ${best.exp}.`, [best.e.id]);
     }
     case 'document_required': {
@@ -80,4 +81,4 @@ function evaluate(c, s, ctx) {
     default: return unknown('unsupported_control', `Control type ${c.type} is not supported.`, 'data');
   }
 }
-module.exports = { evaluate, latestDuePeriod };
+module.exports = { evaluate, latestDuePeriod, applies };

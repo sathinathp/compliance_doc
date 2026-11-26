@@ -17,7 +17,7 @@ const LABELS = {
   identified: 'New', following_up: 'Following up', in_review: 'In review', reevaluating: 'Re-evaluating',
   confirmed: 'Confirmed by owner', false_finding: 'Marked false by owner', verified: 'Verified with evidence', no_longer_applicable: 'No longer applicable',
   // evidence, messages and approvals
-  needs_review: 'Needs review', pending_approval: 'Waiting for approval', demo_seed: 'Demo data', bulk_upload: 'Bulk upload',
+  needs_review: 'Needs review', covered: 'Duplicate', pending_approval: 'Waiting for approval', demo_seed: 'Demo data', bulk_upload: 'Bulk upload',
   action: 'Message to send', assignment_review: 'Assignment decision', readiness_decision: 'Readiness decision',
   control_activation: 'Rule change', notice_response: 'Notice response',
   // people and packs
@@ -83,7 +83,7 @@ function setNavigationOpen(open) {
 
 const PILL = { pass: ['pill-pass', 'Pass'], fail: ['pill-fail', 'Fail'], unknown: ['pill-unknown', 'Unknown'], not_applicable: ['pill-na', 'N/A'], restricted: ['pill-na', 'Restricted'], not_assessed: ['pill-na', 'Not assessed'] };
 const statusPill = (s) => { const [c, l] = PILL[s] || ['pill-na', words(s)]; return h`<span class="pill ${c}">${l}</span>`; };
-const STATE_PILL = { needs_review: 'pill-warn', accepted: 'pill-pass', rejected: 'pill-fail', superseded: 'pill-na', sent: 'pill-pass', queued: 'pill-blue', pending_approval: 'pill-warn' };
+const STATE_PILL = { needs_review: 'pill-warn', accepted: 'pill-pass', rejected: 'pill-fail', covered: 'pill-na', superseded: 'pill-na', sent: 'pill-pass', queued: 'pill-blue', pending_approval: 'pill-warn' };
 const statePill = (s) => h`<span class="pill ${STATE_PILL[s] || 'pill-blue'}">${words(s)}</span>`;
 const prio = (p) => h`<span class="priority-pill ${p === 'high' ? 'pill-high' : p === 'medium' ? 'pill-med' : 'pill-low'}">${words(p)}</span>`;
 // How urgent a due date is, in words: "22 days overdue", "Due today", "Due in 3 days".
@@ -157,20 +157,25 @@ const NAV = [
 const NAV_ORG = [['setup', 'Company setup'], ['integrations', 'Connections'], ['settings', 'Settings']];
 // Dashboards opens to its standard views (the ids match the built-in dashboards on the server).
 const DASH_VIEWS = [['builtin-readiness', 'Readiness'], ['builtin-expiring', 'Expiring soon'], ['builtin-gaps', 'Open gaps'], ['builtin-missing', 'Missing documents'], ['builtin-coverage', 'Coverage']];
-const HEAD = { overview: ['Workspace', 'Overview', 'Current status across activated packs, accepted evidence and open remediation.'], setup: ['Organization', 'Company setup', 'Get your organisation ready: bring in your people, confirm requirements, and run the first check.'], cases: ['Workspace', 'Cases', 'Each gap moves from identified to closed. Only accepted evidence closes a case.'], approvals: ['Workspace', 'Approvals', 'Consequential actions wait here for an authorized person.'], evidence: ['Workspace', 'Evidence', 'AI proposes matches and fields. Uncertain documents go to a person.'], checks: ['Records', 'Checks', 'Every result has a reason, evidence references and a control version.'], workers: ['Records', 'Workers', 'Per-pack status for each worker. One pack never hides another.'], packs: ['Records', 'Compliance packs', 'Versioned packs reviewed and activated by an authorized person.'], controls: ['Records', 'Control rules', 'Draft, preview and approve changes before they take effect.'], integrations: ['Organization', 'Connections', 'Manage workforce sync, reporting channels, and message delivery.'], dashboards: ['Reporting', 'Dashboards', 'Readiness, expirations and gaps, counted from current checks.'], reports: ['Reporting', 'Reports', 'Reports to share with clients, auditors and managers.'], notices: ['Workspace', 'Tax notices', 'Letters from tax agencies and the replies Finance approves.'], metrics: ['Reporting', 'Pilot metrics', 'How the pilot is going, measured from Aegis records.'], audit: ['Reporting', 'Audit history', 'Every check, request and decision, in order. Entries cannot be edited or deleted.'], settings: ['Organization', 'Settings', 'Users, roles, reporting channel and schedules.'] };
+const HEAD = { overview: ['Workspace', 'Overview', 'Current status across activated packs, accepted evidence and open remediation.'], setup: ['Organization', 'Company setup', 'Get your organization ready: bring in your people, confirm requirements, and run the first check.'], cases: ['Workspace', 'Cases', 'Each gap moves from identified to closed. Only accepted evidence closes a case.'], approvals: ['Workspace', 'Approvals', 'Consequential actions wait here for an authorized person.'], evidence: ['Workspace', 'Evidence', 'AI proposes matches and fields. Uncertain documents go to a person.'], checks: ['Records', 'Checks', 'Every result has a reason, evidence references and a control version.'], workers: ['Records', 'Workers', 'Per-pack status for each worker. One pack never hides another.'], packs: ['Records', 'Compliance packs', 'Versioned packs reviewed and activated by an authorized person.'], controls: ['Records', 'Control rules', 'Draft, preview and approve changes before they take effect.'], integrations: ['Organization', 'Connections', 'Manage workforce sync, reporting channels, and message delivery.'], dashboards: ['Reporting', 'Dashboards', 'Readiness, expirations and gaps, counted from current checks.'], reports: ['Reporting', 'Reports', 'Reports to share with clients, auditors and managers.'], notices: ['Workspace', 'Tax notices', 'Letters from tax agencies and the replies Finance approves.'], metrics: ['Reporting', 'Pilot metrics', 'How the pilot is going, measured from Aegis records.'], audit: ['Reporting', 'Audit history', 'Every check, request and decision, in order. Entries cannot be edited or deleted.'], settings: ['Organization', 'Settings', 'Users, roles, reporting channel and schedules.'] };
 
 // Ticked cases on the Cases page (ids). Cleared when the tab or page changes.
 const caseSel = new Set();
 let lastCaseCheck = null;
 let caseClosed = false, me = null, route = 'overview', routeArg = null, checkFilter = {}, evidenceSel = null, lastDraft = null, importPreview = null;
+// Evidence uploaded in this browser session, marked New in the inbox until the page is reloaded.
+const recentUploads = new Set();
+// The result of the last upload, so it is still there after the upload window closes. Kept in this
+// browser for this person and workspace until it is dismissed, the next upload replaces it, or a day passes.
+const lastUploadKey = () => `aegis:last-upload:${me?.tenant?.id || ''}:${me?.user?.id || ''}`;
+function lastUpload() {
+  try {
+    const v = JSON.parse(localStorage.getItem(lastUploadKey()) || 'null');
+    return v && Date.now() - Date.parse(v.at) < 864e5 ? v : null;
+  } catch { return null; }
+}
+function saveLastUpload(v) { try { localStorage.setItem(lastUploadKey(), JSON.stringify(v)); } catch { /* storage full or blocked: the upload window still showed it */ } }
 let navigation = 0;
-// The company's locations, from the last Setup or Workers page, for the location suggestions.
-let knownLocations = [];
-const rememberLocations = (list) => {
-  const seen = new Map(knownLocations.map((f) => [f.name, f]));
-  for (const f of list) if (f?.name) seen.set(f.name, { name: f.name, state: f.state || '' });
-  knownLocations = [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
-};
 const adminRoutes = new Set(['setup', 'settings', 'audit', 'integrations']);
 const canEdit = () => me.user.role !== 'viewer';
 // Tax notices belong to the payroll pack: Finance and administrators.
@@ -288,7 +293,7 @@ function renderNav() {
   $('#tabs').innerHTML = render(groups('tabs'));
   $('#tabsOrg').innerHTML = render(org);
   // The phone menu is one list: daily work, records, reporting, then the organisation pages.
-  $('#sheetIn').innerHTML = render(h`${groups('sheetIn')}${org.length ? h`<section class="rail-group rail-group-org" aria-label="Organisation">${org}</section>` : ''}`);
+  $('#sheetIn').innerHTML = render(h`${groups('sheetIn')}${org.length ? h`<section class="rail-group rail-group-org" aria-label="Organization">${org}</section>` : ''}`);
   setDashboardViewsOpen(dashboardViewsOpen);
   syncNav();
 }
@@ -352,6 +357,8 @@ function readHash() {
     else if (location.hash !== '#signup' && $('#signup-form')) showLogin();
     return;
   }
+  // A new page never opens under a window left from the last one (the browser's Back button, or a link inside the window).
+  closeModal();
   const [page, argument] = location.hash.slice(1).split('/');
   if (page === 'verify-email' && argument) {
     history.replaceState(null, '', '#setup');
@@ -531,16 +538,15 @@ function confirmFollowUps(ids, scopeText) {
 function setupSteps(s) {
   const st = s.steps, gapsFor = (k) => s.gap_items.filter((g) => g.step === k);
   const needsEmail = me.workspace_email?.pending;
-  rememberLocations(s.facilities);
   // Gaps on records and context are problems to fix; the packs note is guidance, so it reads as information.
   // A gap about people names them; workers without a location get a button that sets it.
   const SHOWN = 5;
   const gapPeople = (g) => {
     if (!g.workers?.length) return '';
-    const fix = g.kind === 'no_location' && canEdit();
+    const fix = (g.kind === 'no_location' && canEdit()) || (g.kind === 'no_email' && canAddWorker());
     if (g.workers.length === 1 && !fix) return '';
     const shown = g.workers.slice(0, SHOWN), more = g.workers.length - shown.length;
-    return h`<ul class="gap-people">${shown.map((w) => h`<li><button class="btn-link-action" data-act="workerDetail" data-id="${w.id}">${w.name}</button>${fix ? h`<button class="btn-card-outline" data-act="moveWorker" data-id="${w.id}" data-title="Set work location for ${w.name}">Set location</button>` : ''}</li>`)}${more ? h`<li><a class="btn-link-action" href="#workers">${plural(more, 'more worker')} on the Workers page</a></li>` : ''}</ul>`;
+    return h`<ul class="gap-people">${shown.map((w) => h`<li><button class="btn-link-action" data-act="workerDetail" data-id="${w.id}">${w.name}</button>${fix && g.kind === 'no_location' ? h`<button class="btn-card-outline" data-act="moveWorker" data-id="${w.id}" data-title="Set work location for ${w.name}">Set location</button>` : ''}${fix && g.kind === 'no_email' ? h`<button class="btn-card-outline" data-act="editEmail" data-id="${w.id}" data-name="${w.name}">Add email</button>` : ''}</li>`)}${more ? h`<li><a class="btn-link-action" href="#workers">${plural(more, 'more worker')} on the Workers page</a></li>` : ''}</ul>`;
   };
   const gapNote = (k, info) => (gapsFor(k).length ? h`<div class="setup-note${info ? ' is-info' : ''}"><b>${info ? 'Good to know' : gapsFor(k).length === 1 ? 'One thing to fix' : `${gapsFor(k).length} things to fix`}</b><ul>${gapsFor(k).map((g) => h`<li>${g.text}${gapPeople(g)}</li>`)}</ul></div>` : '');
   const active = s.recommended.filter((p) => p.status === 'active');
@@ -620,20 +626,20 @@ let auditFilter = { kind: '', q: '', from: '', to: '' }, audit = { rows: [], mor
 const auditUrl = (before) => `/api/audit/search?${new URLSearchParams(Object.entries({ ...auditFilter, before: before || '' }).filter(([, v]) => v)).toString()}`;
 const AUDIT_LABEL = {
   CHECK_RESULT: 'Check result', CASE_OPENED: 'Case opened', CASE_STATE: 'Case moved', CASE_NOTE: 'Note added', CASE_ESCALATED: 'Case escalated', CASE_CLOSED: 'Case closed',
-  FINDING_REVIEWED: 'Finding reviewed', EVIDENCE_MATCHED: 'Evidence matched', EVIDENCE_ACCEPTED: 'Evidence accepted', EVIDENCE_REJECTED: 'Evidence rejected', EVIDENCE_REVIEW: 'Sent to review', EVIDENCE_VIEWED: 'Evidence opened',
+  FINDING_REVIEWED: 'Finding reviewed', EVIDENCE_MATCHED: 'Evidence matched', EVIDENCE_ACCEPTED: 'Evidence accepted', EVIDENCE_REJECTED: 'Evidence rejected', EVIDENCE_REVIEW: 'Sent to review', EVIDENCE_VIEWED: 'Evidence opened', EVIDENCE_DUPLICATE: 'Duplicate kept', EVIDENCE_COPY: 'Same file uploaded again', EVIDENCE_MOVED: 'Moved to the right person',
   APPROVAL_REQUESTED: 'Approval requested', APPROVAL_DECIDED: 'Decision made', APPROVAL_UPDATED: 'Approval updated', READINESS_REOPENED: 'Readiness reopened',
   MESSAGE_SENT: 'Message', DIGEST_SENT: 'Digest posted', DIGEST_OUTBOX: 'Digest saved', DIGEST_FAILED: 'Digest failed', CHAT_COMMAND: 'Coworker request', COWORKER_POLICY_UPDATED: 'Coworker policy updated',
-  WORKER_ADDED: 'Worker added', ROSTER_IMPORT: 'Roster imported', ASSIGNMENT_CHANGED: 'Assignment changed', HRMS_EVENT: 'HRMS update', HRMS_SYNC: 'HRMS sync',
+  WORKER_ADDED: 'Worker added', WORKER_UPDATED: 'Worker updated', ROSTER_IMPORT: 'Roster imported', ASSIGNMENT_CHANGED: 'Assignment changed', HRMS_EVENT: 'HRMS update', HRMS_SYNC: 'HRMS sync',
   PACK_ACTIVATED: 'Pack activated', PACK_MODE: 'Pack mode changed', CONTROL_DRAFTED: 'Rule drafted', DASHBOARD_CREATED: 'View saved', DASHBOARD_DELETED: 'View deleted', USER_ADDED: 'User added',
 };
 // The kind of each event, as on the server, so the dot matches the filter it belongs to.
 const AUDIT_KIND = {};
 for (const [k, list] of Object.entries({
   checks: ['CHECK_RESULT'], cases: ['CASE_OPENED', 'CASE_STATE', 'CASE_NOTE', 'CASE_ESCALATED', 'CASE_CLOSED', 'FINDING_REVIEWED'],
-  evidence: ['EVIDENCE_MATCHED', 'EVIDENCE_ACCEPTED', 'EVIDENCE_REJECTED', 'EVIDENCE_REVIEW', 'EVIDENCE_VIEWED', 'EVIDENCE_RECEIVED'],
+  evidence: ['EVIDENCE_MATCHED', 'EVIDENCE_ACCEPTED', 'EVIDENCE_REJECTED', 'EVIDENCE_REVIEW', 'EVIDENCE_VIEWED', 'EVIDENCE_RECEIVED', 'EVIDENCE_DUPLICATE', 'EVIDENCE_COPY', 'EVIDENCE_MOVED'],
   approvals: ['APPROVAL_REQUESTED', 'APPROVAL_DECIDED', 'APPROVAL_UPDATED', 'READINESS_REOPENED'],
   messages: ['ACTION_SENT', 'MESSAGE_SENT', 'DIGEST_SENT', 'DIGEST_OUTBOX', 'DIGEST_FAILED', 'CHAT_COMMAND', 'SLACK_TEST'],
-  records: ['WORKER_ADDED', 'ROSTER_IMPORT', 'ASSIGNMENT_CHANGED', 'HRMS_EVENT', 'HRMS_SYNC'],
+  records: ['WORKER_ADDED', 'WORKER_UPDATED', 'ROSTER_IMPORT', 'ASSIGNMENT_CHANGED', 'HRMS_EVENT', 'HRMS_SYNC'],
 })) for (const t of list) AUDIT_KIND[t] = k;
 const auditKindOf = (t) => AUDIT_KIND[t] || 'settings';
 const auditLabel = (t) => AUDIT_LABEL[t] || words(String(t).toLowerCase());
@@ -816,9 +822,15 @@ function reportDetail(r) {
 
 // Worker window buttons. When every check passes, asking for the readiness decision is the main step.
 // While checks are open, getting the missing documents is, and the decision is still there but quieter.
+// Where document requests for this worker go, and a way to add or change it (HR and administrators).
+function workerContact(w) {
+  const edit = (label) => (canAddWorker() ? h`<button type="button" class="btn-link-action" data-act="editEmail" data-id="${w.id}" data-name="${w.name}" data-email="${w.email || ''}" data-hrms="${String(w.source || '').startsWith('con_') ? '1' : ''}" data-back="1">${label}</button>` : '');
+  return w.email ? h`<p class="worker-contact"><span class="muted">Email</span> <b>${w.email}</b>${edit('Change')}</p>`
+    : h`<div class="setup-note worker-contact-missing"><b>No email address</b>Document requests and reminders cannot reach ${w.name}. ${canAddWorker() ? '' : 'Ask HR or an administrator to add one.'}${edit('Add email')}</div>`;
+}
 function workerFoot(w, openN, total) {
   if (!canEdit() || w.status !== 'active') return '';
-  const move = h`<button class="btn-cancel" data-act="moveWorker" data-id="${w.id}">Change assignment</button>`;
+  const move = h`<button class="btn-cancel" data-act="moveWorker" data-id="${w.id}" data-current="${w.facility || ''}">Change location</button>`;
   const upload = (cls) => h`<button class="${cls}" data-act="uploadEvidence" data-subject="worker:${w.id}" data-name="${w.name}">Upload evidence</button>`;
   // Already asked: one open request at a time (the backend refuses a second one).
   if (w.readiness_request) return h`${move}<button class="btn-cancel" data-act="openApprovals">Waiting in Approvals</button>${upload(openN ? 'btn-submit-green' : 'btn-cancel')}`;
@@ -982,7 +994,7 @@ const VIEWS = {
     const SHORT_DAY = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
     const when = (ts) => (String(ts).slice(0, 10) === me.today ? timeUtc(ts) : SHORT_DAY.format(new Date(ts)));
     const activityPanel = feed.length ? h`<section class="ovx-panel ovx-5" aria-labelledby="ovxAct">
-      ${head(h`<span id="ovxAct">Recent activity</span>`, 'The latest entries in the audit history', more('#audit', 'Audit history'))}
+      ${head(h`<span id="ovxAct">Recent activity</span>`, 'The latest entries in the audit history. Times are UTC.', more('#audit', 'Audit history'))}
       <ul class="ovx-act">${feed.slice(0, 6).map((e) => h`<li><time datetime="${e.ts}">${when(e.ts)}</time><i class="ovx-dot is-${AUDIT_TONE[e.type] || 'na'}" aria-hidden="true"></i><span><b>${auditLabel(e.type)}</b>${e.subject ? ` · ${e.subject}` : ''}<small>${e.action}</small></span></li>`)}</ul>
     </section>` : '';
 
@@ -999,7 +1011,7 @@ const VIEWS = {
     return h`<div class="stack">
       <section class="panel setup-progress" aria-labelledby="setupProgress">
         <div class="setup-progress-text">
-          <h2 id="setupProgress">${done === total ? 'Setup is complete' : `${done} of ${total} steps done`}</h2>
+          <h2 id="setupProgress">${done < total ? `${done} of ${total} steps done` : toFix.length ? `Set up, with ${toFix.length === 1 ? 'one thing' : `${toFix.length} things`} to fix` : 'Setup is complete'}</h2>
           <p>${done === total ? `Aegis is checking ${plural(s.summary.workers, 'worker')} against ${plural(s.recommended.filter((p) => p.status === 'active').length, 'active pack')}.${toFix.length > 1 ? ` ${toFix.length} steps need attention: ${toFix.map((x) => x.title.toLowerCase()).join('; ')}.` : fix ? ` One step needs attention: ${fix.title.toLowerCase()}.` : ' You can change any step below.'}` : `Next: ${next ? next.title.toLowerCase() : 'finish the steps above'}.`}</p>
         </div>
         <ol class="setup-meter" aria-hidden="true">${steps.map((x) => h`<li class="${x.done ? 'is-done' : x === next ? 'is-current' : ''}"></li>`)}</ol>
@@ -1058,7 +1070,6 @@ const VIEWS = {
     const openOf = (w) => (w.checks?.fail || 0) + (w.checks?.unknown || 0);
     const rows = (await api('/api/workers')).sort((a, b) => openOf(b) - openOf(a) || a.name.localeCompare(b.name));
     const withGaps = rows.filter((w) => openOf(w)).length;
-    rememberLocations(rows.filter((w) => w.facility).map((w) => ({ name: w.facility, state: w.state })));
     return card('All workers', `${rows.length} workers${withGaps ? ` · ${withGaps} with open checks` : ''}. A tick means the pack passes; only problems are highlighted.`, table(['Worker', 'Location', 'Onboarding', 'Healthcare', 'Immigration', 'Payroll', 'Overall', 'Open', 'Readiness'], rows.map((w) => h`<tr class="click" data-act="workerDetail" data-id="${w.id}"><td><button class="row-title" data-act="workerDetail" data-id="${w.id}">${w.name}</button>${w.status !== 'active' ? h` <span class="pill pill-na">${words(w.status)}</span>` : ''}<div class="case-sub">${w.role || 'No role'}</div></td><td class="${w.facility ? '' : 'muted'}">${w.facility || 'No location assigned'}</td><td class="result-cell">${quietStatus(w.packs.onboarding)}</td><td class="result-cell">${quietStatus(w.packs.healthcare)}</td><td class="result-cell">${quietStatus(w.packs.immigration)}</td><td class="result-cell">${quietStatus(w.packs.payroll)}</td><td class="result-cell">${quietStatus(w.overall)}</td><td class="open-cell">${openOf(w) ? h`<b>${openOf(w)}</b>` : h`<span class="muted">0</span>`}</td><td class="${w.readiness === 'blocked' ? 'text-fail' : 'muted'}">${words(w.readiness)}</td></tr>`), ['No workers yet', 'Add a worker, import a roster, or connect your HR system under Connections.']));
   },
   async evidence() {
@@ -1070,8 +1081,8 @@ const VIEWS = {
     const controls = Object.fromEntries(ctl.controls.map((c) => [c.key, c]));
     const ev = rows.find((e) => e.id === evidenceSel) || rows.find((e) => e.status === 'needs_review') || null;
     const waiting = rows.filter((e) => e.status === 'needs_review').length;
-    return h`<div class="bottom-split-row evidence-layout"><div class="split-card"><div class="split-card-header"><div><h3 class="split-title">Evidence inbox</h3><p class="muted small">${rows.length} document${rows.length === 1 ? '' : 's'}${waiting ? ` · ${waiting} waiting for review` : ''}</p></div></div>${table(['Document', 'Subject', 'Confidence', 'Status'], rows.map((e) => h`<tr class="click${e.id === ev?.id ? ' selected' : ''}" data-act="selectEvidence" data-id="${e.id}"><td><button class="row-title" data-act="selectEvidence" data-id="${e.id}">${words(e.doc_type)}</button><div class="muted small">${e.filename}</div></td><td class="text-secondary">${e.subject_name}</td><td>${e.source === 'demo_seed' ? '—' : `${Math.round((e.confidence || 0) * 100)}%`}</td><td>${statePill(e.status)}</td></tr>`), ['No evidence yet', 'Documents appear here when workers send them or you upload them.'])}</div>
-    ${ev ? evidencePanel(ev, controls) : h`<aside class="split-card inspector" aria-label="Document details"><div class="inspector-head"><h3 class="split-title">Document details</h3></div><div class="inspector-body">${emptyState(['Pick a document', 'Its details and what Aegis read from it show here.'])}</div></aside>`}</div>`;
+    return h`<div class="bottom-split-row evidence-layout"><div class="split-card"><div class="split-card-header"><div><h3 class="split-title">Evidence inbox</h3><p class="muted small">${rows.length} document${rows.length === 1 ? '' : 's'}${waiting ? ` · ${waiting} waiting for review` : ''}</p></div></div>${lastUploadNote(lastUpload())}${table(['Document', 'Subject', 'Confidence', 'Status'], rows.map((e) => h`<tr class="click${e.id === ev?.id ? ' selected' : ''}" data-act="selectEvidence" data-id="${e.id}"><td><button class="row-title" data-act="selectEvidence" data-id="${e.id}">${words(e.doc_type)}</button>${recentUploads.has(e.id) ? h` <span class="pill pill-blue new-tag">New</span>` : ''}${e.requirement_note ? h` <span class="pill pill-warn new-tag" title="${e.requirement_note}">Not required</span>` : ''}<div class="muted small">${e.filename}</div></td><td class="text-secondary">${e.subject_name}</td><td>${e.source === 'demo_seed' ? '—' : `${Math.round((e.confidence || 0) * 100)}%`}</td><td>${statePill(e.status)}</td></tr>`), ['No evidence yet', 'Documents appear here when workers send them or you upload them.'])}</div>
+    ${ev ? evidencePanel(ev, controls, rows) : h`<aside class="split-card inspector" aria-label="Document details"><div class="inspector-head"><h3 class="split-title">Document details</h3></div><div class="inspector-body">${emptyState(['Pick a document', 'Its details and what Aegis read from it show here.'])}</div></aside>`}</div>`;
   },
   async packs() {
     scope(null);
@@ -1087,7 +1098,7 @@ const VIEWS = {
     ${card('Change History', 'Drafts, approvals and superseded versions.', table(['Change', 'Control', 'Request', 'Status', 'By'], d.changes.map((c) => h`<tr><td>${c.kind}</td><td class="mono">${c.control_key}</td><td class="small">${c.source_text}</td><td>${statePill(c.status)}</td><td class="muted">${c.created_by}${c.approved_by ? ` → ${c.approved_by}` : ''}</td></tr>`), ['No rule changes yet', 'Drafted and approved changes to rules are listed here.']))}</div>`;
   },
   async integrations() {
-    const [health, messages, connections, ai] = await Promise.all([api('/api/health'), api('/api/messages'), api('/api/integrations'), api('/api/ai').catch(() => null)]);
+    const [health, messages, connections] = await Promise.all([api('/api/health'), api('/api/messages'), api('/api/integrations')]);
     const failures = [
       ...health.connectors.filter((c) => c.last_error).map((c) => ['HR system', c.name, c.last_error]),
       ...health.jobs.dead.map((job) => ['Background job', words(job.type), job.last_error]),
@@ -1095,13 +1106,12 @@ const VIEWS = {
       ...health.events.filter((event) => event.status === 'failed').map((event) => ['HR system update', words(event.type), event.error]),
     ];
     if (connections.slack.receiving?.error) failures.push(['Slack', 'Incoming chat', connections.slack.receiving.error]);
-    if (health.ai_error) failures.push(['AI provider', 'AI engine', health.ai_error.message]);
     const ready = !me.sandbox && !me.workspace_email?.pending;
     return h`<div class="stack">
       ${connectionStatus(failures)}
       ${me.sandbox ? h`<p class="setup-note is-info"><b>Sandbox</b>Workforce sync uses sample data, and messages stay in the outbox.</p>` : ''}
       ${me.workspace_email?.pending ? h`<p class="setup-note"><b>Confirm your email first</b>Connections can be added once the workspace email is confirmed.</p>` : ''}
-      ${card('Connected tools', 'The systems this workspace uses. Keys are stored encrypted and never shown again.', h`<ul class="tool-list">${[...hrRows(health.connectors, ready), slackRow(connections.slack, ready), emailRow(connections.email), aiRow(ai)]}</ul>`, ready ? h`<button class="btn-card-outline" data-act="addConnector">Add HR system</button>` : '')}
+      ${card('Connected tools', 'The systems this workspace uses. Keys are stored encrypted and never shown again.', h`<ul class="tool-list">${[...hrRows(health.connectors, ready), slackRow(connections.slack, ready), emailRow(connections.email)]}</ul>`, ready ? h`<button class="btn-card-outline" data-act="addConnector">Add HR system</button>` : '')}
       ${failures.length ? card('Needs attention', 'Fix these to keep records and messages flowing.', table(['Item', 'Source', 'What happened'], failures.map(([kind, item, error]) => h`<tr><td><span class="row-title is-static">${item || 'Unnamed item'}</span></td><td class="nowrap">${kind}</td><td class="small">${error || 'The service did not say what went wrong.'}</td></tr>`), ''), '') : ''}
       ${messageOutbox(messages)}
     </div>`;
@@ -1191,8 +1201,8 @@ const VIEWS = {
   async settings() {
     scope(null);
     if (!me.user.is_admin) return h`<div class="plain-card empty">Settings are available to administrators.</div>`;
-    const [users, hl, ai, coworker] = await Promise.all([api('/api/users'), api('/api/health'), api('/api/ai'), api('/api/coworker/settings')]);
-    return h`<div class="stack">${coworkerPolicyPanel(coworker)}${aiEnginePanel(ai)}
+    const [users, hl, coworker] = await Promise.all([api('/api/users'), api('/api/health'), api('/api/coworker/settings')]);
+    return h`<div class="stack">${coworkerPolicyPanel(coworker)}
     ${card('Users & Roles', 'Roles limit which packs a person can act on. Immigration records are restricted. Deactivated people keep their history but cannot sign in.', table(['Person', 'Role', 'Status', num('Open cases'), ''], users.map((u) => h`<tr class="${u.disabled_at ? 'is-muted-row' : ''}"><td><strong>${u.name}</strong>${u.is_you ? h` <span class="pill pill-na">You</span>` : ''}<div class="case-sub">${u.email}</div></td><td>${roleName(u.role)}</td><td>${u.disabled_at ? h`<span class="pill pill-na">Deactivated</span>` : h`<span class="pill pill-pass">Active</span>`}</td><td class="num">${u.open_cases}</td><td class="row-action">${u.is_you ? h`<button class="btn-link-action" data-act="changePassword">Change your password</button>` : manageMenu([
       !u.disabled_at && h`<button role="menuitem" data-act="userRole" data-id="${u.id}" data-name="${u.name}" data-role="${u.role}">Change role</button>`,
       !u.disabled_at && h`<button role="menuitem" data-act="userPassword" data-id="${u.id}" data-name="${u.name}">Reset password</button>`,
@@ -1234,56 +1244,6 @@ function coworkerPolicyPanel({ policy, ai_calls_today, limits }) {
       <div class="row"><button type="submit" class="btn-submit-green">Save coworker policy</button>
         ${policy.updated_at ? h`<span class="muted small">Last updated by ${policy.updated_by} on ${dt(policy.updated_at)} UTC</span>` : ''}
       </div>
-    </form>
-  `);
-}
-
-function aiEnginePanel(ai) {
-  const selected = ai.provider || 'deepseek';
-  const needsModel = !!ai.providers.find((p) => p.key === selected)?.requires_model;
-  const custom = selected === 'custom';
-  return card('AI Engine', 'Extracts document fields and helps the coworker understand questions. Aegis applies its own compliance checks.', h`
-    ${ai.last_error ? h`<div class="alert-box"><strong>Last AI problem</strong> ${ai.last_error.message}</div>` : ''}
-    ${ai.configured ? h`<dl class="kv mb">
-      <dt>Status</dt><dd><span class="pill ${ai.last_error ? 'pill-warn' : 'pill-pass'}">${ai.last_error ? 'Needs attention' : 'Connected'}</span></dd>
-      <dt>Provider</dt><dd>${ai.provider_label} (${ai.model})</dd>
-      ${ai.endpoint ? h`<dt>Endpoint</dt><dd class="ai-endpoint">${ai.endpoint}</dd>` : ''}
-      <dt>Key</dt><dd class="mono">${ai.key_hint}</dd>
-      <dt>Set from</dt><dd>${ai.source === 'settings' ? 'Settings' : 'Server configuration'}${ai.approved_by ? ` (approved by ${ai.approved_by})` : ''}</dd>
-      <dt>Document images</dt><dd>${ai.reads_images ? 'Enabled' : 'Human review'}</dd>
-      <dt>Scanned PDFs</dt><dd>${ai.reads_scanned_pdf ? 'Supported' : 'Human review'}</dd>
-    </dl>
-    ${!me.sandbox ? h`<div class="row mb"><button class="btn-card-outline" data-act="aiTest">Test connection</button>${ai.source === 'settings' ? h`<button class="btn-danger" data-act="aiRemove">Remove key</button>` : ''}</div>` : ''}` : ''}
-    ${me.sandbox ? h`<p class="ai-settings-note">Explore the provider options here. API keys and live connection tests are disabled in the sandbox.</p>` : ''}
-    <form data-form="aiKey" data-saved-provider="${ai.provider}" data-saved-model="${ai.model}" data-saved-images="${ai.reads_images}">
-      <div class="form-grid">
-        <div class="form-group"><label class="form-label" for="ai-provider">Provider</label>
-          <select id="ai-provider" name="provider" class="form-select">
-            ${ai.providers.map((p) => h`<option value="${p.key}" data-needs-model="${p.requires_model === true}" ${selected === p.key ? raw('selected') : ''}>${p.label}</option>`)}
-          </select>
-        </div>
-        <div class="form-group"><label class="form-label" for="ai-api-key">API key</label>
-          <input id="ai-api-key" name="api_key" type="password" class="form-select" autocomplete="off" maxlength="4096" required
-            placeholder="${me.sandbox ? 'Unavailable in the sandbox' : ai.configured ? 'Paste a new key to replace it' : 'Paste your key'}" ${me.sandbox ? raw('disabled') : ''}>
-        </div>
-        <div class="form-group" data-ai-model ${needsModel ? '' : raw('hidden')}>
-          <label class="form-label" for="ai-model">Model ID</label>
-          <input id="ai-model" name="model" class="form-select" type="text" autocomplete="off" maxlength="160" aria-describedby="ai-model-help"
-            value="${needsModel ? ai.model || '' : ''}" ${needsModel ? raw('required') : raw('disabled')}>
-          <p class="muted small" id="ai-model-help">Use a model ID from your provider that supports function calling.</p>
-        </div>
-        <div class="form-group" data-ai-endpoint ${custom ? '' : raw('hidden')}>
-          <label class="form-label" for="ai-endpoint">Chat Completions endpoint</label>
-          <input id="ai-endpoint" name="endpoint" class="form-select" type="url" autocomplete="off" maxlength="500"
-            value="${ai.endpoint || ''}" placeholder="https://provider.example/v1/chat/completions" aria-describedby="ai-endpoint-help" ${custom ? raw('required') : raw('disabled')}>
-          <p class="muted small" id="ai-endpoint-help">Use the full HTTPS endpoint approved by your Aegis server operator.</p>
-        </div>
-      </div>
-      <label class="row small mb" data-ai-images ${needsModel ? '' : raw('hidden')}>
-        <input type="checkbox" name="reads_images" ${needsModel && ai.reads_images ? raw('checked') : ''} ${needsModel ? '' : raw('disabled')}> Enable document images if this model supports image input.
-      </label>
-      <label class="row small mb"><input type="checkbox" name="approved" required ${me.sandbox ? raw('disabled') : ''}> Our compliance owner approved sending worker documents and coworker questions to this provider.</label>
-      <button class="btn-submit-green" ${me.sandbox ? raw('disabled') : ''}>Test & save</button>
     </form>
   `);
 }
@@ -1347,15 +1307,6 @@ function emailRow(email) {
     meta: email?.configured ? 'Delivered through the server’s email service.' : 'Requests stay in the outbox. Your Aegis administrator sets email up on the server.',
   });
 }
-function aiRow(ai) {
-  return toolRow({
-    name: 'AI provider', what: 'Reads photos and scanned documents. It never accepts evidence by itself.',
-    state: !ai ? ['Unknown', 'pill-na'] : ai.last_error ? ['Needs attention', 'pill-warn'] : ai.configured ? ['Connected', 'pill-pass'] : ['Not connected', 'pill-na'],
-    meta: ai?.configured ? `${ai.provider_label}${ai.model ? `, ${ai.model}` : ''}` : 'Without it, unclear documents go to a person.',
-    actions: h`<a class="btn-link-action" href="#settings">${ai?.configured ? 'Manage in Settings' : 'Set up in Settings'}</a>`,
-  });
-}
-
 const outboxFilter = { query: '', channel: '' };
 const OUTBOX_PAGE = 10;
 let outboxLimit = OUTBOX_PAGE;
@@ -1438,35 +1389,90 @@ function draftCard(d) {
 }
 // The right-hand panel on Evidence. It fits the screen and scrolls on its own; for a document
 // waiting for review, Accept and Reject stay pinned at the bottom.
+// One file in the upload window: what happened to it, and why. A zip or an email lists the documents in it.
+function uploadRow(name, r) {
+  if (r.files) return h`<div class="upload-row-main"><span class="upload-file-name">${name}</span><span class="pill pill-blue">Opened: ${r.files.length} document${r.files.length === 1 ? '' : 's'}</span></div><ul class="upload-children">${r.files.map((x) => h`<li>${uploadRow(x.filename.split(' › ').pop(), x)}</li>`)}</ul>`;
+  const [label, cls] = uploadLabel(r), why = uploadWhy(r);
+  const open = r.id && !r.state ? h`<button type="button" class="btn-link-action" data-act="openUploaded" data-id="${r.id}" aria-label="Open ${r.duplicate ? r.filename : name}">Open</button>` : '';
+  // The sentence for a requirement that does not apply is shown once, above the list (requirementNotes).
+  const notRequired = !r.state && !r.duplicate && r.requirement_note ? h`<span class="pill pill-warn" title="${r.requirement_note}">Not required</span>` : '';
+  return h`<div class="upload-row-main"><span class="upload-file-name">${name}</span>${notRequired}<span class="pill ${cls}">${label}</span>${open}</div>${why ? h`<p class="upload-why">${why}</p>` : ''}${!r.state && !r.duplicate && r.move_to ? h`<p class="upload-why">${moveButton([r.id], r.move_to)}</p>` : ''}`;
+}
+// A document with another worker's name on it: one button moves it (or several) to that person.
+const moveButton = (ids, to, label = `Move to ${to.name}`, cls = 'btn-link-action') => h`<button type="button" class="${cls} move-action" data-act="moveEvidence" data-ids="${ids.join(',')}" data-to="${to.id}" data-name="${to.name}">${label}</button>`;
+// Documents in one upload that name the same other worker, so they can be moved together.
+function moveGroups(rows) {
+  const groups = new Map();
+  for (const r of rows) if (r.move_to && !r.duplicate) groups.set(r.move_to.id, { to: r.move_to, ids: [...(groups.get(r.move_to.id)?.ids || []), r.id] });
+  return [...groups.values()];
+}
+const moveBox = (g, uploadedFor) => h`<div class="info-box move-box" data-move-box="${g.to.id}"><strong>${g.ids.length === 1 ? 'This document names' : `${g.ids.length} documents name`} ${g.to.name}</strong>${g.ids.length === 1 ? 'It was' : 'They were'} uploaded for ${uploadedFor}. If ${g.ids.length === 1 ? 'it is' : 'they are'} ${g.to.name}'s, move ${g.ids.length === 1 ? 'it' : 'them'} and Aegis checks ${g.ids.length === 1 ? 'it' : 'them'} again for ${g.to.name}.<div class="move-box-actions">${moveButton(g.ids, g.to, g.ids.length === 1 ? `Move to ${g.to.name}` : `Move all ${g.ids.length} to ${g.to.name}`, 'btn-card-outline')}</div></div>`;
+const uploadLabel = (r) => (r.state === 'waiting' ? ['Waiting', 'pill-na'] : r.state === 'reading' ? ['Reading…', 'pill-blue'] : r.state === 'failed' ? ['Not uploaded', 'pill-fail']
+  : r.duplicate ? ['Already on record', 'pill-na'] : r.status === 'covered' ? ['Duplicate', 'pill-na'] : r.status === 'accepted' ? ['Accepted', 'pill-pass'] : r.status === 'rejected' ? ['Rejected', 'pill-fail'] : ['Needs review', 'pill-warn']);
+// What happened to one file, in a sentence. For an exact copy, filename and created_at are the copy
+// already on record; for a duplicate, covered_by is the accepted document it repeats.
+const ON_RECORD = { accepted: ' That copy is accepted.', needs_review: ' That copy is waiting for review.', covered: ' That copy is kept as a duplicate of an accepted document.' };
+function uploadWhy(r) {
+  if (r.state === 'failed') return r.error;
+  if (r.state) return '';
+  if (r.moved) return `Moved to ${r.subject_name} and checked again. ${uploadWhy({ ...r, moved: false })}`.trim();
+  if (r.duplicate) return `Same file as ${r.filename}, uploaded ${r.created_at ? `${dt(r.created_at)} UTC` : 'earlier'}. Nothing new was saved.${ON_RECORD[r.status] || ''}`;
+  if (r.status === 'covered') return `Same document as ${r.covered_by?.filename || 'one already on file'}, which is already accepted. Kept on file; no review needed.`;
+  if (r.status === 'accepted') return 'Matched to the requirement. The check runs again.';
+  return (r.reasons || []).join(' ');
+}
 const EV_FIELDS = [['holder_name', 'Name on document'], ['doc_number', 'Document number'], ['issued_on', 'Issued', 'date'], ['expires_on', 'Expires', 'date'], ['state', 'State'], ['period', 'Period'], ['entity_name', 'Company']];
-function evidencePanel(e, controls = {}) {
+function evidencePanel(e, controls = {}, rows = []) {
   const pending = e.can_review;
+  // Documents of this person waiting for review that name the same other worker can be moved together.
+  const moveIds = e.move_to && pending ? rows.filter((x) => x.can_review && x.subject_id === e.subject_id && x.move_to?.id === e.move_to.id).map((x) => x.id) : [];
+  const moveHere = moveIds.length ? h`<div class="info-box move-box"><strong>This document names ${e.move_to.name}</strong>It was uploaded for ${e.subject_name}. If it is ${e.move_to.name}'s, move it and Aegis checks it again for ${e.move_to.name}.<div class="move-box-actions">${moveButton([e.id], e.move_to, `Move to ${e.move_to.name}`, 'btn-card-outline')}${moveIds.length > 1 ? moveButton(moveIds, e.move_to, `Move all ${moveIds.length} that name ${e.move_to.name}`, 'btn-card-outline') : ''}</div></div>` : '';
   const conf = (k) => e.field_confidence[k] ? h` <span class="conf">${Math.round(e.field_confidence[k] * 100)}%</span>` : '';
   const ctl = controls[e.control_key];
   const requirement = ctl ? `${ctl.name} · ${words(ctl.pack)}` : e.control_key ? words(e.control_key) : 'Not matched yet';
-  const reasons = e.review_reasons.length ? h`<div class="why-box"><strong>Why this needs a person</strong><ul>${e.review_reasons.map((r) => h`<li>${r}</li>`)}</ul></div>` : '';
+  // A duplicate needs no person, so the reasons it would have gone to review are not shown as a task.
+  const reasons = e.review_reasons.length && e.status !== 'covered' ? h`<div class="why-box"><strong>${pending ? 'Why this needs a person' : 'Why it went to a person'}</strong><ul>${e.review_reasons.map((r) => h`<li>${r}</li>`)}</ul></div>` : '';
+  const goTo = (x) => h`<button type="button" class="btn-link-action" data-act="selectEvidence" data-id="${x.id}">${x.filename}</button>`;
+  const notes = h`${moveHere}${e.requirement_note ? h`<div class="why-box"><strong>Not required for this person</strong>${e.requirement_note}</div>` : ''}${e.status === 'covered' ? h`<div class="info-box"><strong>Duplicate of an accepted document</strong>Same document as ${e.covered_by ? goTo(e.covered_by) : 'one that is accepted'}, so no review is needed. This copy is kept on file.</div>` : ''}${e.same_as ? h`<div class="info-box"><strong>Looks like a document already accepted</strong>The details match ${goTo(e.same_as)}, which is accepted. Check them below, then accept or reject this copy.</div>` : ''}`;
+  const history = e.duplicates.length || e.copies.length ? h`<h4 class="inspector-sub">Other copies</h4><ul class="copy-list">${e.duplicates.map((x) => h`<li>${goTo(x)} <span class="muted">is a duplicate of this document</span></li>`)}${e.copies.map((c) => h`<li><span>${c.filename}</span> <span class="muted">uploaded again ${dt(c.at)} UTC${c.by ? ` by ${c.by}` : ''}. Same file, so it was not saved twice.</span></li>`)}</ul>` : '';
   const facts = h`<dl class="kv ev-facts"><dt>File</dt><dd>${e.filename}${e.has_file ? h` · <a class="btn-link-action" href="/api/evidence/${e.id}/file">Download</a>` : ''}</dd><dt>For</dt><dd>${e.subject_name}</dd><dt>Requirement</dt><dd>${requirement}</dd><dt>Source</dt><dd>${words(e.source)}</dd>${e.reviewed_by ? h`<dt>Reviewed by</dt><dd>${e.reviewed_by}</dd>` : ''}${e.reject_reason ? h`<dt>Rejected because</dt><dd>${e.reject_reason}</dd>` : ''}</dl>`;
+  // The uploaded file itself, so the reviewer can compare every field with what the document says.
+  const doc = e.preview === 'image' ? h`<h4 class="inspector-sub">The document</h4><a class="ev-preview" href="/api/evidence/${e.id}/preview" target="_blank" rel="noopener" title="Open the first page full size"><img src="/api/evidence/${e.id}/preview" alt="First page of ${e.filename}" loading="lazy"></a><p class="muted small" data-preview-hint>Scroll to see up to three pages. Download the file to see every page.</p>`
+    : e.preview === 'text' ? h`<h4 class="inspector-sub">The document</h4><pre class="ev-preview-text" data-preview-text="${e.id}" tabindex="0" aria-label="Text of ${e.filename}">Loading the text…</pre>`
+      : e.has_file ? h`<p class="muted small">Aegis cannot show this file here. Download it to open it.</p>` : '';
   const head = h`<div class="inspector-head"><div><h3 class="split-title">${words(e.doc_type)}</h3><p class="muted small">${e.subject_name}</p></div>${statePill(e.status)}</div>`;
   if (!pending) {
     // Finished documents: plain read-only details, no empty boxes.
     const read = EV_FIELDS.filter(([k]) => e[k]);
-    return h`<aside class="split-card inspector" aria-label="Document details">${head}<div class="inspector-body">${reasons}${facts}
+    return h`<aside class="split-card inspector" aria-label="Document details">${head}<div class="inspector-body">${notes}${reasons}${facts}${doc}
       <h4 class="inspector-sub">What the document says</h4>
       ${read.length ? h`<dl class="kv ev-read">${read.map(([k, l, t]) => h`<dt>${l}</dt><dd>${t === 'date' ? date(e[k]) : e[k]}${conf(k)}</dd>`)}</dl>` : h`<p class="muted small">No details were read from this document.</p>`}
+      ${history}
     </div></aside>`;
   }
   const f = ([k, l, type = 'text']) => h`<div class="form-group"><label class="form-label" for="evidence-${k}">${l}${conf(k)}</label><input id="evidence-${k}" name="${k}" type="${type}" class="form-select" value="${e[k] || ''}"></div>`;
   return h`<aside class="split-card inspector" aria-label="Review document">${head}
     <form class="inspector-form" data-form="reviewEvidence" data-id="${e.id}">
-      <div class="inspector-body">${reasons}${facts}
+      <div class="inspector-body">${notes}${reasons}${facts}${doc}
         <h4 class="inspector-sub">What the document says</h4>
         <p class="muted small">Correct anything Aegis read wrongly. The percentage shows how sure Aegis was.</p>
-        ${e.doc_type === 'unknown' ? h`<div class="form-group"><label class="form-label" for="evidence-type">Document type</label><select id="evidence-type" name="doc_type" class="form-select" required><option value="">Choose a type</option>${['professional_license', 'bls_card', 'acls_card', 'tb_screening', 'flu_vaccine', 'facility_orientation', 'handbook_ack', 'security_training', 'i9_record', 'work_authorization', 'w4', 'payroll_filing_receipt'].map((x) => h`<option value="${x}">${words(x)}</option>`)}</select></div>` : ''}
+        <div class="form-group"><label class="form-label" for="evidence-type">Document type${conf('doc_type')}</label><select id="evidence-type" name="doc_type" class="form-select" required><option value="">Choose a type</option>${['professional_license', 'bls_card', 'acls_card', 'tb_screening', 'flu_vaccine', 'facility_orientation', 'handbook_ack', 'security_training', 'i9_record', 'work_authorization', 'w4', 'payroll_filing_receipt'].map((x) => h`<option value="${x}" ${x === e.doc_type ? raw('selected') : ''}>${words(x)}</option>`)}</select></div>
         <div class="form-grid">${EV_FIELDS.map(f)}</div>
         <div class="form-group"><label class="form-label" for="evidence-rejection-reason">Reason, if you reject it</label><input id="evidence-rejection-reason" name="reason" class="form-select" placeholder="Required to reject. The sender sees this."></div>
+        ${history}
       </div>
       <div class="inspector-foot"><p class="muted small">Accepting records the document. Aegis reruns the check. The case closes if it passes.</p><div class="row"><button class="btn-danger" name="decision" value="reject" formnovalidate>Reject</button><button class="btn-submit-green" name="decision" value="accept">Accept evidence</button></div></div>
     </form></aside>`;
+}
+// The last upload at the top of the inbox: the totals, and each file that did not simply become a new
+// document (a copy, a duplicate, a requirement that does not apply, a failure), with a way to open it.
+// Each different "does not apply" sentence once, however many files it covers.
+const requirementNotes = (rows) => [...new Set(rows.map((r) => r.requirement_note).filter(Boolean))];
+const notRequiredBox = (notes) => h`<div class="why-box"><strong>Not required for this person</strong>${notes.length === 1 ? notes[0] : h`<ul>${notes.map((n) => h`<li>${n}</li>`)}</ul>`}</div>`;
+function lastUploadNote(u) {
+  if (!u) return '';
+  return h`<section class="upload-recap" aria-label="Your last upload"><div class="upload-recap-head"><b>Your last upload${u.subject ? ` for ${u.subject}` : ''}</b><span class="muted">${dt(u.at)} UTC</span><button type="button" class="btn-link-action" data-act="dismissLastUpload">Dismiss</button></div>
+    <p>${u.summary}</p>${(u.notes || []).map((n) => h`<p class="upload-warn">${n}</p>`)}${u.items.length ? h`<ul>${u.items.map((i) => h`<li><div class="upload-recap-file"><b>${i.name}</b><span class="pill ${i.cls}">${i.label}</span>${i.id ? h`<button type="button" class="btn-link-action" data-act="selectEvidence" data-id="${i.id}" aria-label="Open ${i.name}">Open</button>` : ''}</div><span class="upload-recap-why">${i.why}</span></li>`)}</ul>` : ''}</section>`;
 }
 const LIFE = [['Identify', ['identified']], ['Assign', ['assigned']], ['Request', ['requested']], ['Follow up', ['following_up']], ['Review', ['in_review']], ['Re-evaluate', ['reevaluating']], ['Close', ['closed']]];
 const lifecycle = (s) => { const i = LIFE.findIndex(([, a]) => a.includes(s)); return h`<div class="lifecycle">${LIFE.map(([l], n) => h`<div class="${n < i ? 'done' : n === i ? 'now' : ''}">${l}</div>`)}</div>`; };
@@ -1636,16 +1642,26 @@ const ACT = {
     const rank = { fail: 0, unknown: 1, pass: 2 };
     const list = w.checks_list.filter((c) => c.status !== 'not_applicable').sort((a, b) => rank[a.status] - rank[b.status]);
     const openN = list.filter((c) => c.status !== 'pass').length;
-    openModal(w.name, `${w.role || 'No role'} · ${w.facility || 'No location assigned'}`, h`<div class="pack-boxes">${rv.summary.map((s) => h`<div class="pack-box pack-box-${s.status}"><span>${words(s.pack)}</span>${statusPill(s.status)}<small>${s.open ? `${s.open} open` : s.status === 'restricted' ? 'Restricted' : 'Nothing open'}</small></div>`)}</div>
+    openModal(w.name, `${w.role || 'No role'} · ${w.facility || 'No location assigned'}`, h`${workerContact(w)}<div class="pack-boxes">${rv.summary.map((s) => h`<div class="pack-box pack-box-${s.status}"><span>${words(s.pack)}</span>${statusPill(s.status)}<small>${s.open ? `${s.open} open` : s.status === 'restricted' ? 'Restricted' : 'Nothing open'}</small></div>`)}</div>
       <div class="readiness-note ${openN || !list.length ? 'is-open' : 'is-clear'}"><b>${!list.length ? 'No applicable checks yet' : openN ? `${openN} of ${list.length} visible checks still open` : 'All visible checks pass'}</b><span>${rv.statement}${w.readiness_request ? ` Waiting in Approvals since ${date(w.readiness_request.created_at)}, asked by ${w.readiness_request.requested_by}.` : ''}</span></div>
       ${table(['Requirement', 'Result', 'Why', ''], list.map((c) => h`<tr><td>${c.control_name}<div class="case-sub">${words(c.pack_key)}</div></td><td>${statusPill(c.status)}</td><td class="small">${c.reason}</td><td class="row-action">${canEdit() && (c.status !== 'pass' || /expir/.test(c.code || '')) ? h`<button class="btn-link-action" data-act="uploadEvidence" data-subject="worker:${w.id}" data-control="${c.control_key}" data-name="${w.name}">Upload</button>` : ''}</td></tr>`), 'No checks yet.')}`, workerFoot(w, openN, list.length), true);
   },
-  // Suggests the locations the company already has, so a typo does not create a new one.
-  moveWorker(el, ev) {
+  // The company's own locations, so a typo never creates a new one.
+  async moveWorker(el, ev) {
     ev?.stopPropagation();
-    openModal(el.dataset.title || 'Change assignment', 'Aegis re-runs the checks that apply to the new location.', h`<form data-form="move" data-id="${el.dataset.id}"><div class="form-group"><label class="form-label" for="mvFacility">Location</label><input id="mvFacility" name="facility" class="form-select" list="mvLocations" autocomplete="off" required><datalist id="mvLocations">${knownLocations.map((f) => h`<option value="${f.name}">${f.state || ''}</option>`)}</datalist></div><div class="form-group"><label class="form-label" for="mvState">State</label><input id="mvState" name="facility_state" class="form-select" maxlength="2" placeholder="${knownLocations.length ? 'Filled in for a known location' : ''}"></div><button class="btn-submit-green">Save</button></form>`);
+    const L = await api('/api/locations');
+    openModal(el.dataset.title || 'Change location', 'Aegis runs the checks for the new location again.', h`<form data-form="move" data-id="${el.dataset.id}">${placePickers(L, { current: el.dataset.current || '' })}<button class="btn-submit-green">Save</button></form>`);
   },
   openApprovals() { closeModal(); location.hash = 'approvals'; },
+  editEmail(el, ev) {
+    ev?.stopPropagation();
+    const { id: wid, name, email = '', hrms, back } = el.dataset;
+    openModal(email ? `Change email for ${name}` : `Add email for ${name}`, 'Document requests and reminders go to this address.', h`<form data-form="editEmail" data-id="${wid}" data-name="${name}" data-back="${back || ''}">
+      <div class="form-group"><label class="form-label" for="weEmail">Work email</label><input id="weEmail" name="email" type="email" class="form-select" value="${email}" required maxlength="254" autocomplete="off" spellcheck="false" placeholder="name@company.com"></div>
+      ${hrms ? h`<p class="muted small">This worker comes from your HR system. Aegis keeps this email until the HR system sends one for them; after that, the HR system's email is used.</p>` : ''}
+      <button class="btn-submit-green">${email ? 'Save email' : 'Add email'}</button></form>`);
+    setTimeout(() => $('#weEmail')?.focus(), 50);
+  },
   // With checks still open, ask once more and show what the approver will see.
   async readiness(el) {
     if (+el.dataset.open > 0 && !el.dataset.confirmed) {
@@ -1659,7 +1675,48 @@ const ACT = {
     await api(`/api/workers/${el.dataset.id}/readiness-review`, {}); toast('Sent to Approvals.', 'success'); closeModal(); refresh();
   },
   selectEvidence(el, ev) { ev?.stopPropagation(); evidenceSel = el.dataset.id; refresh(); },
-  addWorker() { openModal('Add Worker', 'Added workers are checked against activated packs.', h`<form data-form="addWorker"><div class="form-grid"><div class="form-group"><label class="form-label">Full name</label><input name="name" class="form-select" required></div><div class="form-group"><label class="form-label">Email</label><input name="email" type="email" class="form-select"></div><div class="form-group"><label class="form-label">Role</label><input name="role" class="form-select" required></div><div class="form-group"><label class="form-label">Category</label><select name="category" class="form-select"><option value="clinical">Clinical</option><option value="corporate">Corporate</option></select></div><div class="form-group"><label class="form-label">License type</label><select name="license_type" class="form-select"><option value="">None</option><option>RN</option><option>NP</option><option>MD</option><option>PT</option></select></div><div class="form-group"><label class="form-label">Hire date</label><input name="hire_date" type="date" class="form-select" value="${me.today}"></div><div class="form-group"><label class="form-label">Facility</label><input name="facility" class="form-select"></div><div class="form-group"><label class="form-label">State</label><input name="facility_state" maxlength="2" class="form-select"></div><div class="form-group"><label class="form-label">Employing entity</label><input name="entity" class="form-select"></div></div><button class="btn-submit-green">Save worker</button></form>`, null, true); },
+  dismissLastUpload() { try { localStorage.removeItem(lastUploadKey()); } catch { /* nothing to remove */ } refresh(); },
+  // Moves one or more documents to the worker named on them. In the upload window each moved file's
+  // row shows its new result; in the inbox the moved document stays selected under its new person.
+  async moveEvidence(el, ev) {
+    ev?.stopPropagation();
+    const ids = el.dataset.ids.split(',').filter(Boolean), to = el.dataset.to, name = el.dataset.name;
+    const buttons = [...document.querySelectorAll('[data-act="moveEvidence"]')].filter((b) => b.dataset.to === to);
+    for (const b of buttons) b.disabled = true;
+    el.textContent = ids.length > 1 ? `Moving ${ids.length}…` : 'Moving…';
+    // A closed window keeps its contents, so where the button sits decides: the upload window or the inbox panel.
+    const list = el.closest('#modal')?.querySelector('[data-upload-list]') || null, last = lastUpload();
+    let moved = 0, error = null, shown = null;
+    for (const id of ids) {
+      try {
+        const r = await api(`/api/evidence/${id}/move`, { subject_id: to });
+        moved++; shown = r.id; recentUploads.add(r.id);
+        const li = [...(list?.querySelectorAll('[data-act="moveEvidence"]') || [])].find((b) => b.dataset.ids === id)?.closest('li');
+        if (li) li.innerHTML = render(uploadRow(li.querySelector('.upload-file-name')?.textContent || r.filename, { ...r, moved: true }));
+        const item = last?.items.find((i) => i.id === id);
+        if (item) Object.assign(item, { id: r.id, label: 'Moved', cls: 'pill-blue', why: `Moved to ${name} and checked again.` });
+      } catch (err) { error ??= err.message; }
+    }
+    if (last) saveLastUpload(last);
+    if (moved === ids.length) document.querySelector(`[data-move-box="${CSS.escape(to)}"]`)?.remove();
+    else for (const b of buttons) if (b.isConnected) b.disabled = false;
+    if (moved) toast(`${plural(moved, 'document')} moved to ${name} and checked again.`, 'success');
+    if (error) toast(`${ids.length - moved} could not be moved: ${error}`, 'warning');
+    if (!list) evidenceSel = shown || evidenceSel;
+    if (route === 'evidence') refresh();
+  },
+  // From the upload window: close it and show that document in the Evidence inbox, scrolled into view.
+  async openUploaded(el) {
+    closeModal();
+    if (el.dataset.id) evidenceSel = el.dataset.id;
+    if (route === 'evidence') await refresh(); else { location.hash = 'evidence'; await new Promise((ok) => setTimeout(ok, 500)); }
+    document.querySelector('.evidence-layout tr.selected')?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  },
+  async addWorker() {
+    const L = await api('/api/locations');
+    openModal('Add worker', 'Aegis checks a new worker against your active packs as soon as they are saved.', h`<form data-form="addWorker"><div class="form-grid"><div class="form-group"><label class="form-label" for="awName">Full name</label><input id="awName" name="name" class="form-select" required maxlength="120" autocomplete="off"></div><div class="form-group"><label class="form-label" for="awEmail">Work email</label><input id="awEmail" name="email" type="email" class="form-select" autocomplete="off"></div><div class="form-group"><label class="form-label" for="awRole">Job title</label><input id="awRole" name="role" class="form-select" required maxlength="120"></div><div class="form-group"><label class="form-label" for="awCat">Category</label><select id="awCat" name="category" class="form-select"><option value="clinical">Clinical</option><option value="corporate">Corporate</option></select></div><div class="form-group"><label class="form-label" for="awLic">License type</label><select id="awLic" name="license_type" class="form-select"><option value="">None</option><option>RN</option><option>NP</option><option>MD</option><option>PT</option></select></div><div class="form-group"><label class="form-label" for="awHire">Hire date</label><input id="awHire" name="hire_date" type="date" class="form-select" value="${me.today}"></div></div>
+      ${placePickers(L, { optional: true, company: true })}<button class="btn-submit-green">Save worker</button></form>`, null, true);
+  },
   importRoster() { importPreview = null; openModal('Import Worker Roster', 'Excel or CSV. You review the mapping before anything is saved.', h`<form data-form="importFile"><div class="drop-zone-box"><input type="file" name="file" accept=".csv,.xlsx" required aria-label="Roster file"><span class="subtext mt">Columns like Name, Email, Role, Facility, State, License Type, Hire Date</span></div><button class="btn-submit-green mt">Preview import</button></form>`); },
   async commitImport(el) { const r = await api(`/api/import/${el.dataset.id}/commit`, {}); toast(`${r.created} added, ${r.updated} updated.`, 'success'); closeModal(); after(); },
   // Opened from the page header (nothing chosen yet), or from a case or a worker,
@@ -1672,19 +1729,20 @@ const ACT = {
     openModal(pre.name ? `Upload evidence for ${pre.name}` : 'Upload evidence', 'Upload one file, or several at once. Aegis reads each one and suggests what it is; unclear ones go to a person.', h`<form data-form="upload" class="upload-form">
       <div class="form-grid">
         <div class="form-group"><label class="form-label" for="upSubject">Who is this for</label><select id="upSubject" name="subject" class="form-select" required>${ws.map((w) => h`<option value="worker:${w.id}" ${sel(pre.subject === `worker:${w.id}`)}>${w.name}</option>`)}${setup.entities.map((e) => h`<option value="entity:${e.id}" ${sel(pre.subject === `entity:${e.id}`)}>${e.name} (company)</option>`)}</select></div>
-        <div class="form-group"><label class="form-label" for="upControl">Requirement</label><select id="upControl" name="control_key" class="form-select"><option value="">Let Aegis match each file</option>${ctl.controls.filter((c) => c.remediation && c.type !== 'field_required').map((c) => h`<option value="${c.key}" ${sel(pre.control === c.key)}>${words(c.pack)}: ${c.name}</option>`)}</select></div>
+        <div class="form-group"><label class="form-label" for="upControl">Requirement</label><select id="upControl" name="control_key" class="form-select"><option value="">Let Aegis match each file</option>${ctl.controls.filter((c) => c.remediation && c.type !== 'field_required').map((c) => h`<option value="${c.key}" data-for="${c.subject}" ${sel(pre.control === c.key)}>${words(c.pack)}: ${c.name}</option>`)}</select></div>
       </div>
       <div class="form-group"><span class="form-label">Files</span>
         <label class="upload-drop" data-upload-drop>
-          <input type="file" name="file" required multiple data-upload-files aria-describedby="upHint">
+          <input type="file" name="file" required multiple data-upload-files aria-describedby="upHint" accept=".pdf,.docx,.doc,.rtf,.odt,.pages,.jpg,.jpeg,.png,.webp,.gif,.heic,.heif,.tif,.tiff,.bmp,.txt,.csv,.html,.htm,.eml,.msg,.zip">
           <span class="upload-drop-icon" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg></span>
           <b data-upload-title>Drop files here, or <u>choose files</u></b>
-          <span id="upHint" data-upload-count>One file, or select several at once to upload in bulk. PDF or photo.</span>
+          <span id="upHint" data-upload-count>One file, or several at once. PDF, Word, photos and scans (including iPhone and TIFF), text, emails or a .zip.</span>
         </label>
         <ul class="upload-list" data-upload-list hidden></ul>
       </div>
       <div class="form-grid" data-single-only><div class="form-group"><label class="form-label">Document number (optional)</label><input name="doc_number" class="form-select"></div><div class="form-group"><label class="form-label">Expires (optional)</label><input name="expires_on" type="date" class="form-select"></div></div>
       <button class="btn-submit-green" data-upload-go>Upload</button></form>`);
+    fitRequirements(document.getElementById('upSubject'));
   },
   // Older links may still ask for "bulk upload"; it is the same window now.
   bulkUpload() { return ACT.uploadEvidence(); },
@@ -1770,8 +1828,6 @@ const ACT = {
     closeModal();
     refresh();
   },
-  async aiTest() { const r = await api('/api/ai/test', {}); toast(`${r.provider} is responding.`, 'success'); refresh(); },
-  async aiRemove() { await api('/api/ai/remove', {}); toast('AI key removed.', 'success'); refresh(); },
   async sendDigest() {
     const { via } = await api('/api/digest/send', {});
     toast(via === 'slack' ? 'Digest posted.' : 'Digest saved to the outbox.', 'success');
@@ -1874,28 +1930,70 @@ const FORM = {
   async chat(d, f) {
     if (await sendChat(d.text) && f.elements.text.value === d.text) f.reset();
   },
-  async addWorker(d) { await api('/api/workers', d); toast('Worker added. Checks are running.', 'success'); closeModal(); setTimeout(after, 1200); },
+  async addWorker(d) { await api('/api/workers', placeFields(d)); toast('Worker added. Checks are running.', 'success'); closeModal(); setTimeout(after, 1200); },
+  async editEmail(d, f) {
+    const r = await api(`/api/workers/${f.dataset.id}/email`, { email: d.email });
+    toast(r.changed ? `Email saved for ${f.dataset.name}. Document requests can now reach them.` : 'No change: that is already their email.', 'success');
+    if (f.dataset.back) ACT.workerDetail({ dataset: { id: f.dataset.id } }); else { closeModal(); refresh(); }
+  },
   async move(d, f) {
-    const known = knownLocations.find((x) => x.name.toLowerCase() === d.facility.trim().toLowerCase());
-    const body = known ? { facility: known.name, facility_state: d.facility_state || known.state || '' } : d;
-    await api(`/api/workers/${f.dataset.id}/assignment`, body); toast('Location saved. Checks are running.', 'success'); closeModal(); setTimeout(after, 1200);
+    await api(`/api/workers/${f.dataset.id}/assignment`, placeFields(d)); toast('Location saved. Checks are running.', 'success'); closeModal(); setTimeout(after, 1200);
   },
   async note(d, f) { await api(`/api/cases/${f.dataset.id}/note`, d); toast('Note added.', 'success'); ACT.caseDetail({ dataset: { id: f.dataset.id } }); },
   async importFile(d, f) {
     const p = await api('/api/import/preview', { file: await fileData(f.elements.file.files[0]) });
-    openModal(`Review ${p.filename}`, `${p.total} worker(s) ready. Nothing is saved yet.`, h`${p.errors.length ? h`<div class="alert-box">${p.errors.length} row(s) will be skipped: ${p.errors.map((e) => `row ${e.row}: ${e.error}`).join('; ')}</div>` : ''}${p.unmapped.length ? h`<p class="small muted mb">Ignored columns: ${p.unmapped.join(', ')}</p>` : ''}<p class="small mb">Missing: ${p.missing.facility} location, ${p.missing.email} email, ${p.missing.hire_date} hire date. These will show as data gaps.</p>${table(['Name', 'Email', 'Role', 'Facility', 'Hire date'], p.sample.map((r) => h`<tr><td>${r.name}</td><td>${r.email}</td><td>${r.role}</td><td>${r.facility}</td><td>${r.hire_date}</td></tr>`), '')}`, h`<button class="btn-cancel" data-act="closeModal">Cancel</button><button class="btn-submit-green" data-act="commitImport" data-id="${p.id}">Import ${p.total} worker(s)</button>`, true);
+    openModal(`Review ${p.filename}`, `${plural(p.total, 'worker')} ready. Nothing is saved yet.`, h`${p.errors.length ? h`<div class="alert-box">${plural(p.errors.length, 'row')} will be skipped: ${p.errors.map((e) => `row ${e.row}: ${e.error}`).join('; ')}</div>` : ''}${p.unmapped.length ? h`<p class="small muted mb">Ignored columns: ${p.unmapped.join(', ')}</p>` : ''}<p class="small mb">Missing: ${p.missing.facility} location, ${p.missing.email} email, ${p.missing.hire_date} hire date. These will show as data gaps.</p>${table(['Name', 'Email', 'Role', 'Facility', 'Hire date'], p.sample.map((r) => h`<tr><td>${r.name}</td><td>${r.email}</td><td>${r.role}</td><td>${r.facility}</td><td>${r.hire_date}</td></tr>`), '')}`, h`<button class="btn-cancel" data-act="closeModal">Cancel</button><button class="btn-submit-green" data-act="commitImport" data-id="${p.id}">Import ${p.total} worker(s)</button>`, true);
   },
+  // The upload window stays open and shows what happened to each file: accepted, sent to review
+  // (with the reason), already on record, or not uploaded. One file failing does not stop the rest.
   async upload(d, f) {
     const [subject_type, subject_id] = d.subject.split(':'), files = [...f.elements.file.files], many = files.length > 1;
-    let last, matched = 0, review = 0, dup = 0;
-    for (const file of files) {
-      // With several files the document number and expiry are left for Aegis to read from each file.
-      last = await api('/api/evidence', { subject_type, subject_id, control_key: d.control_key || null, bulk: many, file: await fileData(file), claimed: many ? {} : { doc_number: d.doc_number, expires_on: d.expires_on } });
-      if (last.duplicate) dup++; else if (last.status === 'accepted') matched++; else review++;
+    const list = f.querySelector('[data-upload-list]'), done = [], results = [];
+    const row = (i) => list.children[i];
+    let failed = 0;
+    list.hidden = false;
+    list.innerHTML = render(files.map((file) => h`<li>${uploadRow(file.name, { state: 'waiting' })}</li>`));
+    for (const field of f.querySelectorAll('input, select')) field.disabled = true;
+    for (const [i, file] of files.entries()) {
+      row(i).innerHTML = render(uploadRow(file.name, { state: 'reading' }));
+      try {
+        // With several files the document number and expiry are left for Aegis to read from each file.
+        const r = await api('/api/evidence', { subject_type, subject_id, control_key: d.control_key || null, bulk: many, file: await fileData(file), claimed: many ? {} : { doc_number: d.doc_number, expires_on: d.expires_on } });
+        done.push(...(r.files || [r]));
+        results.push(...(r.files ? r.files.map((x) => [x.filename.split(' › ').pop(), x]) : [[file.name, r]]));
+        for (const x of r.failed || []) { failed++; results.push([x.filename, { state: 'failed', error: x.error }]); }
+        row(i).innerHTML = render(uploadRow(file.name, r));
+      } catch (err) {
+        failed++; row(i).innerHTML = render(uploadRow(file.name, { state: 'failed', error: err.message }));
+        results.push([file.name, { state: 'failed', error: err.message }]);
+      }
     }
-    if (!many) toast(last.duplicate ? 'That file is already on record.' : last.status === 'accepted' ? 'Evidence matched. Re-running the check.' : `Sent to review: ${last.reasons[0]}`, last.status === 'accepted' ? 'success' : 'warning');
-    else toast([matched ? `${matched} matched` : '', review ? `${review} sent to review` : '', dup ? `${dup} already on record` : ''].filter(Boolean).join(' · ') + '.', review || dup ? 'warning' : 'success');
-    closeModal(); evidenceSel = last.id; if (route !== 'evidence') location.hash = 'evidence'; setTimeout(after, 1200);
+    const count = (test) => done.filter(test).length, fresh = done.filter((r) => !r.duplicate), nOf = (n, one, more) => `${n} ${n === 1 ? one : more}`;
+    const summary = [
+      [count((r) => !r.duplicate && r.status === 'accepted'), 'accepted', 'accepted'],
+      [count((r) => !r.duplicate && r.status === 'needs_review'), 'sent to review', 'sent to review'],
+      [count((r) => !r.duplicate && r.status === 'covered'), 'duplicate of an accepted document', 'duplicates of accepted documents'],
+      [count((r) => r.duplicate), 'already on record, not saved again', 'already on record, not saved again'],
+      [failed, 'not uploaded', 'not uploaded'],
+    ].filter(([n]) => n).map(([n, one, more]) => nOf(n, one, more)).join(' · ');
+    const notes = requirementNotes(fresh);
+    const total = `${nOf(results.length, 'file', 'files')}${summary ? `: ${summary}` : ''}.`;
+    f.querySelector('[data-upload-title]').textContent = summary ? `Done: ${summary}` : 'Done';
+    f.querySelector('[data-upload-count]').textContent = !done.length ? 'Nothing was saved. Fix the files listed below, then upload them again.'
+      : `Open a file to check what Aegis read, or close this window.${failed ? ' Files marked Not uploaded were not saved.' : ''} This summary stays at the top of the Evidence inbox, and new files are marked New there.`;
+    if (notes.length) list.insertAdjacentHTML('beforebegin', render(notRequiredBox(notes)));
+    const subjectName = f.elements.subject.selectedOptions[0]?.textContent || '';
+    // Several files naming the same other worker get one button for all of them; a single one has its row button.
+    for (const g of moveGroups(fresh)) if (g.ids.length > 1) list.insertAdjacentHTML('beforebegin', render(moveBox(g, subjectName)));
+    saveLastUpload({ at: new Date().toISOString(), subject: subjectName, summary: total, notes,
+      items: results.filter(([, r]) => r.state === 'failed' || r.duplicate || r.status === 'covered' || (r.move_to && !r.duplicate)).map(([name, r]) => {
+        const [label, cls] = uploadLabel(r);
+        return { name, label, cls, why: uploadWhy(r), id: r.id || null };
+      }) });
+    for (const r of fresh) recentUploads.add(r.id);
+    const go = f.querySelector('[data-upload-go]');
+    go.type = 'button'; go.dataset.act = 'openUploaded'; go.dataset.id = (fresh[0] || done.at(-1))?.id || ''; go.textContent = 'Go to the Evidence inbox';
+    if (route === 'evidence') refresh();
   },
   async reviewEvidence(d, f, sub) {
     const { reason, ...fields } = d;
@@ -1931,12 +2029,6 @@ const FORM = {
   async notice(d) { await api('/api/notices', d); closeModal(); toast('Notice logged. The drafted reply is in Approvals.', 'success'); refresh(); },
   async baseline(d) { await api('/api/metrics/baseline', { key: 'minutes_per_chase', value: d.value }); closeModal(); toast('Baseline saved.', 'success'); refresh(); },
   async manualSupport(d) { await api('/api/metrics/manual-support', d); closeModal(); toast('Support time logged.', 'success'); refresh(); },
-  async aiKey(d) {
-    if (me.sandbox) return;
-    const r = await api('/api/ai', { ...d, approved: !!d.approved, reads_images: !!d.reads_images });
-    toast(`${r.provider_label} connected.`, 'success');
-    refresh();
-  },
   async coworkerPolicy(d) {
     await api('/api/coworker/settings', {
       enabled: !!d.enabled, follow_ups: !!d.follow_ups, dashboards: !!d.dashboards, slack: !!d.slack,
@@ -2556,7 +2648,7 @@ async function showLogin() {
 }
 
 const SIGNUP_FIELDS = [
-  { name: 'org_name', label: 'Organisation name', autocomplete: 'organization', min: 2, max: 120, error: 'Enter an organisation name of 2 to 120 characters.' },
+  { name: 'org_name', label: 'Organization name', autocomplete: 'organization', min: 2, max: 120, error: 'Enter an organization name of 2 to 120 characters.' },
   { name: 'admin_name', label: 'Your full name', autocomplete: 'name', min: 2, max: 120, error: 'Enter your full name of 2 to 120 characters.' },
   { name: 'email', label: 'Work email', autocomplete: 'email', type: 'email', max: 254, error: 'Enter a valid work email.' },
   { name: 'password', label: 'Password', autocomplete: 'new-password', type: 'password', min: 12, max: 128, error: 'Use a password of 12 to 128 characters.' },
@@ -2566,7 +2658,7 @@ function renderSignup() {
   const desk = $('#loginScreen .main-desk');
   desk.innerHTML = render(h`
     <h1 tabindex="-1">Create a workspace</h1>
-    <p class="lead">Set up your organisation in Aegis. You’ll be the first administrator.</p>
+    <p class="lead">Set up your organization in Aegis. You’ll be the first administrator.</p>
     <form id="signup-form" class="form-desk" novalidate>
       ${SIGNUP_FIELDS.map((f) => h`<div>
         <label for="new-${f.name}">${f.label}</label>
@@ -2799,12 +2891,80 @@ document.addEventListener('change', (e) => {
   form.querySelector('[data-single-only]').hidden = n > 1;
   form.querySelector('[data-upload-drop]').classList.toggle('has-files', n > 0);
   form.querySelector('[data-upload-title]').innerHTML = n ? `${n} file${n > 1 ? 's' : ''} chosen · <u>change</u>` : 'Drop files here, or <u>choose files</u>';
-  form.querySelector('[data-upload-count]').textContent = n > 1 ? 'Bulk upload: Aegis reads the document number and expiry from each file.' : 'One file, or select several at once to upload in bulk. PDF or photo.';
+  form.querySelector('[data-upload-count]').textContent = n > 1 ? 'Bulk upload: Aegis reads the document number and expiry from each file.' : 'One file, or several at once. PDF, Word, photos and scans (including iPhone and TIFF), text, emails or a .zip.';
   const list = form.querySelector('[data-upload-list]');
   list.hidden = !n;
   list.innerHTML = render(files.map((f) => h`<li><span class="upload-file-name">${f.name}</span><span class="upload-file-size">${fileSize(f.size)}</span></li>`));
   form.querySelector('[data-upload-go]').textContent = n > 1 ? `Upload ${n} files` : 'Upload';
 });
+// Worker forms: pick a location and employing company from the company's own lists. A new one is
+// added only when someone chooses "Add a new …" and spells it out, with the state for a location.
+const NEW_PLACE = '+new';
+function placePickers(L, { optional = false, company = false, current = '' } = {}) {
+  const opt = (value, label, extra = '') => h`<option value="${value}" ${extra ? raw(extra) : ''}>${label}</option>`;
+  // Each picker keeps its "new" fields right under it, so they stay together on a phone too.
+  const location = h`<div class="place-col">
+      <div class="form-group"><label class="form-label" for="plLoc">Work location</label><select id="plLoc" name="facility" class="form-select" data-place-pick="location" ${optional ? '' : raw('required')}>
+        ${optional ? opt('', 'Not assigned yet') : opt('', 'Choose a location', 'disabled selected')}
+        ${L.facilities.map((f) => opt(f.name, `${f.name}${f.state ? ` · ${f.state}` : ''}${f.name === current ? ' (current)' : ''}`, f.name === current ? 'disabled' : ''))}
+        ${opt(NEW_PLACE, 'Add a new location…')}</select></div>
+      <div class="place-new" data-place-new="location" hidden>
+        <div class="form-group"><label class="form-label" for="plLocName">New location name</label><input id="plLocName" name="new_facility" class="form-select" maxlength="120" autocomplete="off"></div>
+        <div class="form-group"><label class="form-label" for="plLocState">State</label><select id="plLocState" name="new_facility_state" class="form-select" aria-describedby="plLocHint"><option value="">Choose a state</option>${L.states.map(([code, name]) => h`<option value="${code}">${name}</option>`)}</select>
+          <p id="plLocHint" class="muted small place-hint">The state decides which state rules apply to people working here.</p></div>
+      </div>
+    </div>`;
+  if (!company) return h`<div class="place-pickers">${location}</div>`;
+  return h`<div class="form-grid place-pickers">${location}
+      <div class="place-col">
+        <div class="form-group"><label class="form-label" for="plEnt">Employing company</label><select id="plEnt" name="entity" class="form-select" data-place-pick="company">
+          ${opt('', 'Not set')}${L.entities.map((e) => opt(e.name, e.name))}${opt(NEW_PLACE, 'Add a new company…')}</select></div>
+        <div class="place-new" data-place-new="company" hidden><div class="form-group"><label class="form-label" for="plEntName">New company name</label><input id="plEntName" name="new_entity" class="form-select" maxlength="120" autocomplete="off"></div></div>
+      </div>
+    </div>`;
+}
+document.addEventListener('change', (e) => {
+  const pick = e.target.closest?.('[data-place-pick]'); if (!pick) return;
+  const box = pick.form.querySelector(`[data-place-new="${pick.dataset.placePick}"]`), on = pick.value === NEW_PLACE;
+  box.hidden = !on;
+  for (const field of box.querySelectorAll('input, select')) field.required = on;
+  if (on) box.querySelector('input')?.focus();
+});
+// What the server is sent: the chosen place, or the new one spelled out.
+function placeFields(d) {
+  const out = { ...d };
+  if (out.facility === NEW_PLACE) Object.assign(out, { facility: d.new_facility, facility_state: d.new_facility_state });
+  if (out.entity === NEW_PLACE) out.entity = d.new_entity;
+  for (const k of ['new_facility', 'new_facility_state', 'new_entity']) delete out[k];
+  return out;
+}
+// Upload window: a person's requirements for a person, a company's for a company.
+function fitRequirements(subject) {
+  const control = subject?.form?.elements.control_key; if (!control) return;
+  const kind = subject.value.split(':')[0];
+  for (const o of control.options) if (o.dataset.for) o.hidden = o.disabled = o.dataset.for !== kind;
+  if (control.selectedOptions[0]?.disabled) control.value = '';
+}
+document.addEventListener('change', (e) => { if (e.target.id === 'upSubject') fitRequirements(e.target); });
+// Evidence review: fill in the text of a document when its panel appears, and say so plainly when a
+// preview cannot be shown. textContent keeps document text as text, never as page markup.
+const previewText = new Map();
+function loadPreviewText() {
+  for (const el of document.querySelectorAll('[data-preview-text]:not([data-loaded])')) {
+    el.dataset.loaded = '1';
+    const id = el.dataset.previewText;
+    if (!previewText.has(id)) previewText.set(id, api(`/api/evidence/${id}/preview`).then((d) => d.text || '', (err) => { previewText.delete(id); throw err; }));
+    previewText.get(id).then((text) => { el.textContent = text || 'No text was found in this document.'; }, (err) => { el.textContent = err.message; el.classList.add('is-error'); });
+  }
+}
+new MutationObserver(loadPreviewText).observe(document.documentElement, { childList: true, subtree: true });
+document.addEventListener('error', (e) => {
+  const img = e.target; if (!(img instanceof HTMLImageElement) || !img.closest('.ev-preview')) return;
+  const note = document.createElement('p'); note.className = 'muted small'; note.textContent = 'Aegis cannot show this file here. Download it to open it.';
+  const preview = img.closest('.ev-preview');
+  preview.parentElement.querySelector('[data-preview-hint]')?.remove(); // nothing to scroll
+  preview.replaceWith(note);
+}, true);
 // Highlight the drop area while files are dragged over it. The file input covers it, so the drop itself is native.
 for (const type of ['dragenter', 'dragover', 'dragleave', 'drop']) {
   document.addEventListener(type, (e) => {
@@ -2817,20 +2977,6 @@ document.addEventListener('change', (e) => {
   const group = metric.form.elements.group_by, win = group.querySelector('[value="window"]'), on = metric.value === 'expirations';
   win.hidden = win.disabled = !on;
   if (on) group.value = 'window'; else if (group.value === 'window') group.value = 'facility';
-});
-document.addEventListener('change', (e) => {
-  const provider = e.target.id === 'ai-provider' && e.target;
-  if (!provider) return;
-  const needsModel = provider.selectedOptions[0]?.dataset.needsModel === 'true';
-  for (const [name, show] of [['model', needsModel], ['endpoint', provider.value === 'custom'], ['images', needsModel]]) {
-    const field = provider.form.querySelector(`[data-ai-${name}]`);
-    const input = field.querySelector('input');
-    field.hidden = input.disabled = !show;
-    if (name !== 'images') input.required = show;
-  }
-  const saved = provider.value === provider.form.dataset.savedProvider;
-  provider.form.elements.model.value = saved && needsModel ? provider.form.dataset.savedModel : '';
-  provider.form.elements.reads_images.checked = saved && needsModel && provider.form.dataset.savedImages === 'true';
 });
 let auditTimer;
 document.addEventListener('input', (e) => {

@@ -1,9 +1,9 @@
 'use strict';
 // Read models. Dashboards, reports and chat all use these same queries, so they cannot disagree.
-const db = require('./lib/db'), { clock, j, daysBetween, addDays, csvCell } = require('./lib/util');
+const db = require('./lib/db'), { clock, j, count, daysBetween, addDays, csvCell } = require('./lib/util');
 const P = require('./platform'), R = require('./registry'), E = require('./engine');
 const { canSeeRestricted } = P;
-const llm = require('./llm'), Ev = require('./evidence');
+const llm = require('./llm'), Ev = require('./evidence'), docread = require('./lib/docread');
 const isoDay = 864e5;
 
 function controlMap(t) {
@@ -44,7 +44,7 @@ function packRows(t) {
 }
 function coverage(t) {
   const rows = allChecks(t), a = tally(rows), packs = packRows(t).filter((p) => p.status === 'active');
-  return { ...a, packs: packs.map((p) => p.name), as_of: clock.iso(), scope_statement: packs.length ? `${a.total} applicable checks in ${packs.length} activated pack(s). Obligations outside these packs have not been assessed.` : 'No packs are activated, so nothing has been assessed.', all_pass: a.total > 0 && a.pass === a.total };
+  return { ...a, packs: packs.map((p) => p.name), as_of: clock.iso(), scope_statement: packs.length ? `${a.total} applicable checks in ${count(packs.length, 'activated pack')}. Obligations outside these packs have not been assessed.` : 'No packs are activated, so nothing has been assessed.', all_pass: a.total > 0 && a.pass === a.total };
 }
 function listCases(t, user, f = {}) {
   let rows = db.all(`SELECT c.*, u.name owner_name FROM cases c LEFT JOIN users u ON u.id=c.owner_user_id WHERE c.tenant_id=? ${f.closed ? 'AND c.closed_at IS NOT NULL' : 'AND c.closed_at IS NULL'} ORDER BY CASE c.priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, c.due_date`, t);
@@ -97,7 +97,19 @@ function listEvidence(t, user, { acceptedFrom, acceptedThrough } = {}) {
   const rows = acceptedFrom && acceptedThrough
     ? db.all("SELECT * FROM evidence WHERE tenant_id=? AND status='accepted' AND expires_on BETWEEN ? AND ? ORDER BY expires_on,created_at DESC", t, acceptedFrom, acceptedThrough)
     : db.all('SELECT * FROM evidence WHERE tenant_id=? ORDER BY created_at DESC', t);
-  return rows.filter((e) => Ev.canView(user, e)).map((e) => ({ id: e.id, subject_name: names[e.subject_id], subject_type: e.subject_type, subject_id: e.subject_id, doc_type: e.doc_type, status: e.status, source: e.source, filename: e.filename, doc_number: e.doc_number, holder_name: e.holder_name, state: e.state, entity_name: e.entity_name, period: e.period, issued_on: e.issued_on, expires_on: e.expires_on, confidence: e.confidence, field_confidence: j(e.fields_json, {}), review_reasons: j(e.review_reasons_json, []), flags: j(e.flags_json, []), control_key: e.control_key, reviewed_by: e.reviewed_by, reject_reason: e.reject_reason, created_at: e.created_at, has_file: !!e.stored_path, can_review: e.status === 'needs_review' && Ev.canReview(user, e, controls[e.control_key]) }));
+  const visible = rows.filter((e) => Ev.canView(user, e)), byId = new Map(visible.map((e) => [e.id, e])), memo = {};
+  const link = (e) => (e ? { id: e.id, filename: e.filename } : null);
+  // Accepted documents per person and requirement, so a document waiting for review can say it looks
+  // like one already accepted, and an accepted one can list its duplicates.
+  const acceptedFor = new Map(), coveredBy = new Map();
+  for (const e of visible) {
+    if (e.status === 'accepted' && e.control_key) { const k = `${e.subject_id}|${e.control_key}`; acceptedFor.set(k, [...(acceptedFor.get(k) || []), e]); }
+    if (e.status === 'covered' && e.covered_by) coveredBy.set(e.covered_by, [...(coveredBy.get(e.covered_by) || []), link(e)]);
+  }
+  const sameAs = (e) => (e.status === 'needs_review' && e.control_key ? link((acceptedFor.get(`${e.subject_id}|${e.control_key}`) || []).find((a) => Ev.sameDocument(a, e))) : null);
+  return visible.map((e) => ({ id: e.id, subject_name: names[e.subject_id], subject_type: e.subject_type, subject_id: e.subject_id, doc_type: e.doc_type, status: e.status, source: e.source, filename: e.filename, doc_number: e.doc_number, holder_name: e.holder_name, state: e.state, entity_name: e.entity_name, period: e.period, issued_on: e.issued_on, expires_on: e.expires_on, confidence: e.confidence, field_confidence: j(e.fields_json, {}), review_reasons: j(e.review_reasons_json, []), flags: j(e.flags_json, []), control_key: e.control_key, reviewed_by: e.reviewed_by, reject_reason: e.reject_reason, created_at: e.created_at, has_file: !!e.stored_path, preview: e.stored_path ? docread.previewKind(e.mime, e.filename) : null, can_review: e.status === 'needs_review' && Ev.canReview(user, e, controls[e.control_key]),
+    covered_by: e.status === 'covered' ? link(byId.get(e.covered_by)) : null, same_as: sameAs(e), duplicates: coveredBy.get(e.id) || [],
+    copies: j(e.copies_json, []).map((c) => ({ filename: c.filename, at: c.at, by: c.by })), requirement_note: Ev.requirementNote(t, e, memo), move_to: Ev.moveTarget(t, e, memo) }));
 }
 function listApprovals(t, user, status = 'pending') {
   return db.all('SELECT * FROM approvals WHERE tenant_id=? AND status=? ORDER BY created_at DESC', t, status).filter((a) => (a.pack_key ? P.canPack(user, a.pack_key) : P.isAdmin(user)));
@@ -295,7 +307,7 @@ function setupState(t) {
 }
 function digestText(t) {
   const c = coverage(t), open = db.all(`SELECT * FROM cases WHERE tenant_id=? AND ${E.OPEN}`, t), pend = db.get("SELECT COUNT(*) n FROM approvals WHERE tenant_id=? AND status='pending'", t).n;
-  return `Aegis digest for ${clock.today()}\n${c.pass} pass, ${c.fail} fail, ${c.unknown} unknown across ${c.total} applicable checks.\n${open.length} open case(s), ${open.filter((x) => x.escalated).length} escalated. ${pend} awaiting approval.\n${c.scope_statement}`;
+  return `Aegis digest for ${clock.today()}\n${c.pass} pass, ${c.fail} fail, ${c.unknown} unknown across ${c.total} applicable checks.\n${count(open.length, 'open case')}, ${open.filter((x) => x.escalated).length} escalated. ${pend} awaiting approval.\n${c.scope_statement}`;
 }
 function health(t) {
   return { ai_error: llm.lastError(t), jobs: { queued: db.get("SELECT COUNT(*) n FROM jobs WHERE tenant_id=? AND status='queued'", t).n, dead: db.all("SELECT id,type,last_error,attempts,finished_at FROM jobs WHERE tenant_id=? AND status='dead' ORDER BY finished_at DESC LIMIT 20", t) }, failed_actions: db.all("SELECT id,type,recipient,error FROM actions WHERE tenant_id=? AND error IS NOT NULL AND status='queued' LIMIT 20", t), connectors: db.all('SELECT id,type,name,status,last_sync_at,last_error,records,capabilities_json FROM connectors WHERE tenant_id=?', t).map((c) => ({ ...c, capabilities: j(c.capabilities_json, []) })), events: db.all('SELECT type,status,received_at,error FROM events WHERE tenant_id=? ORDER BY received_at DESC LIMIT 10', t), schedules: db.all('SELECT * FROM schedules WHERE tenant_id=?', t), audit: P.verifyAudit(t) };

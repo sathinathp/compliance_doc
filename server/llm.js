@@ -5,7 +5,7 @@ const db = require('./lib/db'), { encrypt, decrypt, clock } = require('./lib/uti
 const PROVIDERS = {
   // DeepSeek returns 400 for a forced tool in thinking mode, so thinking is turned off.
   deepseek: { label: 'DeepSeek', url: 'https://api.deepseek.com/anthropic/v1/messages', model: 'deepseek-flash', env: 'DEEPSEEK_API_KEY', extra: { thinking: { type: 'disabled' } } },
-  anthropic: { label: 'Claude (Anthropic)', url: 'https://api.anthropic.com/v1/messages', model: 'claude-sonnet-5-5', pdf: true, env: 'ANTHROPIC_API_KEY' },
+  anthropic: { label: 'Claude (Anthropic)', url: 'https://api.anthropic.com/v1/messages', model: 'claude-haiku-4-5-20251001', pdf: true, env: 'ANTHROPIC_API_KEY' },
   openai: { label: 'OpenAI', url: 'https://api.openai.com/v1/chat/completions', chat: true, tokenLimit: 'max_completion_tokens' },
   gemini: { label: 'Google Gemini', url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', chat: true, toolChoice: 'auto' },
   openrouter: { label: 'OpenRouter', url: 'https://openrouter.ai/api/v1/chat/completions', chat: true },
@@ -26,11 +26,25 @@ function fromEnv() {
   return name ? { provider: name, key: process.env[PROVIDERS[name].env], source: 'environment' } : null;
 }
 const config = (t) => { const s = stored(t); return s ? { ...s, source: 'settings' } : fromEnv(); };
+// A second provider, set on the server with AEGIS_LLM_FALLBACK (for example deepseek), answers when the
+// main one fails: an outage, a rejected key, no credit, a timeout or an unusable reply.
+function fallbackOf(primary) {
+  const name = process.env.AEGIS_LLM_FALLBACK;
+  if (!primary || !name || name === primary.provider || !Object.hasOwn(PROVIDERS, name)) return null;
+  const key = PROVIDERS[name].env && process.env[PROVIDERS[name].env];
+  return key ? { provider: name, key, source: 'environment', fallback: true } : null;
+}
+const chain = (t) => { const c = config(t); return c ? [c, fallbackOf(c)].filter(Boolean) : []; };
 const enabled = (t) => !!config(t);
-const supportsPdf = (t) => { const c = config(t); return !!c && PROVIDERS[c.provider].pdf; };
 const readsImages = (cfg) => cfg && (!PROVIDERS[cfg.provider].chat || cfg.reads_images === true);
-const supportsImages = (t) => !!readsImages(config(t));
-const modelOf = (cfg) => cfg.model || process.env.AEGIS_LLM_MODEL || PROVIDERS[cfg.provider].model;
+const capsOf = (cfg) => ({ pdf: !!PROVIDERS[cfg.provider].pdf, images: !!readsImages(cfg) });
+// True when any provider in the chain can take the file, so the main one failing still leaves a reader.
+const supportsPdf = (t) => chain(t).some((c) => capsOf(c).pdf);
+const supportsImages = (t) => chain(t).some((c) => capsOf(c).images);
+const modelOf = (cfg) => cfg.model || (cfg.fallback ? process.env.AEGIS_LLM_FALLBACK_MODEL : process.env.AEGIS_LLM_MODEL) || PROVIDERS[cfg.provider].model;
+// Newer Claude models always think and reject a forced tool, so they get tool_choice auto, a plain
+// instruction to use the tool, and room for their thinking.
+const thinksAlways = (model) => /^claude-(opus-5-5|sonnet-5-5|fable-5-[12]|mythos-5-[12])/.test(model);
 
 function normalizeEndpoint(value) {
   if (typeof value !== 'string' || value.length > 500) return null;
@@ -102,8 +116,9 @@ async function request(t, cfg, system, userContent, name, schema, timeoutMs = 60
   const p = PROVIDERS[cfg.provider];
   const destination = requestUrl(cfg, p);
   const auth = p.chat ? { authorization: `Bearer ${cfg.key}` } : { 'x-api-key': cfg.key, 'anthropic-version': '2023-06-01' };
+  const model = modelOf(cfg), thinks = !p.chat && thinksAlways(model);
   const body = p.chat ? chatRequest(cfg, p, system, userContent, name, schema)
-    : { model: modelOf(cfg), max_tokens: 1000, system, messages: [{ role: 'user', content: userContent }], tools: [{ name, description: 'Record the structured result.', input_schema: schema }], tool_choice: { type: 'tool', name }, ...p.extra };
+    : { model, max_tokens: thinks ? 16000 : 1000, system: thinks ? `${system}\nAlways answer by calling the ${name} tool.` : system, messages: [{ role: 'user', content: userContent }], tools: [{ name, description: 'Record the structured result.', input_schema: schema }], tool_choice: thinks ? { type: 'auto' } : { type: 'tool', name }, ...p.extra };
   const res = await fetch(destination, {
     method: 'POST', redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
     headers: { ...auth, 'content-type': 'application/json' },
@@ -111,7 +126,11 @@ async function request(t, cfg, system, userContent, name, schema, timeoutMs = 60
   }).catch((e) => { if (e.name === 'TimeoutError') throw e; throw new Error(`Could not reach ${p.label}. Check this server's internet access.`); });
   if (res.status === 401 || res.status === 403) throw new Error(`${p.label} rejected this API key.`);
   if (res.status === 402) throw new Error(`${p.label} reports insufficient balance on this account.`);
-  if (!res.ok) throw new Error(`${p.label} returned an error (${res.status}).`);
+  if (!res.ok) {
+    // The provider's own reason (for example "credit balance is too low") helps whoever fixes it.
+    const why = await res.json().then((x) => x?.error?.message || (typeof x?.error === 'string' ? x.error : ''), () => '');
+    throw new Error(`${p.label} returned an error (${res.status})${why ? `: ${String(why).replace(/\s+/g, ' ').slice(0, 160)}` : ''}.`);
+  }
   const out = await res.json().catch(() => null);
   const result = toolResult(out, p.chat, name, schema);
   if (!result) throw new Error(`${p.label} did not return the expected function response. Choose a model that supports function calling.`);
@@ -122,20 +141,36 @@ async function request(t, cfg, system, userContent, name, schema, timeoutMs = 60
   P.bump(t, 'llm_output_tokens', tokens(p.chat ? usage.completion_tokens : usage.output_tokens));
   return result;
 }
-// Never throws: a failed AI call falls back to human review, and the failure stays visible.
+const failureText = (cfg, e) => (e.name === 'TimeoutError' ? `${PROVIDERS[cfg.provider].label} timed out.` : e.message);
+function recordError(t, message) {
+  db.run('INSERT INTO meta(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v', errKey(t), JSON.stringify({ message, at: clock.iso() }));
+}
+// Never throws. Tries the main provider, then the fallback. If both fail the work goes to human
+// review, and the failure stays visible on the health page and in the audit log.
+// userContent may be a function of what a provider can read ({ pdf, images }): it returns the blocks
+// to send, or null when that provider cannot read the file, so it is skipped.
 async function callTool(t, system, userContent, name, schema, { timeoutMs } = {}) {
-  const cfg = config(t);
-  if (!cfg) return null;
-  try {
-    const out = await request(t, cfg, system, userContent, name, schema, timeoutMs);
-    db.run('DELETE FROM meta WHERE k=?', errKey(t));
-    return out;
-  } catch (e) {
-    const msg = e.name === 'TimeoutError' ? 'The AI provider timed out.' : e.message;
-    db.run('INSERT INTO meta(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v', errKey(t), JSON.stringify({ message: msg, at: clock.iso() }));
-    P.audit(t, 'AI_ERROR', 'AI engine', `AI call failed: ${msg} Work continues through human review.`);
-    return null;
+  const failed = [];
+  for (const cfg of chain(t)) {
+    const content = typeof userContent === 'function' ? userContent(capsOf(cfg)) : userContent;
+    if (!content) continue;
+    try {
+      const out = await request(t, cfg, system, content, name, schema, timeoutMs);
+      if (!failed.length) db.run('DELETE FROM meta WHERE k=?', errKey(t));
+      else {
+        const message = `${failed.join(' ')} ${PROVIDERS[cfg.provider].label} answered instead.`;
+        if (lastError(t)?.message !== message) P.audit(t, 'AI_FALLBACK', 'AI engine', `Main AI provider failed: ${message}`);
+        recordError(t, message);
+      }
+      return out;
+    } catch (e) { failed.push(failureText(cfg, e)); }
   }
+  if (failed.length) {
+    const message = failed.join(' ');
+    recordError(t, message);
+    P.audit(t, 'AI_ERROR', 'AI engine', `AI call failed: ${message} Work continues through human review.`);
+  }
+  return null;
 }
 const PING = { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] };
 const ping = async (call) => {
@@ -145,13 +180,24 @@ const ping = async (call) => {
 async function test(t, cfg) {
   if (!await ping((...args) => request(t, cfg, ...args))) throw new Error('The provider did not confirm the connection.');
 }
-const testSaved = (t) => ping((...args) => callTool(t, ...args));
+// Tests the main provider only, so a working fallback cannot hide a broken main key.
+async function testSaved(t) {
+  const cfg = config(t);
+  if (!cfg) return false;
+  try {
+    const ok = await ping((...args) => request(t, cfg, ...args));
+    if (ok) db.run('DELETE FROM meta WHERE k=?', errKey(t));
+    else recordError(t, 'The provider did not confirm the connection.');
+    return ok;
+  } catch (e) { recordError(t, failureText(cfg, e)); return false; }
+}
 function save(t, cfg) { db.run('INSERT INTO meta(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v', metaKey(t), encrypt(Buffer.from(JSON.stringify(cfg))).toString('base64')); db.run('DELETE FROM meta WHERE k=?', errKey(t)); }
 function remove(t) { db.run('DELETE FROM meta WHERE k=?', metaKey(t)); db.run('DELETE FROM meta WHERE k=?', errKey(t)); }
 function lastError(t) { const r = db.get('SELECT v FROM meta WHERE k=?', errKey(t)); return r ? JSON.parse(r.v) : null; }
 function status(t) {
-  const c = config(t), p = c && PROVIDERS[c.provider];
+  const c = config(t), p = c && PROVIDERS[c.provider], f = fallbackOf(c);
   return {
+    fallback: f ? { provider: f.provider, provider_label: PROVIDERS[f.provider].label, model: modelOf(f) } : null,
     configured: !!c, provider: c?.provider || null, provider_label: p?.label || null, model: c ? modelOf(c) : null,
     endpoint: c?.endpoint || null, source: c?.source || null, key_hint: c ? `••••${c.key.length > 4 ? c.key.slice(-4) : ''}` : null,
     reads_images: !!readsImages(c), reads_scanned_pdf: !!p?.pdf, approved_by: c?.approved_by || null, approved_at: c?.approved_at || null,

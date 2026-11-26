@@ -4,7 +4,7 @@
   "private": true,
   "description": "AI Compliance Coworker MVP - backend and web workspace. No npm dependencies.",
   "engines": {
-    "node": ">=22.5"
+    "node": ">=22.13"
   },
   "scripts": {
     "start": "node --no-warnings server/index.js",
@@ -12,10 +12,16 @@
     "provision:bluebix": "node --no-warnings server/index.js --provision-bluebix",
     "backup": "node --no-warnings server/backup.js backup",
     "restore": "node --no-warnings server/backup.js restore",
-    "test": "node --no-warnings --test test/workflow.test.js test/ai.test.js test/production.test.js test/slack.test.js test/pilot.test.js test/lock.test.js test/users.test.js test/backup.test.js"
+    "test": "node --no-warnings --test test/workflow.test.js test/ai.test.js test/reading.test.js test/production.test.js test/slack.test.js test/pilot.test.js test/lock.test.js test/users.test.js test/backup.test.js"
   },
   "dependencies": {
+    "@kenjiuno/msgreader": "^1.29.0",
+    "heic-convert": "^2.1.0",
+    "mammoth": "^1.13.0",
     "nodemailer": "^10.4.0",
-    "pg": "^8.23.1"
+    "pdfjs-dist": "^6.5.438",
+    "pg": "^8.23.1",
+    "sharp": "^0.35.5",
+    "word-extractor": "^1.0.4"
   }
 }

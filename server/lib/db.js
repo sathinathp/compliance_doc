@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS assignments(id TEXT PRIMARY KEY, tenant_id TEXT NOT N
 CREATE TABLE IF NOT EXISTS packs(key TEXT, version TEXT, definition_json TEXT, validation_json TEXT, PRIMARY KEY(key,version));
 CREATE TABLE IF NOT EXISTS tenant_packs(tenant_id TEXT, pack_key TEXT, version TEXT, status TEXT, mode TEXT DEFAULT 'shadow', owner_user_id TEXT, reviewed_by TEXT, activated_at TEXT, PRIMARY KEY(tenant_id,pack_key));
 CREATE TABLE IF NOT EXISTS control_changes(id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, kind TEXT, control_key TEXT, pack_key TEXT, source_text TEXT, definition_json TEXT, preview_json TEXT, status TEXT, version INT DEFAULT 1, created_by TEXT, approved_by TEXT, created_at TEXT, activated_at TEXT);
-CREATE TABLE IF NOT EXISTS evidence(id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, subject_type TEXT, subject_id TEXT, doc_type TEXT, status TEXT, source TEXT, filename TEXT, mime TEXT, size INT, sha256 TEXT, stored_path TEXT, doc_number TEXT, holder_name TEXT, state TEXT, entity_name TEXT, period TEXT, issued_on TEXT, expires_on TEXT, fields_json TEXT, confidence REAL, review_reasons_json TEXT DEFAULT '[]', flags_json TEXT DEFAULT '[]', case_id TEXT, control_key TEXT, restricted INT DEFAULT 0, reviewed_by TEXT, reviewed_at TEXT, reject_reason TEXT, created_at TEXT);
+CREATE TABLE IF NOT EXISTS evidence(id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, subject_type TEXT, subject_id TEXT, doc_type TEXT, status TEXT, source TEXT, filename TEXT, mime TEXT, size INT, sha256 TEXT, stored_path TEXT, doc_number TEXT, holder_name TEXT, state TEXT, entity_name TEXT, period TEXT, issued_on TEXT, expires_on TEXT, fields_json TEXT, confidence REAL, review_reasons_json TEXT DEFAULT '[]', flags_json TEXT DEFAULT '[]', case_id TEXT, control_key TEXT, restricted INT DEFAULT 0, reviewed_by TEXT, reviewed_at TEXT, reject_reason TEXT, created_at TEXT, covered_by TEXT, coverable INT DEFAULT 0, copies_json TEXT DEFAULT '[]');
 CREATE INDEX IF NOT EXISTS ix_ev ON evidence(tenant_id,subject_type,subject_id);
 CREATE TABLE IF NOT EXISTS evaluations(id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, subject_type TEXT, subject_id TEXT, pack_key TEXT, control_key TEXT, control_version TEXT, status TEXT, code TEXT, reason TEXT, evidence_ids_json TEXT, action_needed INT, trigger TEXT, is_current INT DEFAULT 1, created_at TEXT, evaluated_at TEXT);
 CREATE INDEX IF NOT EXISTS ix_eval ON evaluations(tenant_id,is_current,status);
@@ -81,8 +81,17 @@ function migrateUsers() {
   if (mode === 'pg') { exec('ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled_at TEXT'); return; }
   if (!all('PRAGMA table_info(users)').some((column) => column.name === 'disabled_at')) exec('ALTER TABLE users ADD COLUMN disabled_at TEXT');
 }
+// Duplicate tracking on evidence: covered_by points a duplicate at the accepted copy of the same
+// document, coverable says a later accepted copy may cover it, copies_json lists re-uploads of the same file.
+const EVIDENCE_COLUMNS = [['covered_by', 'TEXT'], ['coverable', 'INT DEFAULT 0'], ['copies_json', "TEXT DEFAULT '[]'"]];
+function migrateEvidence() {
+  if (mode === 'pg') { exec(EVIDENCE_COLUMNS.map(([n, type]) => `ALTER TABLE evidence ADD COLUMN IF NOT EXISTS ${n} ${type};`).join(' ')); return; }
+  const have = new Set(all('PRAGMA table_info(evidence)').map((column) => column.name));
+  for (const [n, type] of EVIDENCE_COLUMNS) if (!have.has(n)) exec(`ALTER TABLE evidence ADD COLUMN ${n} ${type}`);
+}
 function migrateCoworkerAccess() {
   migrateUsers();
+  migrateEvidence();
   if (mode === 'pg') {
     exec(`
       ALTER TABLE users ADD COLUMN IF NOT EXISTS coworker_epoch INT NOT NULL DEFAULT 0;

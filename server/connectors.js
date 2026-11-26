@@ -1,19 +1,23 @@
 'use strict';
 // Reusable connector layer: every source maps into one internal worker record.
-const db = require('./lib/db'), { clock, id, j, encrypt, decrypt, parseCsv, parseXlsx, normDate } = require('./lib/util');
+const db = require('./lib/db'), { clock, id, j, count, placeKey, stateCode, encrypt, decrypt, parseCsv, parseXlsx, normDate } = require('./lib/util');
 const P = require('./platform');
 const { HttpError, SYSTEM } = P;
 const inferCategory = (r) => /\b(nurse|rn|np|lpn|physician|therapist|md|pt|clinician|pediatrician)\b/i.test(`${r.role} ${r.license_type || ''}`) ? 'clinical' : 'corporate';
 
+// A company or location is found by its name however it is capitalized or spaced, so
+// "st. jude medical center" from a form or a sync never becomes a second St. Jude Medical Center.
+const findPlace = (table, t, name) => db.all(`SELECT * FROM ${table} WHERE tenant_id=?`, t).find((x) => placeKey(x.name) === placeKey(name));
+const cleanName = (name) => String(name || '').trim().replace(/\s+/g, ' ');
 function ensureEntity(t, name) {
-  if (!name) return null;
-  let e = db.get('SELECT * FROM entities WHERE tenant_id=? AND name=?', t, name);
-  if (!e) { e = { id: id('ent'), tenant_id: t, name }; db.insert('entities', e); }
+  if (!cleanName(name)) return null;
+  let e = findPlace('entities', t, name);
+  if (!e) { e = { id: id('ent'), tenant_id: t, name: cleanName(name) }; db.insert('entities', e); }
   return e.id;
 }
 function ensureFacility(t, name, state) {
-  let f = db.get('SELECT * FROM facilities WHERE tenant_id=? AND name=?', t, name);
-  if (!f) { f = { id: id('fac'), tenant_id: t, name, state: state || null }; db.insert('facilities', f); }
+  let f = findPlace('facilities', t, name);
+  if (!f) { f = { id: id('fac'), tenant_id: t, name: cleanName(name), state: stateCode(state) || state || null }; db.insert('facilities', f); }
   return f.id;
 }
 function assignWorker(t, worker, facility, state, start, actor) {
@@ -22,8 +26,24 @@ function assignWorker(t, worker, facility, state, start, actor) {
   if (cur?.facility_id === fid) return false;
   if (cur) db.update('assignments', cur.id, { status: 'ended', end_date: clock.today() });
   db.insert('assignments', { id: id('asn'), tenant_id: t, worker_id: worker.id, facility_id: fid, role: worker.role, start_date: normDate(start) || clock.today(), status: 'active' });
-  if (cur) P.audit(t, 'ASSIGNMENT_CHANGED', worker.name, `Assignment moved to ${facility}.`, actor);
+  if (cur) P.audit(t, 'ASSIGNMENT_CHANGED', worker.name, `Assignment moved to ${db.get('SELECT name FROM facilities WHERE id=?', fid).name}.`, actor);
   return true;
+}
+// A location or company typed by a person: an existing one by its saved name, or a new one that
+// is spelled out on purpose. A new location needs its US state, because state rules depend on it.
+function placesFrom(t, { facility, facility_state, entity }) {
+  const out = { facility: null, facility_state: null, entity: null };
+  if (cleanName(facility)) {
+    const known = findPlace('facilities', t, facility);
+    if (known) Object.assign(out, { facility: known.name, facility_state: known.state });
+    else {
+      const state = stateCode(facility_state);
+      if (!state) throw new HttpError(400, `Choose the US state ${cleanName(facility)} is in. Aegis uses it to know which state rules apply.`);
+      Object.assign(out, { facility: cleanName(facility), facility_state: state });
+    }
+  }
+  if (cleanName(entity)) out.entity = findPlace('entities', t, entity)?.name || cleanName(entity);
+  return out;
 }
 function changeAssignment(t, worker, facility, state, actor) {
   return db.tx(() => {
@@ -49,6 +69,8 @@ function upsertWorker(t, rec, source, actor = SYSTEM) {
         if (key !== 'updated_at' && (rec[input] == null || rec[input] === '' || fields[key] == null)) delete fields[key];
       }
     }
+    // A sync without an email never erases one added in Aegis; an email from the HR system replaces it.
+    if (w?.email && !fields.email) delete fields.email;
     let changed = true, created = false;
     if (w) {
       changed = Object.keys(fields).some((k) => k !== 'updated_at' && (w[k] ?? null) !== (fields[k] ?? null));
@@ -258,8 +280,8 @@ async function syncConnector(t, connId, actor = SYSTEM) {
       }
     });
     const cursor = cfg.incremental === 'last_sync' ? startedAt : r.cursor || c.cursor;
-    db.update('connectors', c.id, { cursor, status: 'connected', last_sync_at: startedAt, last_error: skipped.length ? `${skipped.length} record(s) skipped in the last sync: ${skipped[0].problem}.` : null, records: c.records + n });
-    P.audit(t, 'HRMS_SYNC', c.name, `Synchronized ${n} changed record(s)${skipped.length ? `, skipped ${skipped.length} that could not be matched safely` : ''}.`, actor, { detail: { pages: r.pages, created, skipped: skipped.length } });
+    db.update('connectors', c.id, { cursor, status: 'connected', last_sync_at: startedAt, last_error: skipped.length ? `${count(skipped.length, 'record')} skipped in the last sync: ${skipped[0].problem}.` : null, records: c.records + n });
+    P.audit(t, 'HRMS_SYNC', c.name, `Synchronized ${count(n, 'changed record')}${skipped.length ? `, skipped ${skipped.length} that could not be matched safely` : ''}.`, actor, { detail: { pages: r.pages, created, skipped: skipped.length } });
     return { records: n, created, skipped: skipped.length, skipped_examples: skipped.slice(0, 10), pages: r.pages, truncated: r.truncated };
   } catch (e) {
     db.update('connectors', c.id, { status: 'error', last_error: e.message });
@@ -349,4 +371,4 @@ function commitImport(t, user, impId) {
     return { created, updated };
   });
 }
-module.exports = { upsertWorker, changeAssignment, createConnector, syncConnector, testConnection, processHrmsEvent, previewImport, commitImport, ensureEntity, ensureFacility, configOf, saveConfig, validateConfig, publicConfig, mapHrms };
+module.exports = { upsertWorker, changeAssignment, placesFrom, createConnector, syncConnector, testConnection, processHrmsEvent, previewImport, commitImport, ensureEntity, ensureFacility, configOf, saveConfig, validateConfig, publicConfig, mapHrms };

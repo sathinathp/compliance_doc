@@ -177,7 +177,11 @@ test('MILESTONE: HRMS event to request, accepted submission, verified closure, m
   const m = msgs(hire.name).find((x) => /BLS/.test(x.subject)); assert.ok(m);
   const tok = link(m.body); assert.ok(tok);
   assert.equal((await fetch(`${base}/api/submit/${tok}`)).status, 200);
-  await upload(tok, file('bls.txt', `American Heart Association Basic Life Support\nName: ${hire.name}\nCard No: AHA-1\nExpiration Date: 2029-01-15\n`));
+  const card = `American Heart Association Basic Life Support\nName: ${hire.name}\nCard No: AHA-1\nExpiration Date: 2029-01-15\n`;
+  assert.equal((await upload(tok, file('bls.txt', card))).data.status, 'Your document was accepted and the check is being rerun.');
+  // Sending the same file again tells the worker plainly that nothing more is needed.
+  assert.equal((await upload(tok, file('bls (1).txt', card))).data.status, 'We already have this file, and it is accepted. There is nothing more to do.');
+  assert.equal(db.get("SELECT COUNT(*) n FROM evidence WHERE subject_id=? AND doc_type='bls_card'", hire.id).n, 1);
   await P.drain();
   const c = (await admin.get(`/api/cases/${blsCase.id}`)).data;
   assert.equal(c.state, 'closed'); assert.equal(c.closure, 'verified'); assert.ok(c.closure_evidence_id);
@@ -233,10 +237,21 @@ test('uploaded receipt with wrong entity or period needs review; a verbal note d
   await fin.post(`/api/cases/${c.id}/note`, { note: 'Finance confirmed the filing verbally.' });
   assert.equal((await admin.get(`/api/cases/${c.id}`)).data.closed_at, null);
   const r = await fin.post('/api/evidence', { subject_type: 'entity', subject_id: e.id, control_key: 'CTRL-PAY-941', file: file('r.txt', 'Form 941 filing receipt\nEntity: Other Co\nPeriod: Q1-2025\n') });
-  assert.equal(r.data.status, 'needs_review'); assert.ok(r.data.reasons.some((x) => /period does not match/.test(x)));
+  assert.equal(r.data.status, 'needs_review'); assert.ok(r.data.reasons.some((x) => /Check the company and reporting period/.test(x)));
   await fin.post(`/api/evidence/${r.data.id}/review`, { decision: 'accept' });
   await P.drain();
   assert.equal((await admin.get(`/api/cases/${c.id}`)).data.closed_at, null, 'accepted but mismatched receipt must not pass');
+});
+test('a document that counts for nothing says why in plain words', async () => {
+  const w = db.get("SELECT * FROM workers WHERE name='Marcus Chen'");
+  const receipt = await admin.post('/api/evidence', { subject_type: 'worker', subject_id: w.id, file: file('receipt.txt', 'Payroll filing receipt\nCompany: Bluebix Healthcare LLC\nPeriod: Q3-2026\n') });
+  assert.equal(receipt.data.status, 'needs_review');
+  assert.deepEqual(receipt.data.reasons, ['A payroll filing receipt is a company document, so it does not count for Marcus Chen. Reject it here and upload it for the company it belongs to.']);
+  const unknown = await admin.post('/api/evidence', { subject_type: 'worker', subject_id: w.id, file: file('note.txt', 'Lunch menu for Friday\nSoup and salad\n') });
+  assert.match(unknown.data.reasons.join(' '), /^Aegis could not tell what kind of document this is/);
+  // Someone else's document: the name is the reason, not who approves it or how sure the reading is.
+  const other = await admin.post('/api/evidence', { subject_type: 'worker', subject_id: w.id, file: file('w4.txt', 'Form W-4\nEmployee name: Sophia Garcia\nDate signed: 2026-01-20\n') });
+  assert.deepEqual(other.data.reasons, ['Name on document (Sophia Garcia) does not match Marcus Chen.']);
 });
 test('sending stays exact under retries and manual follow-up is limited to one per day', async () => {
   channels.hooks.failNext = 1;
@@ -406,7 +421,7 @@ test('message status is honest and messages to a worker are written to them, wit
   const w = db.get("SELECT * FROM workers WHERE name='Tara Test'");
   const r1 = db.get("SELECT body FROM messages WHERE recipient='Tara Test' AND subject='Reminder 1: BLS provider card'");
   assert.match(r1.body, /^Hi Tara, this is reminder 1 about your BLS provider card\./);
-  assert.match(r1.body, /expires in 16 day\(s\)/, 'sent 4 days after upload of a card valid for 20 days');
+  assert.match(r1.body, /expires in 16 days/, 'sent 4 days after upload of a card valid for 20 days');
   assert.doesNotMatch(r1.body, /Tara Test still needs/);
 
   // A rejection reason that ends with a full stop does not produce "..".
@@ -503,7 +518,7 @@ test('pilot control previews enforce every target and hide restricted history fr
 
 test('pilot roster import maps worker IDs and preserves terminated worker records; reassignment keeps the worker ID', async () => {
   const t = bid().id;
-  const w = (await admin.post('/api/workers', { name: 'Pilot Worker Without Email', facility: 'Old Pilot Facility' })).data;
+  const w = (await admin.post('/api/workers', { name: 'Pilot Worker Without Email', facility: 'Old Pilot Facility', facility_state: 'CA' })).data;
   assert.equal(w.created, true);
   assert.equal((await admin.post(`/api/workers/${w.id}/assignment`, { facility: 'New Pilot Facility', facility_state: 'CA' })).status, 200);
   assert.equal((await admin.get(`/api/workers/${w.id}`)).data.facility, 'New Pilot Facility');
@@ -852,4 +867,72 @@ test('audit search filters by kind, text and date, pages without overlap, and is
   const onDay = (await admin.get(`/api/audit/search?from=${day}&to=${day}`)).data;
   assert.ok(onDay.rows.every((r) => r.ts.startsWith(day)));
   assert.equal((await health.get('/api/audit/search')).status, 403);
+});
+
+test('worker forms pick existing locations and companies, and a new location needs its state', async () => {
+  const t = bid().id, places = () => db.get('SELECT COUNT(*) n FROM facilities WHERE tenant_id=?', t).n, companies = () => db.get('SELECT COUNT(*) n FROM entities WHERE tenant_id=?', t).n;
+  const L = (await hr.get('/api/locations')).data;
+  assert.ok(L.facilities.some((f) => f.name === 'St. Jude Medical Center' && f.state === 'CA'));
+  assert.ok(L.entities.some((e) => e.name === 'Bluebix Staffing Inc'));
+  assert.ok(L.states.some(([code, name]) => code === 'NY' && name === 'New York') && L.states.some(([, name]) => name === 'District of Columbia'));
+  const before = [places(), companies()];
+
+  // Typed differently, still the same place and company: nothing new is created.
+  const added = await hr.post('/api/workers', { name: 'Robin Location', role: 'Staff Nurse', category: 'clinical', facility: '  st. jude   MEDICAL center ', facility_state: 'TX', entity: 'bluebix staffing inc' });
+  assert.equal(added.status, 200);
+  assert.deepEqual([places(), companies()], before);
+  const robin = (await hr.get(`/api/workers/${added.data.id}`)).data;
+  assert.equal(robin.facility, 'St. Jude Medical Center'); assert.equal(robin.state, 'CA', "a known location keeps its own state");
+  assert.equal(db.get('SELECT e.name FROM workers w JOIN entities e ON e.id=w.entity_id WHERE w.id=?', robin.id).name, 'Bluebix Staffing Inc');
+
+  // A new location must say which state it is in.
+  const noState = await hr.post(`/api/workers/${robin.id}/assignment`, { facility: 'Lakeside Clinic' });
+  assert.equal(noState.status, 400); assert.match(noState.data.error, /^Choose the US state Lakeside Clinic is in/);
+  assert.equal((await hr.post(`/api/workers/${robin.id}/assignment`, { facility: 'Lakeside Clinic', facility_state: 'Cal' })).status, 400);
+  assert.equal((await hr.post('/api/workers', { name: 'Never Saved', facility: 'Hilltop Annex' })).status, 400);
+  assert.equal(db.get("SELECT COUNT(*) n FROM workers WHERE name='Never Saved'").n, 0, 'nothing is saved when the location is refused');
+  assert.equal(places(), before[0]);
+
+  assert.equal((await hr.post(`/api/workers/${robin.id}/assignment`, { facility: ' Lakeside  Clinic', facility_state: 'oregon' })).status, 200);
+  assert.deepEqual(db.get("SELECT name, state FROM facilities WHERE tenant_id=? AND name='Lakeside Clinic'", t), { name: 'Lakeside Clinic', state: 'OR' });
+  assert.equal(db.get("SELECT action FROM audit_log WHERE type='ASSIGNMENT_CHANGED' AND subject='Robin Location' ORDER BY seq DESC LIMIT 1").action, 'Assignment moved to Lakeside Clinic.');
+  assert.equal((await hr.post(`/api/workers/${robin.id}/assignment`, { facility: 'LAKESIDE CLINIC' })).status, 200, 'an existing location needs no state');
+  assert.equal(places(), before[0] + 1);
+  assert.equal((await hr.post(`/api/workers/${robin.id}/assignment`, {})).data.error, 'Choose a location.');
+});
+
+test('HR and administrators can add a worker email, and an HR sync without one does not erase it', async () => {
+  const t = bid().id;
+  assert.equal((await admin.post('/api/workers', { name: 'Casey Noemail', role: 'Staff Nurse', category: 'clinical', license_type: 'RN' })).status, 200);
+  const w = db.get("SELECT * FROM workers WHERE name='Casey Noemail'");
+  assert.equal(w.email, null);
+  assert.ok((await admin.get('/api/setup')).data.gap_items.some((g) => g.kind === 'no_email' && g.workers.some((x) => x.id === w.id)));
+
+  assert.equal((await admin.post(`/api/workers/${w.id}/email`, { email: 'not-an-email' })).status, 400);
+  assert.equal((await admin.post(`/api/workers/${w.id}/email`, { email: '' })).status, 400);
+  assert.equal((await fin.post(`/api/workers/${w.id}/email`, { email: 'casey@bluebix.demo' })).status, 403, 'finance cannot change worker records');
+  const taken = db.get("SELECT name, email FROM workers WHERE tenant_id=? AND email IS NOT NULL AND id<>? LIMIT 1", t, w.id);
+  const clash = await admin.post(`/api/workers/${w.id}/email`, { email: taken.email.toUpperCase() });
+  assert.equal(clash.status, 409); assert.match(clash.data.error, new RegExp(`^${taken.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} already uses this email address`));
+
+  const saved = await hr.post(`/api/workers/${w.id}/email`, { email: '  casey.noemail@bluebix.demo ' });
+  assert.equal(saved.status, 200); assert.equal(saved.data.changed, true);
+  assert.equal(db.get('SELECT email FROM workers WHERE id=?', w.id).email, 'casey.noemail@bluebix.demo');
+  assert.equal((await admin.get(`/api/workers/${w.id}`)).data.email, 'casey.noemail@bluebix.demo');
+  assert.ok(!(await admin.get('/api/setup')).data.gap_items.some((g) => g.kind === 'no_email' && g.workers.some((x) => x.id === w.id)), 'no longer listed as missing');
+  const entry = db.get("SELECT * FROM audit_log WHERE type='WORKER_UPDATED' AND subject='Casey Noemail' ORDER BY seq DESC LIMIT 1");
+  assert.equal(entry.action, 'Email address added. Document requests can now reach them.');
+  assert.ok(!entry.action.includes('@'), 'the address stays out of the audit log');
+  assert.equal((await admin.post(`/api/workers/${w.id}/email`, { email: 'casey.noemail@bluebix.demo' })).data.changed, false);
+
+  // A worker from the HR system: an email added in Aegis survives a sync that has none, and the HR system's own email wins.
+  const C = require('../server/connectors');
+  const synced = db.get("SELECT * FROM workers WHERE tenant_id=? AND source LIKE 'con_%' AND external_id IS NOT NULL LIMIT 1", t);
+  db.run('UPDATE workers SET email=NULL WHERE id=?', synced.id);
+  assert.equal((await admin.post(`/api/workers/${synced.id}/email`, { email: 'kept.by.aegis@bluebix.demo' })).status, 200);
+  const rec = { external_id: synced.external_id, name: synced.name, role: synced.role, category: synced.category, dept: synced.dept, license_type: synced.license_type, status: synced.status, hire_date: synced.hire_date };
+  C.upsertWorker(t, rec, synced.source);
+  assert.equal(db.get('SELECT email FROM workers WHERE id=?', synced.id).email, 'kept.by.aegis@bluebix.demo');
+  C.upsertWorker(t, { ...rec, email: 'from.hr@bluebix.demo' }, synced.source);
+  assert.equal(db.get('SELECT email FROM workers WHERE id=?', synced.id).email, 'from.hr@bluebix.demo');
 });

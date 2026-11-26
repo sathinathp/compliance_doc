@@ -1,6 +1,6 @@
 'use strict';
 // The model interprets a conversation. Aegis reads records and runs authorized actions.
-const db = require('./lib/db'), { clock, id, j, addDays } = require('./lib/util');
+const db = require('./lib/db'), { clock, id, j, count, addDays } = require('./lib/util');
 const W = require('./lib/workspace');
 const P = require('./platform'), V = require('./views'), E = require('./engine'), R = require('./registry'), llm = require('./llm');
 const Policy = require('./coworker-policy');
@@ -60,7 +60,7 @@ function previewFollowUps(t, user, chatId, policy) {
     actionAudit(t, user, 'Previewed evidence follow-ups.', { case_ids: selected.map((item) => item.caseId) });
   });
   const lines = items.map((item) => '• ' + item.case.subject_name + ' · ' + item.case.control_name + ' · to ' + item.recipientName + ' (' + item.recipientType + ') · #cases/' + item.caseId);
-  return ['**' + items.length + ' evidence follow-up(s) ready**', ...lines, 'To queue these follow-ups, reply within five minutes with: Confirm follow-ups ' + code].join('\n');
+  return ['**' + count(items.length, 'evidence follow-up') + ' ready**', ...lines, 'To queue these follow-ups, reply within five minutes with: Confirm follow-ups ' + code].join('\n');
 }
 
 function confirmFollowUps(t, user, code, chatId, policy) {
@@ -79,7 +79,7 @@ function confirmFollowUps(t, user, code, chatId, policy) {
       if (E.followUp(t, user, item.case, { ...item, policyEpoch: policy.follow_up_epoch }).sent) queued.push(item.caseId);
     }
     actionAudit(t, user, 'Confirmed evidence follow-ups. ' + queued.length + ' queued.', { case_ids: [...selected.keys()], queued_case_ids: queued });
-    return { reply: 'Queued **' + queued.length + '** follow-up(s). ' + (selected.size - queued.length) + ' skipped because the case or recipient changed, or a follow-up was already queued.', updated: queued.length > 0 };
+    return { reply: 'Queued **' + queued.length + '** ' + (queued.length === 1 ? 'follow-up' : 'follow-ups') + '. ' + (selected.size - queued.length) + ' skipped because the case or recipient changed, or a follow-up was already queued.', updated: queued.length > 0 };
   });
 }
 
@@ -207,7 +207,7 @@ function respond(t, user, text, { source, chatId, policy, plan, previous, confir
       const rows = V.checks(t, user, { pack }).filter((c) => c.status !== 'not_applicable');
       const c = V.tally(rows), packs = new Set(rows.map((row) => row.pack_key)).size;
       return (pack ? '**' + packName(pack) + '**\n' : '') + c.pass + ' of ' + c.total + ' applicable checks pass, ' + c.fail + ' fail and ' + c.unknown + ' are unknown.\n'
-        + 'This covers checks visible to your role across ' + packs + ' evaluated pack(s).\n#checks';
+        + 'This covers checks visible to your role across ' + count(packs, 'evaluated pack') + '.\n#checks';
     }
     case 'check_gaps': {
       const rows = V.checks(t, user, { pack, status }).filter((c) => ['fail', 'unknown'].includes(c.status));

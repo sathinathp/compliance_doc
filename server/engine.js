@@ -1,7 +1,7 @@
 'use strict';
 // Event-driven core: evaluate -> reconcile case -> plan action -> send once -> follow up -> escalate.
 const crypto = require('node:crypto');
-const db = require('./lib/db'), { clock, id, addDays, j, sha256, token } = require('./lib/util');
+const db = require('./lib/db'), { clock, id, addDays, j, sha256, token, count } = require('./lib/util');
 const P = require('./platform'), R = require('./registry'), { evaluate } = require('./evaluator'), channels = require('./channels');
 const W = require('./lib/workspace');
 const CoworkerPolicy = require('./coworker-policy');
@@ -326,7 +326,7 @@ function setMode(t, user, pack, mode) {
   if (mode === 'auto') {
     W.requireVerified(t);
     const un = db.get(`SELECT COUNT(*) n FROM cases WHERE tenant_id=? AND pack_key=? AND ${OPEN} AND finding_verdict IS NULL`, t, pack).n;
-    if (un) throw new HttpError(409, `${un} finding(s) still need owner validation before automatic requests can be turned on.`);
+    if (un) throw new HttpError(409, `${count(un, 'finding')} still ${un === 1 ? 'needs' : 'need'} owner validation before automatic requests can be turned on.`);
   }
   db.tx(() => {
     db.run('UPDATE tenant_packs SET mode=? WHERE tenant_id=? AND pack_key=?', mode, t, pack);
