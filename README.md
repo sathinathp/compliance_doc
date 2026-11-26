@@ -157,7 +157,7 @@ public/
   submit.html         the page workers use to upload a document
 test/                 automated tests and sample files (fixtures/)
 scripts/              check-llm.js, read-evidence.js
-testing/              manual test kits and before/after screenshots
+testing/              manual test kits and sample worker documents
 docs/                 setup guides and the full workflow
 ```
 
@@ -214,7 +214,7 @@ Tools for checking things by hand:
 | `node scripts/check-llm.js` | Checks that the AI keys in `.env` work. |
 | `node scripts/read-evidence.js <file or folder> [--text] [--no-ai]` | Shows what the text rules and the AI each read from a file, without uploading or saving anything. |
 
-`testing/layout-kit` holds one license in 13 layouts and several formats with an answer sheet, and `testing/before-after` shows the evidence screens before and after the reading upgrade.
+`testing/layout-kit` holds one license in 13 layouts and several formats with an answer sheet. `testing/test-workers` holds the documents for the Tara and Nina test workers, numbered in the order to upload them.
 
 ## Walk through the workflow
 
